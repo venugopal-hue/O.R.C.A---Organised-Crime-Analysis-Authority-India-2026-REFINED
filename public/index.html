@@ -1,0 +1,1525 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>O.R.C.A — Organized Crime Analysis Authority</title>
+<link rel="icon" href="logo.png" type="image/png" />
+<link rel="shortcut icon" href="logo.png" type="image/png" />
+<link href="https://fonts.googleapis.com/css2?family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=Inter:wght@300;400;500;600;700&family=Noto+Sans+Kannada:wght@400;600;700&display=swap" rel="stylesheet"/>
+<style>
+/* ===== TOKENS ===== */
+:root {
+  --navy: #002855;
+  --navy-mid: #003a75;
+  --navy-light: #004d99;
+  --gold: #C8922A;
+  --gold-light: #E8B04B;
+  --saffron: #FF9933;
+  --green-gov: #138808;
+  --white: #ffffff;
+  --off-white: #F7F8FA;
+  --text-primary: #0D1B2A;
+  --text-secondary: #3D5068;
+  --text-muted: #6B7E94;
+  --border: #D4DCE6;
+  --card-bg: #ffffff;
+  --shadow: 0 2px 16px rgba(0,40,85,0.10);
+  --shadow-hover: 0 8px 32px rgba(0,40,85,0.18);
+  --section-bg: #F0F4FA;
+  --hero-bg: #002855;
+  --nav-bg: rgba(255,255,255,0.97);
+  --transition: 0.3s cubic-bezier(.4,0,.2,1);
+}
+[data-theme="dark"] {
+  --navy: #0a1628;
+  --navy-mid: #0f2040;
+  --navy-light: #1a3460;
+  --gold: #E8B04B;
+  --gold-light: #F5C96A;
+  --white: #e8eef5;
+  --off-white: #0f1e35;
+  --text-primary: #E8EEF5;
+  --text-secondary: #9BB3CC;
+  --text-muted: #6B8AAA;
+  --border: #1e3050;
+  --card-bg: #0f1e35;
+  --shadow: 0 2px 16px rgba(0,0,0,0.4);
+  --shadow-hover: 0 8px 32px rgba(0,0,0,0.5);
+  --section-bg: #080f1e;
+  --hero-bg: #060d1c;
+  --nav-bg: rgba(8,15,30,0.97);
+}
+
+/* ===== RESET ===== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body {
+  font-family: 'Inter', sans-serif;
+  background: var(--off-white);
+  color: var(--text-primary);
+  transition: background var(--transition), color var(--transition);
+  overflow-x: hidden;
+}
+
+/* ===== TRICOLOR STRIP ===== */
+.tricolor-strip {
+  height: 5px;
+  background: linear-gradient(to right, #FF9933 33.33%, #ffffff 33.33% 66.66%, #138808 66.66%);
+  position: fixed; top: 0; left: 0; width: 100%; z-index: 1000;
+}
+
+/* ===== NAVBAR ===== */
+nav {
+  position: fixed; top: 5px; left: 0; width: 100%;
+  background: var(--nav-bg);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+  z-index: 999;
+  transition: background var(--transition), box-shadow var(--transition);
+}
+nav.scrolled { box-shadow: 0 2px 20px rgba(0,40,85,0.12); }
+.nav-inner {
+  max-width: 1280px; margin: 0 auto;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 24px; height: 64px;
+}
+.nav-brand {
+  display: flex; align-items: center; gap: 12px; text-decoration: none;
+}
+.nav-shield {
+  width: 40px; height: 40px; flex-shrink: 0;
+}
+.nav-brand-text { display: flex; flex-direction: column; }
+.nav-brand-main {
+  font-family: 'Libre Baskerville', serif;
+  font-size: 15px; font-weight: 700;
+  color: var(--navy-mid);
+  letter-spacing: 0.03em;
+  line-height: 1.2;
+}
+[data-theme="dark"] .nav-brand-main { color: var(--gold); }
+.nav-brand-sub {
+  font-size: 10px; color: var(--text-muted);
+  letter-spacing: 0.08em; text-transform: uppercase;
+}
+.nav-links {
+  display: flex; gap: 4px; align-items: center;
+  list-style: none;
+}
+.nav-links a {
+  text-decoration: none;
+  color: var(--text-secondary);
+  font-size: 13.5px; font-weight: 500;
+  padding: 6px 12px; border-radius: 6px;
+  transition: all var(--transition);
+  letter-spacing: 0.02em;
+}
+.nav-links a:hover { color: var(--navy-mid); background: var(--section-bg); }
+[data-theme="dark"] .nav-links a:hover { color: var(--gold); }
+.nav-controls {
+  display: flex; align-items: center; gap: 8px;
+}
+.lang-btn {
+  background: none; border: 1px solid var(--border);
+  color: var(--text-secondary); font-size: 12px; font-weight: 600;
+  padding: 5px 10px; border-radius: 6px; cursor: pointer;
+  transition: all var(--transition);
+  letter-spacing: 0.03em;
+}
+.lang-btn:hover, .lang-btn.active {
+  background: var(--navy-mid); color: white; border-color: var(--navy-mid);
+}
+.theme-toggle {
+  background: var(--section-bg); border: 1px solid var(--border);
+  width: 36px; height: 36px; border-radius: 8px;
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  font-size: 16px; transition: all var(--transition); color: var(--text-primary);
+}
+.theme-toggle:hover { background: var(--border); }
+.btn-nav-cta {
+  background: var(--navy-mid); color: white;
+  border: 2px solid var(--gold); border-radius: 8px;
+  padding: 8px 18px; font-size: 13px; font-weight: 600;
+  cursor: pointer; text-decoration: none;
+  transition: all var(--transition); letter-spacing: 0.02em;
+  font-family: 'Inter', sans-serif;
+}
+.btn-nav-cta:hover { background: var(--gold); color: var(--navy); border-color: var(--gold); }
+
+/* ===== HERO ===== */
+#hero {
+  background: var(--hero-bg);
+  min-height: 100vh;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  position: relative; overflow: hidden;
+  padding: 120px 24px 80px;
+}
+.hero-grid-bg {
+  position: absolute; inset: 0;
+  background-image:
+    linear-gradient(rgba(200,146,42,0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(200,146,42,0.06) 1px, transparent 1px);
+  background-size: 48px 48px;
+  animation: gridFloat 20s linear infinite;
+}
+@keyframes gridFloat {
+  0% { background-position: 0 0; }
+  100% { background-position: 48px 48px; }
+}
+.hero-seal {
+  position: absolute; top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  opacity: 0.15; width: 640px; height: 640px;
+  pointer-events: none;
+  object-fit: contain;
+}
+.hero-inner {
+  position: relative; z-index: 2;
+  max-width: 860px; text-align: center;
+}
+.hero-badge {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: rgba(200,146,42,0.15);
+  border: 1px solid rgba(200,146,42,0.4);
+  color: var(--gold-light);
+  font-size: 11px; font-weight: 700;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  padding: 6px 16px; border-radius: 20px;
+  margin-bottom: 28px;
+}
+.hero-badge-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--saffron);
+  animation: pulse 2s ease-in-out infinite;
+}
+@keyframes pulse { 0%,100%{opacity:1;transform:scale(1);} 50%{opacity:0.5;transform:scale(1.4);} }
+.hero-acronym {
+  font-family: 'Libre Baskerville', serif;
+  font-size: clamp(52px, 10vw, 88px);
+  font-weight: 700;
+  color: #ffffff;
+  letter-spacing: 0.12em;
+  line-height: 1;
+  margin-bottom: 8px;
+}
+.hero-acronym span { color: var(--gold); }
+.hero-title {
+  font-family: 'Libre Baskerville', serif;
+  font-size: clamp(14px, 2.5vw, 18px);
+  color: rgba(255,255,255,0.65);
+  letter-spacing: 0.22em; text-transform: uppercase;
+  font-weight: 400; margin-bottom: 28px;
+}
+.hero-desc {
+  font-size: clamp(15px, 2vw, 17px);
+  color: rgba(255,255,255,0.78);
+  line-height: 1.75; max-width: 680px;
+  margin: 0 auto 36px; font-weight: 300;
+}
+.typing-line {
+  font-size: 15px; color: var(--gold-light);
+  letter-spacing: 0.05em; font-weight: 500;
+  margin-bottom: 40px; min-height: 24px;
+  font-family: 'Inter', monospace;
+}
+.typing-cursor { animation: blink 1s step-end infinite; }
+@keyframes blink { 0%,100%{opacity:1;} 50%{opacity:0;} }
+.hero-btns { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; }
+.btn-primary {
+  background: var(--gold); color: var(--navy);
+  border: 2px solid var(--gold); border-radius: 10px;
+  padding: 14px 32px; font-size: 15px; font-weight: 700;
+  cursor: pointer; text-decoration: none; font-family: 'Inter', sans-serif;
+  transition: all var(--transition); letter-spacing: 0.03em;
+  display: inline-flex; align-items: center; gap: 8px;
+}
+.btn-primary:hover { background: var(--gold-light); border-color: var(--gold-light); transform: translateY(-2px); box-shadow: 0 8px 24px rgba(200,146,42,0.35); }
+.btn-ghost {
+  background: transparent; color: rgba(255,255,255,0.85);
+  border: 2px solid rgba(255,255,255,0.3); border-radius: 10px;
+  padding: 14px 32px; font-size: 15px; font-weight: 600;
+  cursor: pointer; text-decoration: none; font-family: 'Inter', sans-serif;
+  transition: all var(--transition); letter-spacing: 0.03em;
+  display: inline-flex; align-items: center; gap: 8px;
+}
+.btn-ghost:hover { border-color: rgba(255,255,255,0.7); background: rgba(255,255,255,0.08); transform: translateY(-2px); }
+.hero-scroll-hint {
+  position: absolute; bottom: 32px; left: 50%; transform: translateX(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  color: rgba(255,255,255,0.35); font-size: 11px; letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.scroll-arrow { animation: scrollBounce 2s ease-in-out infinite; }
+@keyframes scrollBounce { 0%,100%{transform:translateY(0);} 50%{transform:translateY(6px);} }
+
+/* ===== EXACT RECREATION OF REFERENCE SEARCH COMPONENT ===== */
+.hero-search-card {
+  width: 100%;
+  max-width: 820px;
+  margin: 0 auto 40px;
+  background: rgba(0, 32, 68, 0.75);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1.5px solid rgba(200, 146, 42, 0.4);
+  border-radius: 28px;
+  padding: 22px 24px 20px 24px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.hero-search-card:hover {
+  border-color: rgba(232, 176, 75, 0.7);
+  box-shadow: 0 20px 54px rgba(0, 0, 0, 0.5), 0 0 24px rgba(200, 146, 42, 0.3);
+}
+
+.hero-search-inner-box {
+  width: 100%;
+  min-height: 115px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 18px;
+  padding: 18px 20px 16px 22px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  transition: all 0.3s ease;
+}
+
+.hero-search-card:focus-within .hero-search-inner-box {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(200, 146, 42, 0.5);
+}
+
+.hero-search-input {
+  width: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #ffffff;
+  font-size: 16.5px;
+  font-family: 'Inter', sans-serif;
+  font-weight: 400;
+  padding-bottom: 12px;
+}
+
+.hero-search-input::placeholder {
+  color: rgba(255, 255, 255, 0.48);
+}
+
+.hero-search-btn {
+  align-self: flex-end;
+  background: linear-gradient(135deg, var(--gold), var(--gold-light));
+  color: #002855;
+  font-weight: 700;
+  border-radius: 50px;
+  padding: 12px 28px;
+  border: none;
+  cursor: pointer;
+  font-size: 14.5px;
+  font-family: 'Inter', sans-serif;
+  transition: all 0.25s ease;
+  white-space: nowrap;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+
+.hero-search-btn:hover {
+  background: linear-gradient(135deg, var(--gold-light), #fff0c2);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(200, 146, 42, 0.45);
+}
+
+.hero-search-bottom-bar {
+  margin-top: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.search-hint {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.55);
+  font-style: normal;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.suggestion-chips {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.chip {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(200, 146, 42, 0.3);
+  color: rgba(255, 255, 255, 0.85);
+  border-radius: 50px;
+  padding: 8px 20px;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: 'Inter', sans-serif;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  backdrop-filter: blur(8px);
+}
+
+.chip:hover {
+  background: rgba(200, 146, 42, 0.18);
+  border-color: var(--gold);
+  color: #ffffff;
+  transform: translateY(-1.5px);
+  box-shadow: 0 4px 14px rgba(200, 146, 42, 0.25);
+}
+
+/* ===== STATS ===== */
+#stats { background: var(--navy-mid); padding: 16px 24px; }
+.stats-grid {
+  max-width: 1200px; margin: 0 auto;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 2px;
+}
+.stat-card {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 12px 16px; text-align: center;
+  border-right: 1px solid rgba(255,255,255,0.08);
+  transition: background var(--transition);
+}
+.stat-card:last-child { border-right: none; }
+.stat-card:hover { background: rgba(255,255,255,0.04); }
+.stat-icon { font-size: 26px; margin-bottom: 10px; }
+.stat-number {
+  font-family: 'Libre Baskerville', serif;
+  font-size: clamp(28px, 4vw, 38px);
+  font-weight: 700; color: var(--gold);
+  line-height: 1; margin-bottom: 6px;
+}
+.stat-label {
+  font-size: 12px; color: rgba(255,255,255,0.55);
+  letter-spacing: 0.06em; text-transform: uppercase;
+  font-weight: 500; line-height: 1.4;
+}
+
+/* ===== SECTIONS COMMON ===== */
+section { padding: 96px 24px; }
+.section-inner { max-width: 1200px; margin: 0 auto; }
+.section-eyebrow {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.18em;
+  text-transform: uppercase; color: var(--gold);
+  margin-bottom: 12px;
+}
+.section-title {
+  font-family: 'Libre Baskerville', serif;
+  font-size: clamp(26px, 4vw, 38px);
+  font-weight: 700; color: var(--text-primary);
+  margin-bottom: 16px; line-height: 1.2;
+}
+.section-subtitle {
+  font-size: 16px; color: var(--text-secondary);
+  line-height: 1.7; max-width: 600px; margin-bottom: 56px;
+}
+
+/* ===== PROBLEM STATEMENT ===== */
+#problem { background: var(--off-white); }
+.problem-card {
+  background: var(--card-bg);
+  border-left: 5px solid #7C3AED;
+  border-radius: 0 16px 16px 0;
+  padding: 40px 48px;
+  box-shadow: var(--shadow);
+  max-width: 860px;
+  margin-bottom: 40px;
+  transition: background var(--transition);
+}
+.problem-label {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.18em;
+  text-transform: uppercase; color: #7C3AED; margin-bottom: 16px;
+}
+.problem-text {
+  font-size: 17px; line-height: 1.8; color: var(--text-primary);
+  font-family: 'Libre Baskerville', serif; font-style: italic;
+}
+.pill-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 32px; }
+.pill {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 12.5px; font-weight: 500;
+  padding: 8px 16px; border-radius: 20px;
+  transition: all var(--transition); letter-spacing: 0.02em;
+}
+.pill:hover { border-color: var(--gold); color: var(--gold); background: rgba(200,146,42,0.06); }
+
+/* ===== FEATURES ===== */
+#features { background: var(--section-bg); }
+.features-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 20px;
+}
+.feature-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 16px; padding: 32px;
+  transition: all var(--transition);
+  cursor: default;
+}
+.feature-card:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-hover);
+  border-color: var(--gold);
+}
+.feature-icon {
+  width: 48px; height: 48px;
+  background: linear-gradient(135deg, rgba(0,58,117,0.1), rgba(200,146,42,0.1));
+  border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px; margin-bottom: 16px;
+  border: 1px solid var(--border);
+}
+.feature-title {
+  font-family: 'Libre Baskerville', serif;
+  font-size: 16px; font-weight: 700;
+  color: var(--text-primary); margin-bottom: 8px;
+}
+.feature-desc {
+  font-size: 14px; color: var(--text-secondary);
+  line-height: 1.65;
+}
+
+/* ===== HOW IT WORKS ===== */
+#how { background: var(--off-white); }
+.steps-row {
+  display: flex; gap: 0; align-items: flex-start;
+  overflow-x: visible; padding: 14px 4px 12px 4px;
+}
+.step-item {
+  flex: 1; min-width: 160px;
+  display: flex; flex-direction: column; align-items: center;
+  text-align: center; position: relative; padding: 0 8px;
+}
+.step-item:not(:last-child)::after {
+  content: '';
+  position: absolute; top: 28px; left: calc(50% + 28px);
+  width: calc(100% - 56px); height: 2px;
+  background: linear-gradient(to right, var(--gold), var(--border));
+}
+.step-circle {
+  width: 56px; height: 56px; border-radius: 50%;
+  background: var(--navy-mid); color: white;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px; margin-bottom: 16px; position: relative; z-index: 1;
+  border: 3px solid var(--gold); box-shadow: var(--shadow);
+  transition: all var(--transition);
+}
+.step-item:hover .step-circle { transform: scale(1.1); background: var(--gold); color: var(--navy); }
+.step-num {
+  position: absolute; top: -4px; right: -4px;
+  width: 20px; height: 20px; border-radius: 50%;
+  background: var(--saffron); color: white;
+  font-size: 10px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+  z-index: 2; box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+}
+.step-title { font-size: 13px; font-weight: 700; color: var(--text-primary); margin-bottom: 6px; }
+.step-desc { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+
+/* ===== TECH STACK ===== */
+#tech { background: var(--section-bg); }
+.tech-pills {
+  display: flex; flex-wrap: wrap; gap: 12px;
+}
+.tech-pill {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 20px;
+  font-size: 13px; font-weight: 600;
+  color: var(--text-secondary);
+  transition: all var(--transition);
+  letter-spacing: 0.02em;
+}
+.tech-pill:hover {
+  border-color: var(--navy-mid); color: var(--navy-mid);
+  background: rgba(0,58,117,0.06); transform: translateY(-2px);
+  box-shadow: var(--shadow);
+}
+[data-theme="dark"] .tech-pill:hover { border-color: var(--gold); color: var(--gold); background: rgba(200,146,42,0.06); }
+
+/* ===== TESTIMONIALS ===== */
+#testimonials { background: var(--navy-mid); padding: 80px 24px; }
+.testimonials-inner { max-width: 1200px; margin: 0 auto; }
+.testimonials-inner .section-title { color: white; }
+.testimonials-inner .section-eyebrow { color: var(--gold); }
+.testimonials-inner .section-subtitle { color: rgba(255,255,255,0.6); }
+.testimonials-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px;
+}
+.testimonial-card {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 16px; padding: 32px;
+  transition: all var(--transition);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.testimonial-card:hover { background: rgba(255,255,255,0.09); transform: translateY(-2px); }
+.testimonial-stars { color: var(--gold); font-size: 14px; margin-bottom: 16px; letter-spacing: 2px; }
+.testimonial-quote {
+  font-family: 'Libre Baskerville', serif;
+  font-style: italic; font-size: 15px;
+  color: rgba(255,255,255,0.85); line-height: 1.7;
+  margin-bottom: 24px;
+  flex: 1;
+}
+.testimonial-author { display: flex; align-items: center; gap: 12px; margin-top: auto; }
+.author-avatar {
+  width: 40px; height: 40px; border-radius: 50%;
+  background: linear-gradient(135deg, var(--gold), var(--saffron));
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px; flex-shrink: 0;
+}
+.author-name { font-size: 13px; font-weight: 600; color: white; }
+.author-role { font-size: 11px; color: rgba(255,255,255,0.45); margin-top: 2px; }
+
+/* ===== FOOTER ===== */
+footer {
+  background: var(--navy);
+  padding: 60px 24px 0;
+  color: rgba(255,255,255,0.6);
+}
+[data-theme="dark"] footer { background: #04080f; }
+.footer-inner {
+  max-width: 1200px; margin: 0 auto;
+  display: grid; grid-template-columns: 2fr 1fr 1fr 1fr;
+  gap: 40px; padding-bottom: 48px;
+}
+.footer-brand-name {
+  font-family: 'Libre Baskerville', serif;
+  font-size: 22px; font-weight: 700; color: var(--gold);
+  letter-spacing: 0.1em; margin-bottom: 4px;
+}
+.footer-brand-sub { font-size: 11px; color: rgba(255,255,255,0.35); letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 16px; }
+.footer-desc { font-size: 13px; line-height: 1.7; max-width: 280px; }
+.footer-col-title {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--gold);
+  margin-bottom: 16px;
+}
+.footer-links { list-style: none; display: flex; flex-direction: column; gap: 10px; }
+.footer-links a {
+  text-decoration: none; color: rgba(255,255,255,0.5);
+  font-size: 13px; transition: color var(--transition);
+}
+.footer-links a:hover { color: var(--gold); }
+.footer-bottom {
+  border-top: 1px solid rgba(255,255,255,0.08);
+  padding: 20px 0;
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 12px;
+  max-width: 1200px; margin: 0 auto;
+}
+.footer-bottom-left { font-size: 12px; color: rgba(255,255,255,0.35); }
+.footer-bottom-right { font-size: 12px; color: rgba(255,255,255,0.35); }
+.footer-tricolor {
+  height: 4px;
+  background: linear-gradient(to right, #FF9933 33.33%, #ffffff 33.33% 66.66%, #138808 66.66%);
+  margin-top: 0;
+}
+
+/* ===== REVEAL ANIMATIONS ===== */
+.reveal {
+  opacity: 0; transform: translateY(28px);
+  transition: opacity 0.65s ease, transform 0.65s ease;
+}
+.reveal.visible { opacity: 1; transform: translateY(0); }
+.reveal-delay-1 { transition-delay: 0.1s; }
+.reveal-delay-2 { transition-delay: 0.2s; }
+.reveal-delay-3 { transition-delay: 0.3s; }
+.reveal-delay-4 { transition-delay: 0.4s; }
+
+/* ===== CTA SECTION ===== */
+#cta {
+  background: linear-gradient(135deg, var(--navy) 0%, var(--navy-light) 100%);
+  padding: 80px 24px; text-align: center;
+}
+.cta-inner { max-width: 700px; margin: 0 auto; }
+.cta-title {
+  font-family: 'Libre Baskerville', serif;
+  font-size: clamp(26px, 4vw, 38px);
+  font-weight: 700; color: white; margin-bottom: 16px;
+}
+.cta-sub { font-size: 16px; color: rgba(255,255,255,0.65); margin-bottom: 36px; line-height: 1.7; }
+
+/* ===== HAMBURGER ===== */
+.hamburger {
+  display: none; flex-direction: column; gap: 5px;
+  background: none; border: none; cursor: pointer; padding: 8px;
+}
+.hamburger span {
+  display: block; width: 22px; height: 2px;
+  background: var(--text-primary); border-radius: 2px;
+  transition: all var(--transition);
+}
+.mobile-nav {
+  display: none; position: fixed; top: 69px; left: 0; width: 100%;
+  background: var(--nav-bg); border-bottom: 1px solid var(--border);
+  padding: 16px 24px; z-index: 998; flex-direction: column; gap: 4px;
+}
+.mobile-nav.open { display: flex; }
+.mobile-nav a {
+  text-decoration: none; color: var(--text-secondary); font-size: 14px;
+  font-weight: 500; padding: 10px 12px; border-radius: 8px;
+  transition: all var(--transition);
+}
+.mobile-nav a:hover { background: var(--section-bg); color: var(--text-primary); }
+.mobile-lang-row { display: flex; gap: 8px; padding: 10px 12px; }
+
+/* ===== RESPONSIVE ===== */
+@media (max-width: 768px) {
+  .nav-links { display: none; }
+  .hamburger { display: flex; }
+  .btn-nav-cta { display: none; }
+  .footer-inner { grid-template-columns: 1fr 1fr; }
+  .step-item:not(:last-child)::after { display: none; }
+  .steps-row { flex-direction: column; align-items: center; gap: 24px; }
+  .problem-card { padding: 28px 24px; }
+  .stat-card { border-right: none; border-bottom: 1px solid rgba(255,255,255,0.08); }
+  .stat-card:last-child { border-bottom: none; }
+}
+@media (max-width: 480px) {
+  .footer-inner { grid-template-columns: 1fr; }
+  .footer-bottom { flex-direction: column; text-align: center; }
+}
+
+/* ===== SCROLLBAR ===== */
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.04); }
+::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #FF9933 0%, #ffffff 50%, #138808 100%);
+  border-radius: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  cursor: pointer;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #ffaa55 0%, #ffffff 50%, #1eb012 100%);
+  box-shadow: 0 0 8px rgba(255, 153, 51, 0.6);
+}
+
+/* ===== SELECTION ===== */
+::selection { background: rgba(200,146,42,0.25); color: var(--text-primary); }
+
+/* ===== KANNADA FONT ===== */
+[lang="kn"] { font-family: 'Noto Sans Kannada', 'Inter', sans-serif; }
+</style>
+</head>
+<body>
+
+<!-- Tricolor -->
+<div class="tricolor-strip"></div>
+
+<!-- Navbar -->
+<nav id="navbar">
+  <div class="nav-inner">
+    <a href="#" class="nav-brand">
+      <img src="logo.png" alt="KSP Logo" style="width: 48px; height: 56px; object-fit: contain;">
+      <div class="nav-brand-text">
+        <span class="nav-brand-main" data-i18n="nav_brand">O.R.C.A</span>
+        <span class="nav-brand-sub" data-i18n="nav_sub">ORGANIZED CRIME ANALYSIS AUTHORITY</span>
+      </div>
+    </a>
+
+    <ul class="nav-links">
+      <li><a href="#hero" data-i18n="nav_home">Home</a></li>
+      <li><a href="#problem" data-i18n="nav_about">About</a></li>
+      <li><a href="#features" data-i18n="nav_features">Features</a></li>
+      <li><a href="#stats" data-i18n="nav_stats">Statistics</a></li>
+      <li><a href="#testimonials" data-i18n="nav_contact">Testimonials</a></li>
+    </ul>
+
+    <div class="nav-controls">
+      <button class="lang-btn active" onclick="setLang('en')">EN</button>
+      <button class="lang-btn" onclick="setLang('kn')">ಕನ್ನಡ</button>
+      <button class="lang-btn" onclick="setLang('hi')">हि</button>
+      <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Toggle theme">🌙</button>
+      <a href="/login" class="btn-nav-cta" data-i18n="nav_cta">Get Started →</a>
+    </div>
+
+    <button class="hamburger" onclick="toggleMobileNav()" aria-label="Menu">
+      <span></span><span></span><span></span>
+    </button>
+  </div>
+</nav>
+
+<!-- Mobile Nav -->
+<div class="mobile-nav" id="mobileNav">
+  <a href="#hero" onclick="toggleMobileNav()" data-i18n="nav_home">Home</a>
+  <a href="#problem" onclick="toggleMobileNav()" data-i18n="nav_about">About</a>
+  <a href="#features" onclick="toggleMobileNav()" data-i18n="nav_features">Features</a>
+  <a href="#stats" onclick="toggleMobileNav()" data-i18n="nav_stats">Statistics</a>
+  <a href="#testimonials" onclick="toggleMobileNav()" data-i18n="nav_contact">Testimonials</a>
+  <div class="mobile-lang-row">
+    <button class="lang-btn active" onclick="setLang('en');toggleMobileNav()">EN</button>
+    <button class="lang-btn" onclick="setLang('kn');toggleMobileNav()">ಕನ್ನಡ</button>
+    <button class="lang-btn" onclick="setLang('hi');toggleMobileNav()">हिन्दी</button>
+  </div>
+  <a href="/login" class="btn-nav-cta" style="text-align:center;margin-top:8px;" data-i18n="nav_cta">Get Started →</a>
+</div>
+
+<!-- HERO -->
+<section id="hero">
+  <div class="hero-grid-bg"></div>
+  <img src="logo.png" class="hero-seal" alt="Seal">
+
+  <div class="hero-inner">
+    <div class="hero-badge">
+      <span class="hero-badge-dot"></span>
+      <span data-i18n="hero_badge">CHALLENGE 01 — KSP × SCRB · HACKATHON 2025</span>
+    </div>
+    <div class="hero-acronym">
+      <span>O</span>.<span>R</span>.<span>C</span>.<span>A</span>
+    </div>
+    <div class="hero-title" data-i18n="hero_subtitle">Organized Crime Analysis Authority</div>
+    <p class="hero-desc" data-i18n="hero_desc">
+      An intelligent conversational AI platform enabling investigators to query crime data using natural language — uncovering patterns, relationships, and predictive insights across 1100+ police stations in Karnataka.
+    </p>
+    <div class="typing-line">
+      ▶ <span id="typingText"></span><span class="typing-cursor">|</span>
+    </div>
+
+    <!-- EXACT RECREATION OF REFERENCE SEARCH COMPONENT -->
+    <div class="hero-search-card">
+      <div class="hero-search-inner-box">
+        <input 
+          type="text" 
+          id="heroSearchInput" 
+          class="hero-search-input" 
+          placeholder="What can I help you investigate?"
+          data-i18n-placeholder="search_placeholder"
+          autocomplete="off"
+        />
+        <button type="button" class="hero-search-btn" id="heroSearchBtn" data-i18n="search_btn">
+          Proceed to chatbot
+        </button>
+      </div>
+      
+      <div class="hero-search-bottom-bar">
+        <div class="search-hint" data-i18n="search_hint">Press Enter to continue.</div>
+        
+        <div class="suggestion-chips">
+          <button type="button" class="chip" data-query="Burglary clusters this quarter" data-i18n="chip1">Burglary clusters this quarter</button>
+          <button type="button" class="chip" data-query="Map a suspect's associates" data-i18n="chip2">Map a suspect's associates</button>
+          <button type="button" class="chip" data-query="Cyber fraud victims by district" data-i18n="chip3">Cyber fraud victims by district</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="hero-btns">
+      <a href="/login" class="btn-primary" data-i18n="hero_cta">Get Started →</a>
+      <a href="#how" class="btn-ghost" data-i18n="hero_secondary">How It Works ↓</a>
+    </div>
+  </div>
+  <div class="hero-scroll-hint">
+    <span data-i18n="scroll_hint">Scroll to explore</span>
+    <span class="scroll-arrow">↓</span>
+  </div>
+</section>
+
+<!-- STATS -->
+<section id="stats">
+  <div class="stats-grid">
+    <div class="stat-card reveal">
+      <div class="stat-icon">🏛️</div>
+      <div class="stat-number" data-count="1100" data-suffix="+">0</div>
+      <div class="stat-label" data-i18n="stat1">Police Stations Connected</div>
+    </div>
+    <div class="stat-card reveal reveal-delay-1">
+      <div class="stat-icon">📁</div>
+      <div class="stat-number" data-count="5000000" data-prefix="" data-display="50L+">0</div>
+      <div class="stat-label" data-i18n="stat2">Crime Records Indexed</div>
+    </div>
+    <div class="stat-card reveal reveal-delay-2">
+      <div class="stat-icon">🎯</div>
+      <div class="stat-number" data-count="98" data-suffix="%">0</div>
+      <div class="stat-label" data-i18n="stat3">Query Accuracy</div>
+    </div>
+    <div class="stat-card reveal reveal-delay-3">
+      <div class="stat-icon">⚡</div>
+      <div class="stat-number" data-count="2" data-prefix="&lt;" data-suffix="s">0</div>
+      <div class="stat-label" data-i18n="stat4">Average Response Time</div>
+    </div>
+    <div class="stat-card reveal reveal-delay-4">
+      <div class="stat-icon">🌐</div>
+      <div class="stat-number" data-count="3" data-suffix="">0</div>
+      <div class="stat-label" data-i18n="stat5">Languages Supported</div>
+    </div>
+    <div class="stat-card reveal">
+      <div class="stat-icon">🛡️</div>
+      <div class="stat-number" data-count="100" data-suffix="%">0</div>
+      <div class="stat-label" data-i18n="stat6">Secure & Encrypted</div>
+    </div>
+  </div>
+</section>
+
+<!-- PROBLEM STATEMENT -->
+<section id="problem">
+  <div class="section-inner">
+    <p class="section-eyebrow reveal" data-i18n="prob_eyebrow">The Challenge</p>
+    <h2 class="section-title reveal" data-i18n="prob_title">Why O.R.C.A?</h2>
+    <div class="problem-card reveal">
+      <p class="problem-text" data-i18n="prob_text">
+        The State Crime Records Bureau (SCRB) manages a large and continuously expanding repository of crime-related data from 1100+ police stations across Karnataka. Current systems rely on static dashboards and manual queries, limiting deep analysis and real-time insights for investigators and officers on the field.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- FEATURES -->
+<section id="features">
+  <div class="section-inner">
+    <p class="section-eyebrow reveal" data-i18n="feat_eyebrow">Platform Capabilities</p>
+    <h2 class="section-title reveal" data-i18n="feat_title">Key Features</h2>
+    <p class="section-subtitle reveal" data-i18n="feat_sub">Built for investigators, field officers, and crime analysts — O.R.C.A brings enterprise-grade intelligence to public safety.</p>
+    <div class="features-grid">
+      <div class="feature-card reveal">
+        <div class="feature-icon">🤖</div>
+        <div class="feature-title" data-i18n="f1_title">Natural Language Chatbot</div>
+        <p class="feature-desc" data-i18n="f1_desc">Query crime databases in English, ಕನ್ನಡ, or हिन्दी using plain conversational language — no SQL, no technical expertise needed.</p>
+      </div>
+      <div class="feature-card reveal reveal-delay-1">
+        <div class="feature-icon">🎙️</div>
+        <div class="feature-title" data-i18n="f2_title">Voice-Enabled Interaction</div>
+        <p class="feature-desc" data-i18n="f2_desc">Hands-free voice command support for field officers who need real-time information without stopping to type.</p>
+      </div>
+      <div class="feature-card reveal reveal-delay-2">
+        <div class="feature-icon">🧠</div>
+        <div class="feature-title" data-i18n="f3_title">Context-Aware Conversations</div>
+        <p class="feature-desc" data-i18n="f3_desc">The AI retains session context, remembers previous queries, and refines its analysis based on the flow of investigation.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon">📄</div>
+        <div class="feature-title" data-i18n="f4_title">PDF Export & Reports</div>
+        <p class="feature-desc" data-i18n="f4_desc">Download full conversation history, analysis summaries, and visual insights as court-ready PDF reports.</p>
+      </div>
+      <div class="feature-card reveal reveal-delay-1">
+        <div class="feature-icon">🕸️</div>
+        <div class="feature-title" data-i18n="f5_title">Criminal Network Visualization</div>
+        <p class="feature-desc" data-i18n="f5_desc">Interactive graph visualizations expose hidden relationships between suspects, locations, and incidents.</p>
+      </div>
+      <div class="feature-card reveal reveal-delay-2">
+        <div class="feature-icon">🗺️</div>
+        <div class="feature-title" data-i18n="f6_title">Crime Hotspot Detection</div>
+        <p class="feature-desc" data-i18n="f6_desc">Real-time geographic heatmaps identify emerging crime clusters and seasonal trends across Karnataka districts.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon">📈</div>
+        <div class="feature-title" data-i18n="f7_title">Predictive Analytics</div>
+        <p class="feature-desc" data-i18n="f7_desc">Early warning system powered by ML models forecasts crime surges so law enforcement can act before incidents escalate.</p>
+      </div>
+      <div class="feature-card reveal reveal-delay-1">
+        <div class="feature-icon">🔍</div>
+        <div class="feature-title" data-i18n="f8_title">Explainable AI & Audit Trails</div>
+        <p class="feature-desc" data-i18n="f8_desc">Every AI-generated insight comes with a clear explanation and full audit trail, ensuring accountability and transparency.</p>
+      </div>
+      <div class="feature-card reveal reveal-delay-2">
+        <div class="feature-icon">🔐</div>
+        <div class="feature-title" data-i18n="f9_title">Biometric Security & Role Access</div>
+        <p class="feature-desc" data-i18n="f9_desc">Anti-spoof face recognition and liveness scans secure officer registry, coupled with strict tiered role access for CID, SP, and SCRB officers.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon">🔒</div>
+        <div class="feature-title" data-i18n="f10_title">VPN Lockdown & Tunnel Telemetry</div>
+        <p class="feature-desc" data-i18n="f10_desc">Automated VPN disconnect detection with forced session lockdown, countdown alert modal, and instant security egress audit logging.</p>
+      </div>
+      <div class="feature-card reveal reveal-delay-1">
+        <div class="feature-icon">⏱️</div>
+        <div class="feature-title" data-i18n="f11_title">Duty Session & Time Telemetry</div>
+        <p class="feature-desc" data-i18n="f11_desc">Real-time shift telemetry tracking active ingress time, monthly duty hours, shift averages, and detailed encrypted session ledgers.</p>
+      </div>
+      <div class="feature-card reveal reveal-delay-2">
+        <div class="feature-icon">🛡️</div>
+        <div class="feature-title" data-i18n="f12_title">Dynamic RBAC & Audit Ledger</div>
+        <p class="feature-desc" data-i18n="f12_desc">Granular role permission management with parallel Firestore audit log synchronization for all officer role assignments and status changes.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- HOW IT WORKS -->
+<section id="how">
+  <div class="section-inner">
+    <p class="section-eyebrow reveal" data-i18n="how_eyebrow">Workflow</p>
+    <h2 class="section-title reveal" data-i18n="how_title">How It Works</h2>
+    <p class="section-subtitle reveal" data-i18n="how_sub">From secure login to actionable intelligence in under 30 seconds.</p>
+    <div class="steps-row reveal">
+      <div class="step-item">
+        <div class="step-circle">🔑<span class="step-num">1</span></div>
+        <div class="step-title" data-i18n="step1_title">Secure Login & VPN Verification</div>
+        <div class="step-desc" data-i18n="step1_desc">Role-based authentication with real-time VPN tunnel telemetry</div>
+      </div>
+      <div class="step-item">
+        <div class="step-circle">💬<span class="step-num">2</span></div>
+        <div class="step-title" data-i18n="step2_title">Ask in Natural Language</div>
+        <div class="step-desc" data-i18n="step2_desc">Type or speak your query in English, Kannada or Hindi</div>
+      </div>
+      <div class="step-item">
+        <div class="step-circle">🔎<span class="step-num">3</span></div>
+        <div class="step-title" data-i18n="step3_title">AI Queries SCRB Database</div>
+        <div class="step-desc" data-i18n="step3_desc">RAG architecture retrieves verified crime records instantly</div>
+      </div>
+      <div class="step-item">
+        <div class="step-circle">📊<span class="step-num">4</span></div>
+        <div class="step-title" data-i18n="step4_title">Insights Generated</div>
+        <div class="step-desc" data-i18n="step4_desc">Visualizations, patterns, and predictions surface automatically</div>
+      </div>
+      <div class="step-item">
+        <div class="step-circle">📥<span class="step-num">5</span></div>
+        <div class="step-title" data-i18n="step5_title">Export & Act</div>
+        <div class="step-desc" data-i18n="step5_desc">Download reports or trigger response workflows immediately</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- TECH STACK -->
+<section id="tech">
+  <div class="section-inner">
+    <p class="section-eyebrow reveal" data-i18n="tech_eyebrow">Technology</p>
+    <h2 class="section-title reveal" data-i18n="tech_title">Built On Cutting-Edge AI</h2>
+    <p class="section-subtitle reveal" data-i18n="tech_sub">Enterprise-grade architecture designed for security, scalability, and speed.</p>
+    <div class="tech-pills reveal">
+      <span class="tech-pill">Large Language Models</span>
+      <span class="tech-pill">RAG Architecture</span>
+      <span class="tech-pill">Vector Database</span>
+      <span class="tech-pill">NLP Pipeline</span>
+      <span class="tech-pill">Graph Neural Networks</span>
+      <span class="tech-pill">Real-time Analytics</span>
+      <span class="tech-pill">Secure API Gateway</span>
+      <span class="tech-pill">VPN Lockdown Protocol</span>
+      <span class="tech-pill">Encrypted PKI Handshake</span>
+      <span class="tech-pill">Multilingual NLU</span>
+      <span class="tech-pill">Zero-Trust Security</span>
+      <span class="tech-pill">Biometric Liveness Vetting</span>
+      <span class="tech-pill">Edge Computer Vision</span>
+      <span class="tech-pill">Federated Learning</span>
+      <span class="tech-pill">Geospatial Intelligence</span>
+      <span class="tech-pill">Firestore Real-Time Sync</span>
+      <span class="tech-pill">Session Duty Telemetry</span>
+      <span class="tech-pill">Speech-to-Text AI</span>
+    </div>
+  </div>
+</section>
+
+<!-- TESTIMONIALS -->
+<section id="testimonials">
+  <div class="testimonials-inner">
+    <p class="section-eyebrow reveal" data-i18n="test_eyebrow">Field Voices</p>
+    <h2 class="section-title reveal" data-i18n="test_title">What Officers Say</h2>
+    <p class="section-subtitle reveal" data-i18n="test_sub">Designed with frontline investigators at every stage of development.</p>
+    <div class="testimonials-grid">
+      <div class="testimonial-card reveal">
+        <div class="testimonial-stars">★★★★★</div>
+        <p class="testimonial-quote" data-i18n="test1_quote">"What used to take our team hours of manual cross-referencing now surfaces in seconds. O.R.C.A has fundamentally changed how we investigate."</p>
+        <div class="testimonial-author">
+          <div class="author-avatar">👮</div>
+          <div>
+            <div class="author-name" data-i18n="test1_name">Inspector R. Subramaniam</div>
+            <div class="author-role" data-i18n="test1_role">Bengaluru North Division, CID</div>
+          </div>
+        </div>
+      </div>
+      <div class="testimonial-card reveal reveal-delay-1">
+        <div class="testimonial-stars">★★★★★</div>
+        <p class="testimonial-quote" data-i18n="test2_quote">"The ability to query in the Kannada language is a boon. The Kannada support makes this accessible to every officer on the ground."</p>
+        <div class="testimonial-author">
+          <div class="author-avatar">👮‍♀️</div>
+          <div>
+            <div class="author-name" data-i18n="test2_name">Sub-Inspector Lakshmi Devi</div>
+            <div class="author-role" data-i18n="test2_role">Mysuru District, Women's Safety Wing</div>
+          </div>
+        </div>
+      </div>
+      <div class="testimonial-card reveal reveal-delay-2">
+        <div class="testimonial-stars">★★★★★</div>
+        <p class="testimonial-quote" data-i18n="test3_quote">"The hotspot predictions helped us redeploy patrol units three days before a predicted surge. That's proactive policing powered by real intelligence."</p>
+        <div class="testimonial-author">
+          <div class="author-avatar">🎖️</div>
+          <div>
+            <div class="author-name" data-i18n="test3_name">DCP Arvind Kulkarni</div>
+            <div class="author-role" data-i18n="test3_role">Mangaluru Commissionerate</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<section id="cta">
+  <div class="cta-inner">
+    <h2 class="cta-title reveal" data-i18n="cta_title">Ready to Transform Crime Intelligence?</h2>
+    <p class="cta-sub reveal" data-i18n="cta_sub">Join O.R.C.A and bring the power of conversational AI to Karnataka's law enforcement ecosystem.</p>
+    <div class="hero-btns reveal">
+      <a href="/login" class="btn-primary" data-i18n="cta_btn">Get Started →</a>
+      <a href="#features" class="btn-ghost" data-i18n="cta_btn2">Explore Features</a>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <div class="footer-inner">
+    <div>
+      <div class="footer-brand-name">O.R.C.A</div>
+      <div class="footer-brand-sub">Organized Crime Analysis Authority</div>
+      <p class="footer-desc">An AI-powered crime intelligence platform built for Karnataka State Police and SCRB — enabling smarter, faster, fairer law enforcement.</p>
+    </div>
+    <div>
+      <div class="footer-col-title" data-i18n="footer_platform">Platform</div>
+      <ul class="footer-links">
+        <li><a href="#features" data-i18n="footer_features">Features</a></li>
+        <li><a href="#how" data-i18n="footer_how">How It Works</a></li>
+        <li><a href="#tech" data-i18n="footer_tech">Technology</a></li>
+        <li><a href="#stats" data-i18n="footer_stats">Statistics</a></li>
+      </ul>
+    </div>
+    <div>
+      <div class="footer-col-title" data-i18n="footer_legal">Legal</div>
+      <ul class="footer-links">
+        <li><a href="/privacy" data-i18n="footer_privacy">Privacy Policy</a></li>
+        <li><a href="/terms" data-i18n="footer_terms">Terms of Use</a></li>
+        <li><a href="/accessibility" data-i18n="footer_access">Accessibility</a></li>
+        <li><a href="/rti" data-i18n="footer_rti">RTI</a></li>
+      </ul>
+    </div>
+    <div>
+      <div class="footer-col-title" data-i18n="footer_contact_title">Contact</div>
+      <ul class="footer-links">
+        <li><a href="https://ksp.karnataka.gov.in/" target="_blank" rel="noopener noreferrer">KSP Headquarters</a></li>
+        <li><a href="https://ksp.karnataka.gov.in/page/SCRB/en" target="_blank" rel="noopener noreferrer">SCRB Karnataka</a></li>
+        <li><a href="/support" data-i18n="footer_support">Technical Support</a></li>
+        <li><a href="/report-issue" data-i18n="footer_report">Report Issue</a></li>
+      </ul>
+    </div>
+  </div>
+  <div class="footer-bottom" style="max-width:1200px;margin:0 auto;padding:20px 24px;">
+    <div class="footer-bottom-left" data-i18n="copyright">© 2026 Government of Karnataka · Karnataka State Police · SCRB · O.R.C.A</div>
+    <div class="footer-bottom-right" data-i18n="footer_powered">Built for Public Safety · Powered by Artificial Intelligence</div>
+  </div>
+  <div class="footer-tricolor"></div>
+</footer>
+
+<script>
+// ===== TRANSLATIONS =====
+const translations = {
+  en: {
+    nav_brand: "O.R.C.A",
+    nav_sub: "ORGANIZED CRIME ANALYSIS AUTHORITY",
+    nav_home: "Home", nav_about: "About", nav_features: "Features",
+    nav_stats: "Statistics", nav_contact: "Testimonials",
+    nav_cta: "Get Started →",
+    hero_badge: "KSP × SCRB × ORCA",
+    hero_subtitle: "Organized Crime Analysis Authority",
+    hero_desc: "An intelligent conversational AI platform enabling investigators to query crime data using natural language — uncovering patterns, relationships, and predictive insights across 1100+ police stations in Karnataka.",
+    hero_cta: "Get Started →",
+    hero_secondary: "How It Works ↓",
+    scroll_hint: "Scroll to explore",
+    stat1: "Police Stations Connected", stat2: "Crime Records Indexed",
+    stat3: "Query Accuracy", stat4: "Average Response Time",
+    stat5: "Languages Supported", stat6: "Secure & Encrypted",
+    prob_eyebrow: "Overview", prob_title: "Why O.R.C.A?",
+    prob_label: "Problem Statement",
+    prob_text: "The State Crime Records Bureau (SCRB) manages a large and continuously expanding repository of crime-related data from 1100+ police stations across Karnataka. Current systems rely on static dashboards and manual queries, limiting deep analysis and real-time insights for investigators and officers on the field.",
+    pill1: "Crime Pattern Discovery", pill2: "Criminal Network Analysis",
+    pill3: "Socio-demographic Insights", pill4: "Behavioral Profiling",
+    pill5: "Proactive Crime Prevention Intelligence",
+    feat_eyebrow: "Platform Capabilities", feat_title: "Key Features",
+    feat_sub: "Built for investigators, field officers, and crime analysts — O.R.C.A brings enterprise-grade intelligence to public safety.",
+    f1_title: "Natural Language Chatbot", f1_desc: "Query crime databases in English, ಕನ್ನಡ, or हिन्दी using plain conversational language — no SQL, no technical expertise needed.",
+    f2_title: "Voice-Enabled Interaction", f2_desc: "Hands-free voice command support for field officers who need real-time information without stopping to type.",
+    f3_title: "Context-Aware Conversations", f3_desc: "The AI retains session context, remembers previous queries, and refines its analysis based on the flow of investigation.",
+    f4_title: "PDF Export & Reports", f4_desc: "Download full conversation history, analysis summaries, and visual insights as court-ready PDF reports.",
+    f5_title: "Criminal Network Visualization", f5_desc: "Interactive graph visualizations expose hidden relationships between suspects, locations, and incidents.",
+    f6_title: "Crime Hotspot Detection", f6_desc: "Real-time geographic heatmaps identify emerging crime clusters and seasonal trends across Karnataka districts.",
+    f7_title: "Predictive Analytics", f7_desc: "Early warning system powered by ML models forecasts crime surges so law enforcement can act before incidents escalate.",
+    f8_title: "Explainable AI & Audit Trails", f8_desc: "Every AI-generated insight comes with a clear explanation and full audit trail, ensuring accountability and transparency.",
+    f9_title: "Biometric Security & Role Access", f9_desc: "Anti-spoof face recognition and liveness scans secure officer registry, coupled with strict tiered role access for CID, SP, and SCRB officers.",
+    f10_title: "VPN Lockdown & Tunnel Telemetry", f10_desc: "Automated VPN disconnect detection with forced session lockdown, countdown alert modal, and instant security egress audit logging.",
+    f11_title: "Duty Session & Time Telemetry", f11_desc: "Real-time shift telemetry tracking active ingress time, monthly duty hours, shift averages, and detailed encrypted session ledgers.",
+    f12_title: "Dynamic RBAC & Audit Ledger", f12_desc: "Granular role permission management with parallel Firestore audit log synchronization for all officer role assignments and status changes.",
+    how_eyebrow: "Workflow", how_title: "How It Works", how_sub: "From secure login to actionable intelligence in under 30 seconds.",
+    step1_title: "Secure Login & VPN Verification", step1_desc: "Role-based authentication with real-time VPN tunnel telemetry",
+    step2_title: "Ask in Natural Language", step2_desc: "Type or speak your query in English, Kannada or Hindi",
+    step3_title: "AI Queries SCRB Database", step3_desc: "RAG architecture retrieves verified crime records instantly",
+    step4_title: "Insights Generated", step4_desc: "Visualizations, patterns, and predictions surface automatically",
+    step5_title: "Export & Act", step5_desc: "Download reports or trigger response workflows immediately",
+    tech_eyebrow: "Technology", tech_title: "Built On Cutting-Edge AI",
+    tech_sub: "Enterprise-grade architecture designed for security, scalability, and speed.",
+    test_eyebrow: "Field Voices", test_title: "What Officers Say",
+    test_sub: "Designed with frontline investigators at every stage of development.",
+    test1_quote: '"What used to take our team hours of manual cross-referencing now surfaces in seconds. O.R.C.A has fundamentally changed how we investigate."',
+    test1_name: "Inspector R. Subramaniam", test1_role: "Bengaluru North Division, CID",
+    test2_quote: '"The ability to query in the Kannada language is a boon. The Kannada support makes this accessible to every officer on the ground."',
+    test2_name: "Sub-Inspector Lakshmi Devi", test2_role: "Mysuru District, Women's Safety Wing",
+    test3_quote: '"The hotspot predictions helped us redeploy patrol units three days before a predicted surge. That\'s proactive policing powered by real intelligence."',
+    test3_name: "DCP Arvind Kulkarni", test3_role: "Mangaluru Commissionerate",
+    cta_title: "Ready to Transform Crime Intelligence?",
+    cta_sub: "Join O.R.C.A and bring the power of conversational AI to Karnataka's law enforcement ecosystem.",
+    cta_btn: "Get Started →", cta_btn2: "Explore Features",
+    footer_platform: "Platform", footer_features: "Features", footer_how: "How It Works",
+    footer_tech: "Technology", footer_stats: "Statistics", footer_legal: "Legal",
+    footer_privacy: "Privacy Policy", footer_terms: "Terms of Use",
+    footer_access: "Accessibility", footer_rti: "RTI",
+    footer_contact_title: "Contact", footer_support: "Technical Support",
+    footer_report: "Report Issue",
+    footer_powered: "Built for Public Safety · Powered by Artificial Intelligence",
+    search_placeholder: "What can I help you investigate?",
+    search_btn: "Proceed to chatbot",
+    search_hint: "Press Enter to continue.",
+    chip1: "Burglary clusters this quarter",
+    chip2: "Map a suspect's associates",
+    chip3: "Cyber fraud victims by district",
+    copyright: "© 2026 Government of Karnataka · Karnataka State Police · SCRB · O.R.C.A",
+    phrases: [
+      'Crime Pattern Discovery...',
+      'Criminal Network Analysis...',
+      'Predictive Hotspot Detection...',
+      'Behavioral Profiling...',
+      'Socio-demographic Insights...',
+      'Real-time Intelligence...'
+    ]
+  },
+  kn: {
+    nav_brand: "ಒ.ಸಿ.ಆರ್.ಎ",
+    nav_sub: "ORGANIZED CRIME ANALYSIS AUTHORITY",
+    nav_home: "ಮನೆ", nav_about: "ಬಗ್ಗೆ", nav_features: "ವೈಶಿಷ್ಟ್ಯಗಳು",
+    nav_stats: "ಅಂಕಿಅಂಶ", nav_contact: "ಪ್ರಶಂಸೆಗಳು",
+    nav_cta: "ಪ್ರಾರಂಭಿಸಿ →",
+    hero_badge: "KSP × SCRB × ORCA",
+    hero_subtitle: "ಸಂಘಟಿತ ಅಪರಾಧ ವಿಶ್ಲೇಷಣಾ ಪ್ರಾಧಿಕಾರ",
+    hero_desc: "ತನಿಖಾಧಿಕಾರಿಗಳು ನೈಸರ್ಗಿಕ ಭಾಷೆ ಬಳಸಿ ಅಪರಾಧ ಮಾಹಿತಿ ಪ್ರಶ್ನಿಸಲು ಅನುಮತಿಸುವ ಬುದ್ಧಿವಂತ AI ವೇದಿಕೆ — ಕರ್ನಾಟಕದ 1100+ ಪೊಲೀಸ್ ಠಾಣೆಗಳಲ್ಲಿ ಮಾದರಿಗಳನ್ನು ಬಹಿರಂಗಪಡಿಸುತ್ತದೆ.",
+    hero_cta: "ಪ್ರಾರಂಭಿಸಿ →",
+    hero_secondary: "ಹೇಗೆ ಕಾರ್ಯನಿರ್ವಹಿಸುತ್ತದೆ ↓",
+    scroll_hint: "ಮುಂದೆ ಸ್ಕ್ರಾಲ್ ಮಾಡಿ",
+    stat1: "ಪೊಲೀಸ್ ಠಾಣೆಗಳು ಸಂಪರ್ಕಿತ", stat2: "ಅಪರಾಧ ದಾಖಲೆಗಳು",
+    stat3: "ಪ್ರಶ್ನೆ ನಿಖರತೆ", stat4: "ಸರಾಸರಿ ಪ್ರತಿಕ್ರಿಯೆ ಸಮಯ",
+    stat5: "ಭಾಷೆಗಳು ಬೆಂಬಲಿತ", stat6: "ಸುರಕ್ಷಿತ ಮತ್ತು ಎನ್‌ಕ್ರಿಪ್ಟ್",
+    prob_eyebrow: "ಅವಲೋಕನ", prob_title: "ಏಕೆ O.R.C.A?",
+    prob_label: "ಸಮಸ್ಯೆ ಹೇಳಿಕೆ",
+    prob_text: "ರಾಜ್ಯ ಅಪರಾಧ ದಾಖಲೆ ಬ್ಯೂರೋ (SCRB) ಕರ್ನಾಟಕದ 1100+ ಪೊಲೀಸ್ ಠಾಣೆಗಳಿಂದ ದೊಡ್ಡ ಅಪರಾಧ ಮಾಹಿತಿ ಭಂಡಾರವನ್ನು ನಿರ್ವಹಿಸುತ್ತದೆ. ಪ್ರಸ್ತುತ ವ್ಯವಸ್ಥೆಗಳು ಸ್ಥಿರ ಡ್ಯಾಶ್‌ಬೋರ್ಡ್‌ಗಳು ಮತ್ತು ಕೈಯಾರೆ ಪ್ರಶ್ನೆಗಳನ್ನು ಅವಲಂಬಿಸುತ್ತವೆ, ಇದು ಆಳವಾದ ವಿಶ್ಲೇಷಣೆಯನ್ನು ಮಿತಿಗೊಳಿಸುತ್ತದೆ.",
+    pill1: "ಅಪರಾಧ ಮಾದರಿ ಶೋಧನೆ", pill2: "ಅಪರಾಧಿ ನೆಟ್‌ವರ್ಕ್ ವಿಶ್ಲೇಷಣೆ",
+    pill3: "ಸಾಮಾಜಿಕ-ಜನಸಂಖ್ಯಾ ಒಳನೋಟಗಳು", pill4: "ನಡವಳಿಕೆ ಪ್ರೊಫೈಲಿಂಗ್",
+    pill5: "ಸಕ್ರಿಯ ಅಪರಾಧ ತಡೆ ಗುಪ್ತಚರ",
+    feat_eyebrow: "ವೇದಿಕೆ ಸಾಮರ್ಥ್ಯಗಳು", feat_title: "ಪ್ರಮುಖ ವೈಶಿಷ್ಟ್ಯಗಳು",
+    feat_sub: "ತನಿಖಾಧಿಕಾರಿಗಳು, ಕ್ಷೇತ್ರ ಅಧಿಕಾರಿಗಳು ಮತ್ತು ಅಪರಾಧ ವಿಶ್ಲೇಷಕರಿಗಾಗಿ ನಿರ್ಮಿಸಲಾಗಿದೆ.",
+    f1_title: "ನೈಸರ್ಗಿಕ ಭಾಷೆ ಚಾಟ್‌ಬಾಟ್", f1_desc: "ಯಾವುದೇ ತಾಂತ್ರಿಕ ಜ್ಞಾನ ಇಲ್ಲದೆ ಕನ್ನಡ, English ಅಥವಾ हिन्दी ನಲ್ಲಿ ಪ್ರಶ್ನಿಸಿ.",
+    f2_title: "ಧ್ವನಿ ಸಕ್ರಿಯ ಸಂವಾದ", f2_desc: "ಕ್ಷೇತ್ರ ಅಧಿಕಾರಿಗಳಿಗೆ ಕೈಮುಕ್ತ ಧ್ವನಿ ಆಜ್ಞೆ ಬೆಂಬಲ.",
+    f3_title: "ಸಂದರ್ಭ-ಅರಿವಿನ ಸಂಭಾಷಣೆಗಳು", f3_desc: "AI ಸೆಷನ್ ಸಂದರ್ಭವನ್ನು ಉಳಿಸಿಕೊಳ್ಳುತ್ತದೆ ಮತ್ತು ತನಿಖೆ ಹರಿವಿನ ಆಧಾರದ ಮೇಲೆ ವಿಶ್ಲೇಷಣೆಯನ್ನು ಪರಿಷ್ಕರಿಸುತ್ತದೆ.",
+    f4_title: "PDF ರಫ್ತು ಮತ್ತು ವರದಿಗಳು", f4_desc: "ನ್ಯಾಯಾಲಯ-ಸಿದ್ಧ PDF ವರದಿಗಳಾಗಿ ಸಂಭಾಷಣೆ ಇತಿಹಾಸ ಡೌನ್‌ಲೋಡ್ ಮಾಡಿ.",
+    f5_title: "ಅಪರಾಧಿ ನೆಟ್‌ವರ್ಕ್ ದೃಶ್ಯೀಕರಣ", f5_desc: "ಅಪರಾಧಿಗಳ ಮತ್ತು ಘಟನೆಗಳ ನಡುವಿನ ಸಂಬಂಧಗಳನ್ನು ತೋರಿಸುವ ಇಂಟರ್ಯಾಕ್ಟಿವ್ ಗ್ರಾಫ್.",
+    f6_title: "ಅಪರಾಧ ಹಾಟ್‌ಸ್ಪಾಟ್ ಪತ್ತೆ", f6_desc: "ಕರ್ನಾಟಕ ಜಿಲ್ಲೆಗಳಾದ್ಯಂತ ಉದಯೋನ್ಮುಖ ಅಪರಾಧ ಕ್ಲಸ್ಟರ್‌ಗಳನ್ನು ಗುರುತಿಸುವ ರಿಯಲ್-ಟೈಮ್ ಭೌಗೋಳಿಕ ನಕ್ಷೆಗಳು.",
+    f7_title: "ಮುನ್ಸೂಚನಾ ವಿಶ್ಲೇಷಣೆ", f7_desc: "ML ಮಾದರಿಗಳು ಅಪರಾಧ ಉಲ್ಬಣವನ್ನು ಮೊದಲೇ ಎಚ್ಚರಿಸಿ ಸಕ್ರಿಯ ಕ್ರಮ ತೆಗೆದುಕೊಳ್ಳಲು ಸಹಾಯ ಮಾಡುತ್ತದೆ.",
+    f8_title: "ವಿವರಿಸಬಹುದಾದ AI ಮತ್ತು ಆಡಿಟ್ ಟ್ರೇಲ್‌ಗಳು", f8_desc: "ಪ್ರತಿ AI ಒಳನೋಟವು ಸ್ಪಷ್ಟ ವಿವರಣೆ ಮತ್ತು ಸಂಪೂರ್ಣ ಆಡಿಟ್ ಟ್ರೇಲ್‌ನೊಂದಿಗೆ ಬರುತ್ತದೆ.",
+    f9_title: "ಬಯೋಮೆಟ್ರಿಕ್ ಸುರಕ್ಷತೆ ಮತ್ತು ಪ್ರವೇಶ ನಿಯಂತ್ರಣ", f9_desc: "ಸುಳ್ಳು ದಾಖಲಾತಿಗಳನ್ನು ತಡೆಯಲು ಲೈವ್ ಫೇಸ್ ಸ್ಕ್ಯಾನ್ ಮತ್ತು ಕಣ್ಣು ಮಿಟುಕಿಸುವ ಪರಿಶೀಲನೆ, ಜೊತೆಗೆ ಅಧಿಕಾರಿಗಳಿಗೆ ಹಂತಹಂತದ ಪಾತ್ರ-ಆಧಾರಿತ ಪ್ರವೇಶ ನಿಯಂತ್ರಣ.",
+    f10_title: "ವಿಪಿಎನ್ ಲಾಕ್‌ಡೌನ್ ಮತ್ತು ಟನೆಲ್ ಟೆಲಿಮೆಟ್ರಿ", f10_desc: "ಸ್ವಯಂಚಾಲಿತ ವಿಪಿಎನ್ ಸಂಪರ್ಕ ಕಡಿತ ಪತ್ತೆ, ಕಡ್ಡಾಯ ಸೆಷನ್ ಲಾಕ್‌ಡೌನ್, ಕೌಂಟ್‌ಡೌನ್ ಎಚ್ಚರಿಕೆ ಮತ್ತು ತ್ವರಿತ ಆಡಿಟ್ ಲಾಗಿಂಗ್.",
+    f11_title: "ಕರ್ತವ್ಯದ ಅವಧಿ ಮತ್ತು ಸಮಯದ ಟೆಲಿಮೆಟ್ರಿ", f11_desc: "ಸಕ್ರಿಯ ಪ್ರವೇಶ ಸಮಯ, ಮಾಸಿಕ ಕರ್ತವ್ಯ ಗಂಟೆಗಳು, ಶಿಫ್ಟ್ ಸರಾಸರಿಗಳು ಮತ್ತು ಎನ್‌ಕ್ರಿಪ್ಟ್ ಮಾಡಿದ ಸೆಷನ್ ಲೆಡ್ಜರ್‌ಗಳ ರಿಯಲ್-ಟೈಮ್ ಟ್ರ್ಯಾಕಿಂಗ್.",
+    f12_title: "ಡೈನಾಮಿಕ್ RBAC ಮತ್ತು ಆಡಿಟ್ ಲೆಡ್ಜರ್", f12_desc: "ಸಂಪೂರ್ಣ ಪಾತ್ರ-ಆಧಾರಿತ ಪ್ರವೇಶ ನಿಯಂತ್ರಣ ಮತ್ತು ಎಲ್ಲಾ ಅಧಿಕಾರಿಗಳ ಸ್ಥಿತಿ ಬದಲಾವಣೆಗಳಿಗಾಗಿ ಫೈರ್‌ಸ್ಟೋರ್ ಆಡಿಟ್ ಲಾಗ್ ಸಿಂಕ್ರೊನೈಸೇಶನ್.",
+    how_eyebrow: "ಕಾರ್ಯಪ್ರವಾಹ", how_title: "ಹೇಗೆ ಕಾರ್ಯನಿರ್ವಹಿಸುತ್ತದೆ", how_sub: "30 ಸೆಕೆಂಡ್‌ಗಳಲ್ಲಿ ಸುರಕ್ಷಿತ ಲಾಗಿನ್‌ನಿಂದ ಕ್ರಿಯಾಯೋಗ್ಯ ಗುಪ್ತಚರಕ್ಕೆ.",
+    step1_title: "ಸುರಕ್ಷಿತ ಲಾಗಿನ್ ಮತ್ತು ವಿಪಿಎನ್ ಪರಿಶೀಲನೆ", step1_desc: "ಎಲ್ಲಾ ಅಧಿಕಾರಿಗಳಿಗೆ ಪಾತ್ರ-ಆಧಾರಿತ ದೃಢೀಕರಣ ಮತ್ತು ರಿಯಲ್-ಟೈಮ್ ವಿಪಿಎನ್ ಸೆಕ್ಯೂರಿಟಿ",
+    step2_title: "ನೈಸರ್ಗಿಕ ಭಾಷೆಯಲ್ಲಿ ಕೇಳಿ", step2_desc: "ಕನ್ನಡ, English ಅಥವಾ Hindi ನಲ್ಲಿ ಟೈಪ್ ಅಥವಾ ಮಾತನಾಡಿ",
+    step3_title: "AI SCRB ಡೇಟಾಬೇಸ್ ಪ್ರಶ್ನಿಸುತ್ತದೆ", step3_desc: "RAG ಆರ್ಕಿಟೆಕ್ಚರ್ ತಕ್ಷಣ ದಾಖಲೆಗಳನ್ನು ಹಿಂಪಡೆಯುತ್ತದೆ",
+    step4_title: "ಒಳನೋಟಗಳು ಉತ್ಪತ್ತಿ", step4_desc: "ದೃಶ್ಯೀಕರಣ ಮತ್ತು ಮುನ್ಸೂಚನೆಗಳು ಸ್ವಯಂಚಾಲಿತವಾಗಿ ಕಾಣಿಸಿಕೊಳ್ಳುತ್ತವೆ",
+    step5_title: "ರಫ್ತು ಮತ್ತು ಕ್ರಮ", step5_desc: "ವರದಿಗಳನ್ನು ಡೌನ್‌ಲೋಡ್ ಮಾಡಿ ಅಥವಾ ತಕ್ಷಣ ಕ್ರಮ ತೆಗೆದುಕೊಳ್ಳಿ",
+    tech_eyebrow: "ತಂತ್ರಜ್ಞಾನ", tech_title: "ಅತ್ಯಾಧುನಿಕ AI ಮೇಲೆ ನಿರ್ಮಿಸಲಾಗಿದೆ",
+    tech_sub: "ಭದ್ರತೆ, ಮಾಪನಯೋಗ್ಯತೆ ಮತ್ತು ವೇಗಕ್ಕಾಗಿ ವಿನ್ಯಾಸಗೊಳಿಸಲಾದ ಎಂಟರ್‌ಪ್ರೈಸ್-ಗ್ರೇಡ್ ಆರ್ಕಿಟೆಕ್ಚರ್.",
+    test_eyebrow: "ಕ್ಷೇತ್ರ ಧ್ವನಿಗಳು", test_title: "ಅಧಿಕಾರಿಗಳು ಏನು ಹೇಳುತ್ತಾರೆ",
+    test_sub: "ಅಭಿವೃದ್ಧಿಯ ಪ್ರತಿ ಹಂತದಲ್ಲೂ ಮುಂಚೂಣಿ ತನಿಖಾಧಿಕಾರಿಗಳೊಂದಿಗೆ ವಿನ್ಯಾಸಗೊಳಿಸಲಾಗಿದೆ.",
+    test1_quote: '"ಗಂಟೆಗಳ ಕೈಯಾರೆ ಕ್ರಾಸ್-ರೆಫರೆನ್ಸಿಂಗ್ ಈಗ ಸೆಕೆಂಡ್‌ಗಳಲ್ಲಿ ಲಭ್ಯವಾಗುತ್ತದೆ. O.R.C.A ನಮ್ಮ ತನಿಖೆ ವಿಧಾನವನ್ನೇ ಬದಲಿಸಿದೆ."',
+    test1_name: "ಇನ್ಸ್‌ಪೆಕ್ಟರ್ ಆರ್. ಸುಬ್ರಮಣಿಯಂ", test1_role: "ಬೆಂಗಳೂರು ಉತ್ತರ ವಿಭಾಗ, CID",
+    test2_quote: '"ಕನ್ನಡ ಭಾಷೆಯಲ್ಲಿ ಪ್ರಶ್ನಿಸುವ ಸಾಮರ್ಥ್ಯವು ಕ್ಷೇತ್ರ ಅಧಿಕಾರಿಗಳಿಗೆ ವರದಾನ. ಕನ್ನಡ ಬೆಂಬಲವು ಇದನ್ನು ಕ್ಷೇತ್ರದ ಪ್ರತಿ ಅಧಿಕಾರಿಗೂ ಪ್ರವೇಶಯೋಗ್ಯಗೊಳಿಸುತ್ತದೆ."',
+    test2_name: "ಸಬ್-ಇನ್ಸ್‌ಪೆಕ್ಟರ್ ಲಕ್ಷ್ಮೀ ದೇವಿ", test2_role: "ಮೈಸೂರು ಜಿಲ್ಲೆ, ಮಹಿಳಾ ಸುರಕ್ಷತಾ ವಿಭಾಗ",
+    test3_quote: '"ಹಾಟ್‌ಸ್ಪಾಟ್ ಮುನ್ಸೂಚನೆಗಳು ಊಹಿಸಿದ ಉಲ್ಬಣಕ್ಕೆ ಮೂರು ದಿನ ಮೊದಲೇ ಗಸ್ತು ತಂಡಗಳನ್ನು ನಿಯೋಜಿಸಲು ಸಹಾಯ ಮಾಡಿದೆ."',
+    test3_name: "DCP ಅರವಿಂದ್ ಕುಲಕರ್ಣಿ", test3_role: "ಮಂಗಳೂರು ಕಮಿಷನರೇಟ್",
+    cta_title: "ಅಪರಾಧ ಗುಪ್ತಚರವನ್ನು ಪರಿವರ್ತಿಸಲು ಸಿದ್ಧರಾಗಿದ್ದೀರಾ?",
+    cta_sub: "O.R.C.A ಗೆ ಸೇರಿ ಮತ್ತು ಕರ್ನಾಟಕದ ಕಾನೂನು ಜಾರಿ ಪರಿಸರ ವ್ಯವಸ್ಥೆಗೆ AI ಶಕ್ತಿ ತನ್ನಿ.",
+    cta_btn: "ಪ್ರಾರಂಭಿಸಿ →", cta_btn2: "ವೈಶಿಷ್ಟ್ಯಗಳನ್ನು ಅನ್ವೇಷಿಸಿ",
+    footer_platform: "ವೇದಿಕೆ", footer_features: "ವೈಶಿಷ್ಟ್ಯಗಳು", footer_how: "ಹೇಗೆ ಕಾರ್ಯನಿರ್ವಹಿಸುತ್ತದೆ",
+    footer_tech: "ತಂತ್ರಜ್ಞಾನ", footer_stats: "ಅಂಕಿಅಂಶ", footer_legal: "ಕಾನೂನು",
+    footer_privacy: "ಗೌಪ್ಯತಾ ನೀತಿ", footer_terms: "ಬಳಕೆಯ ನಿಯಮಗಳು",
+    footer_access: "ಪ್ರವೇಶಯೋಗ್ಯತೆ", footer_rti: "RTI",
+    footer_contact_title: "ಸಂಪರ್ಕ", footer_support: "ತಾಂತ್ರಿಕ ಬೆಂಬಲ",
+    footer_report: "ಸಮಸ್ಯೆ ವರದಿ ಮಾಡಿ",
+    footer_powered: "ಸಾರ್ವಜನಿಕ ಸುರಕ್ಷತೆಗಾಗಿ ನಿರ್ಮಿಸಲಾಗಿದೆ · ಕೃತಕ ಬುದ್ಧಿಮತ್ತೆಯಿಂದ ಕಲ್ಪಿತ",
+    search_placeholder: "ನಾನು ನಿಮಗೆ ಏನು ತನಿಖೆ ಮಾಡಲು ಸಹಾಯ ಮಾಡಲಿ?",
+    search_btn: "ಚಾಟ್‌ಬಾಟ್‌ಗೆ ಮುಂದುವರಿಯಿರಿ",
+    search_hint: "ಮುಂದುವರಿಯಲು Enter ಒತ್ತಿರಿ.",
+    chip1: "ಈ ತ್ರೈಮಾಸಿಕದ ಕಳ್ಳತನ ಕ್ಲಸ್ಟರ್‌ಗಳು",
+    chip2: "ಸಂದೇಹಿತರ ಸಹವರ್ತಿಗಳ ನಕ್ಷೆ",
+    chip3: "ಜಿಲ್ಲಾವಾರು ಸೈಬರ್ ವಂಚನೆ ಸಂತ್ರಸ್ತರು",
+    copyright: "© 2026 ಕರ್ನಾಟಕ ಸರ್ಕಾರ · ಕರ್ನಾಟಕ ರಾಜ್ಯ ಪೊಲೀಸ್ · SCRB · ಒ.ಸಿ.ಆರ್.ಎ",
+    phrases: [
+      'ಅಪರಾಧ ಮಾದರಿ ಶೋಧನೆ...',
+      'ಅಪರಾಧಿ ಜಾಲದ ವಿಶ್ಲೇಷಣೆ...',
+      'ಮುನ್ಸೂಚಕ ಹಾಟ್‌ಸ್ಪಾಟ್ ಪತ್ತೆ...',
+      'ವರ್ತನೆಯ ಪ್ರೊಫೈಲಿಂಗ್...',
+      'ಸಾಮಾಜಿಕ-ಜನಸಂಖ್ಯಾ ಒಳನೋಟಗಳು...',
+      'ರಿಯಲ್-ಟೈಮ್ ಇಂಟೆಲಿಜೆನ್ಸ್...'
+    ]
+  },
+  hi: {
+    nav_brand: "ओ.सी.आर.ए",
+    nav_sub: "ORGANIZED CRIME ANALYSIS AUTHORITY",
+    nav_home: "होम", nav_about: "परिचय", nav_features: "विशेषताएं",
+    nav_stats: "आंकड़े", nav_contact: "प्रशंसापत्र",
+    nav_cta: "शुरू करें →",
+    hero_badge: "KSP × SCRB × ORCA",
+    hero_subtitle: "संगठित अपराध विश्लेषण प्राधिकरण",
+    hero_desc: "एक बुद्धिमान संवादी AI प्लेटफॉर्म जो जांचकर्ताओं को प्राकृतिक भाषा का उपयोग करके अपराध डेटा को क्वेरी करने में सक्षम बनाता है — कर्नाटक के 1100+ पुलिस स्टेशनों में पैटर्न और अंतर्दृष्टि को उजागर करता है।",
+    hero_cta: "शुरू करें →",
+    hero_secondary: "यह कैसे काम करता है ↓",
+    scroll_hint: "अन्वेषण के लिए स्क्रॉल करें",
+    stat1: "पुलिस स्टेशन जुड़े", stat2: "अपराध रिकॉर्ड अनुक्रमित",
+    stat3: "क्वेरी सटीकता", stat4: "औसत प्रतिक्रिया समय",
+    stat5: "भाषाएं समर्थित", stat6: "सुरक्षित और एन्क्रिप्टेड",
+    prob_eyebrow: "अवलोकन", prob_title: "O.R.C.A क्यों?",
+    prob_label: "समस्या विवरण",
+    prob_text: "राज्य अपराध रिकॉर्ड ब्यूरो (SCRB) कर्नाटक के 1100+ पुलिस स्टेशनों से अपराध-संबंधित डेटा का एक बड़ा भंडार प्रबंधित करता है। वर्तमान सिस्टम स्थिर डैशबोर्ड और मैन्युअल क्वेरी पर निर्भर हैं, जो गहरे विश्लेषण को सीमित करता है।",
+    pill1: "अपराध पैटर्न खोज", pill2: "आपराधिक नेटवर्क विश्लेषण",
+    pill3: "सामाजिक-जनसांख्यिकीय अंतर्दृष्टि", pill4: "व्यवहार प्रोफाइलिंग",
+    pill5: "सक्रिय अपराध रोकथाम खुफिया",
+    feat_eyebrow: "प्लेटफॉर्म क्षमताएं", feat_title: "प्रमुख विशेषताएं",
+    feat_sub: "जांचकर्ताओं, क्षेत्र अधिकारियों और अपराध विश्लेषकों के लिए निर्मित।",
+    f1_title: "प्राकृतिक भाषा चैटबॉट", f1_desc: "बिना किसी तकनीकी ज्ञान के English, ಕನ್ನಡ या हिन्दी में अपराध डेटाबेस क्वेरी करें।",
+    f2_title: "वॉइस-सक्षम इंटरैक्शन", f2_desc: "क्षेत्र अधिकारियों के लिए हैंड्स-फ्री वॉइस कमांड समर्थन।",
+    f3_title: "संदर्भ-जागरूक वार्तालाप", f3_desc: "AI सत्र संदर्भ बनाए रखता है और जांच प्रवाह के आधार पर विश्लेषण को परिष्कृत करता है।",
+    f4_title: "PDF निर्यात और रिपोर्ट", f4_desc: "न्यायालय-तैयार PDF रिपोर्ट के रूप में पूर्ण वार्तालाप इतिहास डाउनलोड करें।",
+    f5_title: "आपराधिक नेटवर्क दृश्यीकरण", f5_desc: "इंटरैक्टिव ग्राफ विज़ुअलाइज़ेशन संदिग्धों, स्थानों और घटनाओं के बीच छिपे संबंधों को उजागर करता है।",
+    f6_title: "अपराध हॉटस्पॉट डिटेक्शन", f6_desc: "रियल-टाइम भौगोलिक हीटमैप कर्नाटक जिलों में उभरते अपराध क्लस्टर की पहचान करते हैं।",
+    f7_title: "पूर्वानुमानित विश्लेषण", f7_desc: "ML मॉडल अपराध वृद्धि की प्रारंभिक चेतावनी देते हैं।",
+    f8_title: "व्याख्यात्मक AI और ऑडिट ट्रेल", f8_desc: "प्रत्येक AI अंतर्दृष्टि स्पष्ट व्याख्या और पूर्ण ऑडिट ट्रेल के साथ आती है।",
+    f9_title: "बायोमेट्रिक सुरक्षा और भूमिका पहुंच", f9_desc: "जाली पंजीकरण रोकने के लिए लाइव फेस स्कैन और पलक झपकने का सत्यापन, साथ ही अधिकारियों के लिए भूमिका-आधारित पहुंच नियंत्रण।",
+    f10_title: "VPN लॉकडाउन और टनल टेलीमेट्री", f10_desc: "स्वचालित VPN डिस्कनेक्ट पहचान, अनिवार्य सत्र लॉकडाउन, उलटी गिनती चेतावनी और त्वरित सुरक्षा ऑडिट लॉगिंग।",
+    f11_title: "ड्यूटी सत्र और समय टेलीमेट्री", f11_desc: "सक्रिय प्रवेश समय, मासिक ड्यूटी घंटे, शिफ्ट औसत और एन्क्रिप्टेड सत्र बहीखाता की वास्तविक समय ट्रैकिंग।",
+    f12_title: "डायनामिक RBAC और ऑडिट लेजर", f12_desc: "सटीक भूमिका-आधारित पहुंच नियंत्रण और सभी अधिकारी स्थिति परिवर्तनों के लिए रीयल-टाइम फायरस्टोर ऑडिट लॉग सिंक।",
+    how_eyebrow: "कार्यप्रवाह", how_title: "यह कैसे काम करता है", how_sub: "सुरक्षित लॉगिन से 30 सेकंड में कार्रवाई योग्य खुफिया तक।",
+    step1_title: "सुरक्षित लॉगिन और VPN सत्यापन", step1_desc: "सभी अधिकारियों के लिए भूमिका-आधारित प्रमाणीकरण और वास्तविक समय VPN सुरक्षा",
+    step2_title: "प्राकृतिक भाषा में पूछें", step2_desc: "हिन्दी, English या ಕನ್ನಡ में टाइप या बोलें",
+    step3_title: "AI SCRB डेटाबेस क्वेरी करता है", step3_desc: "RAG आर्किटेक्चर तुरंत सत्यापित रिकॉर्ड पुनः प्राप्त करता है",
+    step4_title: "अंतर्दृष्टि उत्पन्न", step4_desc: "विज़ुअलाइज़ेशन और पूर्वानुमान स्वचालित रूप से सामने आते हैं",
+    step5_title: "निर्यात और कार्रवाई", step5_desc: "रिपोर्ट डाउनलोड करें या तुरंत प्रतिक्रिया कार्यप्रवाह ट्रिगर करें",
+    tech_eyebrow: "तकनीक", tech_title: "अत्याधुनिक AI पर निर्मित",
+    tech_sub: "सुरक्षा, स्केलेबिलिटी और गति के लिए डिज़ाइन किया गया एंटरप्राइज़-ग्रेड आर्किटेक्चर।",
+    test_eyebrow: "क्षेत्र आवाजें", test_title: "अधिकारी क्या कहते हैं",
+    test_sub: "विकास के हर चरण में अग्रिम पंक्ति के जांचकर्ताओं के साथ डिज़ाइन किया गया।",
+    test1_quote: '"घंटों की मैन्युअल क्रॉस-रेफरेंसिंग अब सेकंड में सामने आती है। O.R.C.A ने हमारी जांच प्रक्रिया को मौलिक रूप से बदल दिया है।"',
+    test1_name: "इंस्पेक्टर आर. सुब्रमण्यम", test1_role: "बेंगलुरु उत्तर डिवीजन, CID",
+    test2_quote: '"कन्नड़ भाषा में पूछताछ करने की क्षमता एक वरदान है। कन्नड़ समर्थन इसे क्षेत्र के प्रत्येक अधिकारी के लिए सुलभ बनाता है।"',
+    test2_name: "सब-इंस्पेक्टर लक्ष्मी देवी", test2_role: "मैसूर जिला, महिला सुरक्षा विंग",
+    test3_quote: '"हॉटस्पॉट पूर्वानुमानों ने हमें अनुमानित वृद्धि से तीन दिन पहले गश्त दल तैनात करने में मदद की।"',
+    test3_name: "DCP अरविंद कुलकर्णी", test3_role: "मंगलुरु कमिश्नरेट",
+    cta_title: "अपराध खुफिया को बदलने के लिए तैयार हैं?",
+    cta_sub: "O.R.C.A से जुड़ें और कर्नाटक के कानून प्रवर्तन पारिस्थितिकी तंत्र में AI की शक्ति लाएं।",
+    cta_btn: "शुरू करें →", cta_btn2: "विशेषताएं देखें",
+    footer_platform: "प्लेटफॉर्म", footer_features: "विशेषताएं", footer_how: "यह कैसे काम करता है",
+    footer_tech: "तकनीक", footer_stats: "आंकड़े", footer_legal: "कानूनी",
+    footer_privacy: "गोपनीयता नीति", footer_terms: "उपयोग की शर्तें",
+    footer_access: "अभिगम्यता", footer_rti: "RTI",
+    footer_contact_title: "संपर्क", footer_support: "तकनीकी सहायता",
+    footer_report: "समस्या रिपोर्ट करें",
+    footer_powered: "सार्वजनिक सुरक्षा के लिए निर्मित · कृत्रिम बुद्धिमत्ता द्वारा संचालित",
+    search_placeholder: "मैं आपको जांच करने में क्या मदद कर सकता हूँ?",
+    search_btn: "चैटबॉट पर आगे बढ़ें",
+    search_hint: "जारी रखने के लिए Enter दबाएं।",
+    chip1: "इस तिमाही के चोरी क्लस्टर",
+    chip2: "संदिग्ध के सहयोगियों का नक्शा",
+    chip3: "जिलावार साइबर धोखाधड़ी पीड़ित",
+    copyright: "© 2026 कर्नाटक सरकार · कर्नाटक राज्य पुलिस · SCRB · ओ.आर.सी.ए",
+    phrases: [
+      'अपराध पैटर्न की खोज...',
+      'आपराधिक नेटवर्क विश्लेषण...',
+      'पूर्वानुमानित हॉटस्पॉट पहचान...',
+      'व्यवहार प्रोफाइलिंग...',
+      'सामाजिक-जनसांख्यिकीय अंतर्दृष्टि...',
+      'वास्तविक समय की खुफिया...'
+    ]
+  }
+};
+
+let currentLang = localStorage.getItem('ocra-lang') || 'en';
+
+function setLang(lang) {
+  currentLang = lang;
+  localStorage.setItem('ocra-lang', lang);
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    const key = el.getAttribute('data-i18n');
+    if (translations[lang][key]) el.textContent = translations[lang][key];
+  });
+  document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+    const key = el.getAttribute('data-i18n-placeholder');
+    if (translations[lang][key]) el.setAttribute('placeholder', translations[lang][key]);
+  });
+  document.querySelectorAll('.lang-btn').forEach(btn => btn.classList.remove('active'));
+  const btns = document.querySelectorAll('.lang-btn');
+  const map = { en: 0, kn: 1, hi: 2 };
+  if (btns[map[lang]]) btns[map[lang]].classList.add('active');
+  if (btns[map[lang] + 3]) btns[map[lang] + 3].classList.add('active');
+  document.documentElement.lang = lang;
+}
+
+// ===== THEME =====
+function toggleTheme() {
+  const html = document.documentElement;
+  const isDark = html.getAttribute('data-theme') === 'dark';
+  html.setAttribute('data-theme', isDark ? 'light' : 'dark');
+  document.getElementById('themeToggle').textContent = isDark ? '🌙' : '☀️';
+  localStorage.setItem('ocra-theme', isDark ? 'light' : 'dark');
+}
+(function initTheme() {
+  const saved = localStorage.getItem('ocra-theme') || 'light';
+  document.documentElement.setAttribute('data-theme', saved);
+  document.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('themeToggle').textContent = saved === 'dark' ? '☀️' : '🌙';
+  });
+})();
+
+// ===== MOBILE NAV =====
+function toggleMobileNav() {
+  document.getElementById('mobileNav').classList.toggle('open');
+}
+
+// ===== NAVBAR SCROLL =====
+window.addEventListener('scroll', () => {
+  const nav = document.getElementById('navbar');
+  if (window.scrollY > 20) nav.classList.add('scrolled');
+  else nav.classList.remove('scrolled');
+});
+
+// ===== TYPING EFFECT =====
+const phrases = [
+  'Crime Pattern Discovery...',
+  'Criminal Network Analysis...',
+  'Predictive Hotspot Detection...',
+  'Behavioral Profiling...',
+  'Socio-demographic Insights...',
+  'Real-time Intelligence...'
+];
+let phraseIdx = 0, charIdx = 0, deleting = false;
+function type() {
+  const el = document.getElementById('typingText');
+  if (!el) return;
+  const langPhrases = (translations[currentLang] && translations[currentLang].phrases) || phrases;
+  const phrase = langPhrases[phraseIdx % langPhrases.length];
+  if (!deleting) {
+    el.textContent = phrase.slice(0, charIdx + 1);
+    charIdx++;
+    if (charIdx === phrase.length) { deleting = true; setTimeout(type, 1800); return; }
+    setTimeout(type, 55);
+  } else {
+    el.textContent = phrase.slice(0, charIdx - 1);
+    charIdx--;
+    if (charIdx === 0) {
+      deleting = false;
+      phraseIdx = (phraseIdx + 1) % langPhrases.length;
+      setTimeout(type, 400);
+      return;
+    }
+    setTimeout(type, 28);
+  }
+}
+document.addEventListener('DOMContentLoaded', () => { setTimeout(type, 800); });
+
+// ===== SCROLL REVEAL =====
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); } });
+}, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+});
+
+// ===== COUNTER ANIMATION =====
+function animateCounter(el) {
+  const target = parseInt(el.getAttribute('data-count'));
+  const display = el.getAttribute('data-display');
+  const prefix = el.getAttribute('data-prefix') || '';
+  const suffix = el.getAttribute('data-suffix') || '';
+  if (display) { el.innerHTML = display; return; }
+  const duration = 1800;
+  const start = performance.now();
+  function update(now) {
+    const progress = Math.min((now - start) / duration, 1);
+    const eased = 1 - Math.pow(1 - progress, 3);
+    const val = Math.floor(eased * target);
+    el.innerHTML = prefix + val.toLocaleString() + suffix;
+    if (progress < 1) requestAnimationFrame(update);
+    else el.innerHTML = prefix + target.toLocaleString() + suffix;
+  }
+  requestAnimationFrame(update);
+}
+const counterObserver = new IntersectionObserver((entries) => {
+  entries.forEach(e => {
+    if (e.isIntersecting && !e.target.classList.contains('counted')) {
+      e.target.classList.add('counted');
+      animateCounter(e.target);
+    }
+  });
+}, { threshold: 0.5 });
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('.stat-number').forEach(el => counterObserver.observe(el));
+  setLang(currentLang);
+});
+
+// ===== SEARCH INTERACTION =====
+function handleSearchSubmit() {
+  const input = document.getElementById('heroSearchInput');
+  const query = input ? input.value.trim() : '';
+  const queryToSave = query || "Burglary clusters this quarter";
+  
+  sessionStorage.setItem('orca_pending_query', queryToSave);
+  localStorage.setItem('orca_pending_query', queryToSave);
+  
+  window.location.href = '/login';
+}
+
+function handleChipClick(chipText) {
+  const input = document.getElementById('heroSearchInput');
+  if (input) {
+    input.value = chipText;
+    input.focus();
+    const len = chipText.length;
+    input.setSelectionRange(len, len);
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const searchInput = document.getElementById('heroSearchInput');
+  const searchBtn = document.getElementById('heroSearchBtn');
+  
+  if (searchInput) {
+    searchInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        handleSearchSubmit();
+      }
+    });
+  }
+  
+  if (searchBtn) {
+    searchBtn.addEventListener('click', () => {
+      handleSearchSubmit();
+    });
+  }
+  
+  document.querySelectorAll('.chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const q = chip.getAttribute('data-query');
+      if (q) handleChipClick(q);
+    });
+  });
+});
+</script>
+</body>
+</html>

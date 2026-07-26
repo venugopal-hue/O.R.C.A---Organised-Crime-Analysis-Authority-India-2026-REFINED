@@ -1,0 +1,7 @@
+{
+  "name": "orca-dashboard",
+  "stack": "node18",
+  "command": "npm start",
+  "build": "npm run build",
+  "build_path": "."
+}
