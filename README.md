@@ -50,7 +50,7 @@ Agency   : Karnataka State Police / SCRB
 | 🔐 **Auth** | Firebase Authentication (JWT Custom Claims) |
 | 🗄️ **Database** | Cloud Firestore |
 | 🛡️ **Admin SDK** | Firebase Admin SDK (server-side API routes) |
-| 🤖 **AI Engine** | GROQ API (llama-3.1-8b-instant) · NVIDIA API (fallback) |
+| 🤖 **AI Engine** | NVIDIA API (meta/llama-3.1-8b-instruct) · GROQ API (fallback) |
 | 🌐 **VPN Detection** | ip-api.com · Header-based Proxy Detection |
 | 📦 **Type Safety** | TypeScript (strict mode) |
 
@@ -60,7 +60,7 @@ Agency   : Karnataka State Police / SCRB
 
 ### 🔍 Investigation Suite
 - **📁 Case Management** — File, track, and manage FIRs and criminal cases
-- **🧠 AI Intelligence Copilot** — GROQ-powered assistant for criminal analysis
+- **🧠 AI Intelligence Copilot** — AI-powered assistant for criminal analysis
 - **🕸️ Criminal Network Graphs** — Relationship mapping of suspects and syndicates
 - **🗺️ Geospatial Crime Heatmaps** — Incident clustering and hotspot identification
 - **📰 Intel News Feed** — Real-time law enforcement intelligence briefings
@@ -78,7 +78,7 @@ Agency   : Karnataka State Police / SCRB
 - **📜 Letterhead Generator** — Auto-registered PDF-style intelligence briefings
 
 ### 🤖 AI & Intelligence
-- **💬 AI Chatbot** — Multilingual (English / Hindi / Kannada) via GROQ / NVIDIA
+- **💬 AI Chatbot** — Multilingual (English / Hindi / Kannada) via NVIDIA / GROQ
 - **📡 Intel Copilot** — Context-aware case analysis and FIR forensic breakdowns
 - **🧪 FastAPI Gateway** — Optional backend AI relay for advanced inference
 
@@ -288,7 +288,7 @@ firebase deploy --only firestore:rules --project orca-india2026
 ### 🤖 AI
 | Endpoint | Method | Description |
 |---|---|---|
-| `/api/chat` | `POST` | GROQ/NVIDIA AI chatbot — multilingual (EN/HI/KN) |
+| `/api/chat` | `POST` | NVIDIA/GROQ AI chatbot — multilingual (EN/HI/KN) |
 
 ### 🛡️ Security
 | Endpoint | Method | Description |
@@ -321,8 +321,8 @@ NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID=your_measurement_id
 FIREBASE_SERVICE_ACCOUNT_KEY={"type":"service_account","project_id":"orca-india2026",...}
 
 # ── AI Keys (SERVER-ONLY) ─────────────────────────────────────────
-GROQ_API_KEY=gsk_your_groq_key
-NVIDIA_API_KEY=nvapi_your_nvidia_key       # Optional — used as fallback
+NVIDIA_API_KEY=nvapi_your_nvidia_key       # Primary AI Engine
+GROQ_API_KEY=gsk_your_groq_key             # Fallback AI Engine
 
 # ── Optional ──────────────────────────────────────────────────────
 NEXT_PUBLIC_FASTAPI_API_URL=http://localhost:8000/api/v1
