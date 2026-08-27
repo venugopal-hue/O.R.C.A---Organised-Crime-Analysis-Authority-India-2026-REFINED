@@ -23,7 +23,6 @@
 - [Environment Variables](#environment-variables)
 - [Local Development](#local-development)
 - [Deployment — Zoho AppSail](#deployment--zoho-appsail)
-- [Database Seeding](#database-seeding)
 - [Scripts Reference](#scripts-reference)
 - [Project Structure](#project-structure)
 - [Security Notes](#security-notes)
@@ -525,77 +524,12 @@ Upload the zip through the AppSail section of the Zoho Catalyst Console. AppSail
 
 ---
 
-## 🌱 Database Seeding
-
-All seeding scripts use `jiti` to import TypeScript source directly from `src/lib/` — no compiled output required.
-
-### Demo Accounts
-
-```bash
-node scripts/create-accounts.cjs
-```
-
-Creates 14 `Employee` rows, 14 `OfficerAccount` rows, and sets Firebase custom claims. UIDs must be provisioned in Firebase Console first.
-
-### FIR Cases (180 cases)
-
-```bash
-# Dry run — preview only
-node scripts/seed-demo-data.cjs
-
-# Insert
-node scripts/seed-demo-data.cjs --run
-
-# Purge existing cases and re-seed
-node scripts/seed-demo-data.cjs --purge
-```
-
-Seeds 180 realistic FIRs across 20 Bengaluru Urban police stations with complainant, victim, accused, IPC/BNS sections, GPS coordinates, and VerificationLedger entries.
-
-### Tasks & Evidence
-
-```bash
-# Dry run — preview only
-node scripts/seed-tasks-evidence.cjs
-
-# Insert
-node scripts/seed-tasks-evidence.cjs --run
-
-# Purge and re-seed
-node scripts/seed-tasks-evidence.cjs --purge
-```
-
-Seeds ~350 tasks with full audit logs and ~200 evidence items with SHA-256 custody chains, all linked to the seeded cases.
-
-### Wipe Accounts
-
-```bash
-# Dry run — lists what would be deleted
-node scripts/wipe-accounts.js
-
-# Actually delete
-node scripts/wipe-accounts.js --confirm
-```
-
-> ⛔ Deletes all `Employee`, `OfficerAccount`, and Firebase Auth users. **Never touches reference tables.** Pre-flight checks verify the 9 operational tables before deleting.
-
----
-
 ## 🛠️ Scripts Reference
 
 | Script | Purpose |
 |---|---|
 | `scripts/start.js` | AppSail server entry point |
 | `scripts/pack-appsail.js` | Bundle standalone output for AppSail upload |
-| `scripts/create-accounts.cjs` | Create 14 officer accounts in Catalyst + Firebase |
-| `scripts/wipe-accounts.js` | Wipe all accounts (dry run by default) |
-| `scripts/seed-demo-data.cjs` | Seed 180 realistic FIRs |
-| `scripts/seed-tasks-evidence.cjs` | Seed tasks + evidence linked to cases |
-| `scripts/_list-firebase-users.cjs` | List all Firebase Auth users with claims |
-| `scripts/_fix-uid-typos.cjs` | Correct UID character-confusion in Catalyst rows |
-| `scripts/_fetch-refs-for-seed.cjs` | Dump reference table data to `_refs.json` |
-| `scripts/_fetch-evidence-refs.cjs` | Dump evidence reference data to `_evidence_refs.json` |
-| `scripts/_check-sections.cjs` | Verify IPC/BNS section codes exist in DB |
 
 ---
 
@@ -604,7 +538,7 @@ node scripts/wipe-accounts.js --confirm
 ```
 .
 ├── public/                                   🖼️  Public assets (logo, geo data)
-├── scripts/                                  🛠️  Maintenance, seed, and utility scripts
+├── scripts/                                  🛠️  Maintenance and utility scripts
 ├── src/
 │   ├── app/
 │   │   ├── api/

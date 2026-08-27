@@ -51,3 +51,8 @@ firebase.json
 firebase-key.json
 *-service-account*.json
 *-firebase-adminsdk*.json
+
+# Internal scripts — not for public repo
+scripts/seed-*.cjs
+scripts/wipe-accounts.js
+scripts/create-accounts.cjs
