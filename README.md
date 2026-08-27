@@ -8,6 +8,7 @@
 
 ## 📌 Table of Contents
 
+- [Demo Access](#demo-access)
 - [Overview](#overview)
 - [Tech Stack](#tech-stack)
 - [Features](#features)
@@ -26,6 +27,32 @@
 - [Scripts Reference](#scripts-reference)
 - [Project Structure](#project-structure)
 - [Security Notes](#security-notes)
+
+---
+
+## 🔓 Demo Access
+
+> **For reviewers, evaluators, and authorised observers only.**
+
+A read-only guest account is available to explore the O.R.C.A dashboard without affecting any live data.
+
+```
+Email     : demo@orca.gov
+Password  : orca_@demo9854
+Role      : orca_demo  (ORCA-LEVEL-IV — READ ONLY)
+```
+
+> 🟢 **What you can do:** Browse all dashboard modules, view cases, evidence, tasks, analytics, maps, and reports.
+
+> 🔴 **What you cannot do:** Create, edit, or delete any record. All write operations (POST / PATCH / DELETE) are blocked at the API layer — not just hidden in the UI.
+
+---
+
+> ⚠️ **WARNING — MONITORED ACCESS**
+>
+> This account is strictly for **authorised viewing only**. Any attempt to misuse, probe, or exploit this access is a violation of the Information Technology Act, 2000 (India).
+>
+> **Your IP address, session activity, and all actions are logged in real time** to the ORCA audit system and are visible to the Internal Security Division (ISD). Misuse will be reported to the appropriate authorities.
 
 ---
 
