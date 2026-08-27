@@ -1,5 +1,13 @@
-import { db } from "./firebase";
-import { doc, setDoc, getDoc } from "firebase/firestore";
+/**
+ * Client-side helper for registering a generated document in the O.R.C.A
+ * verification ledger.
+ *
+ * The ledger now lives in Zoho Catalyst (table `VerifiedDocument`), not
+ * Firestore. This module deliberately holds no database client of its own — it
+ * posts to /api/verification/register, which authenticates the caller and
+ * writes the row server-side. That is what stopped the old endpoint from
+ * accepting forged "VERIFIED" records from anyone who could reach it.
+ */
 
 export interface VerifiedDocumentRecord {
   verificationId: string;
@@ -18,43 +26,21 @@ export interface VerifiedDocumentRecord {
   reportHash?: string;
 }
 
-/**
- * Register a newly generated ORCA report directly into Firestore collection `verified_documents`
- */
-export async function registerReportInFirestore(record: VerifiedDocumentRecord): Promise<void> {
-  if (typeof window !== "undefined") {
-    const res = await fetch("/api/verification/register", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(record)
-    });
-    if (!res.ok) {
-      const errData = await res.json();
-      throw new Error(errData.error || "Failed to register report in Firestore database.");
-    }
-  } else {
-    const { adminDb } = await import("./firebaseAdmin");
-    await adminDb.collection("verified_documents").doc(record.verificationId).set(record, { merge: true });
+/** Register a generated report in the Catalyst verification ledger. */
+export async function registerReportInLedger(record: VerifiedDocumentRecord): Promise<void> {
+  const res = await fetch("/api/verification/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(record),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || "Failed to register the document in the verification ledger.");
   }
 }
 
 /**
- * Lookup an authoritative document record by Verification ID directly from Firestore `verified_documents`
+ * Kept under its previous name so existing callers continue to work.
+ * @deprecated The ledger is Catalyst-backed now; prefer registerReportInLedger.
  */
-export async function getReportFromFirestore(verificationId: string): Promise<VerifiedDocumentRecord | null> {
-  if (typeof window === "undefined") {
-    const { adminDb } = await import("./firebaseAdmin");
-    const docSnap = await adminDb.collection("verified_documents").doc(verificationId).get();
-    if (docSnap.exists) {
-      return docSnap.data() as VerifiedDocumentRecord;
-    }
-    return null;
-  } else {
-    const docRef = doc(db, "verified_documents", verificationId);
-    const snap = await getDoc(docRef);
-    if (snap.exists()) {
-      return snap.data() as VerifiedDocumentRecord;
-    }
-    return null;
-  }
-}
+export const registerReportInFirestore = registerReportInLedger;

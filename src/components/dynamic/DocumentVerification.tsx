@@ -12,7 +12,6 @@ import {
   RefreshCw,
   Search,
   Filter,
-  Trash2,
   Eye,
   Download,
   Copy,
@@ -26,8 +25,18 @@ import {
   X,
   Database
 } from "lucide-react";
-import { db } from "@/lib/firebase";
-import { collection, addDoc, getDocs, query, orderBy, limit, deleteDoc } from "firebase/firestore";
+import { useAuth } from "@/context/AuthContext";
+import { PageHeader, HeaderChip } from "@/components/layout/PageHeader";
+
+/**
+ * Gender is stored two ways by design: numeric on Complainant/Victim, and the
+ * PDF-mandated M/F/T text on Accused. Confirmed with the user: the only valid
+ * values are Male, Female and Transgender.
+ */
+const genderLabel = (g?: string): string =>
+  ({ "1": "Male", "2": "Female", "3": "Transgender", M: "Male", F: "Female", T: "Transgender" } as Record<string, string>)[
+    String(g ?? "").trim().toUpperCase()
+  ] || String(g ?? "").trim();
 
 interface VerificationResult {
   success: boolean;
@@ -35,7 +44,10 @@ interface VerificationResult {
   fallbackDecoderUsed?: boolean;
   errorTitle?: string;
   errorMessage?: string;
-  data?: {
+  data?: VerificationDetail;
+}
+
+export interface VerificationDetail {
     verificationStatus: string;
     caseNumber: string;
     reportReference: string;
@@ -47,7 +59,23 @@ interface VerificationResult {
     classification: string;
     issuingAuthority: string;
     generatedAt: string;
-  };
+    // Live case detail, resolved from CaseMaster at scan time rather than
+    // frozen at print time. Absent for documents that are not case files
+    // (AI intelligence briefs), which carry no CaseMaster row.
+    documentType?: string;
+    caseCategory?: string;
+    registeredDate?: string;
+    caseStatus?: string;
+    gravity?: string;
+    court?: string;
+    briefFacts?: string;
+    actSections?: { actCode: string; act: string; section: string; sectionDescription: string }[];
+    counts?: { complainants: number; victims: number; accused: number } | null;
+    parties?: {
+      complainants: { name: string; age: string }[];
+      victims: { name: string; age: string }[];
+      accused: { ref: string; name: string; age: string; gender: string }[];
+    } | null;
 }
 
 export interface HistoryRecord {
@@ -69,74 +97,35 @@ export interface HistoryRecord {
   generatedAt?: string;
   barcodePayload?: string;
   errorDetails?: string;
+  /**
+   * The full resolved payload from the scan. Kept on the record so opening a
+   * past scan shows the same dossier the officer saw at the time, without
+   * re-hitting Catalyst. Note this is a SNAPSHOT - the live case may have
+   * moved on since, which is why re-scanning is the authoritative action.
+   */
+  detail?: VerificationDetail;
 }
 
-const initialDemoHistory: HistoryRecord[] = [
-  {
-    id: "hist-1",
-    timestamp: "2026-06-28 17:30:12 IST",
-    verificationId: "VER-2026-ISD-CR-8852",
-    caseNumber: "FIR/2026/BLR/8852",
-    documentName: "ORCA_Briefing_8852.pdf",
-    status: "VERIFIED",
-    verifiedBy: "Command Officer",
-    issuingAuthority: "Karnataka State Police • SCRB (ORCA)",
-    processingTime: "1.2s",
-    reportReference: "ISD-CR-8852",
-    officerName: "DSP R.K. SHASTRY",
-    officerRank: "IPS, Superintendent of Police",
-    policeStation: "Internal Security Division (ISD)",
-    district: "Bengaluru City",
-    classification: "CONFIDENTIAL",
-    generatedAt: "2026-06-28 15:30 IST",
-    barcodePayload: "STATUS=VERIFIED|CASE=FIR/2026/BLR/8852"
-  },
-  {
-    id: "hist-2",
-    timestamp: "2026-06-28 16:15:44 IST",
-    verificationId: "VER-2026-ISD-CR-4572",
-    caseNumber: "FIR/2026/BLR/4572",
-    documentName: "State_Crime_Brief_4572.pdf",
-    status: "VERIFIED",
-    verifiedBy: "Command Officer",
-    issuingAuthority: "Karnataka State Police • SCRB (ORCA)",
-    processingTime: "0.9s",
-    reportReference: "ISD-CR-4572",
-    officerName: "DSP R.K. SHASTRY",
-    officerRank: "IPS, Superintendent of Police",
-    policeStation: "Internal Security Division (ISD)",
-    district: "Bengaluru City",
-    classification: "CONFIDENTIAL",
-    generatedAt: "2026-06-28 16:15 IST",
-    barcodePayload: "STATUS=VERIFIED|CASE=FIR/2026/BLR/4572"
-  },
-  {
-    id: "hist-3",
-    timestamp: "2026-06-28 15:10:05 IST",
-    verificationId: "VER-2026-ISD-CR-9999",
-    caseNumber: "FIR/2026/BLR/9999",
-    documentName: "tkt_new_1.pdf",
-    status: "DOCUMENT NOT FOUND",
-    verifiedBy: "Command Officer",
-    issuingAuthority: "Unverified Entity",
-    processingTime: "1.5s",
-    errorDetails: "No record matching VER-2026-ISD-CR-9999 exists in Firebase Firestore database."
-  },
-  {
-    id: "hist-4",
-    timestamp: "2026-06-28 14:22:30 IST",
-    verificationId: "VER-UNKNOWN",
-    caseNumber: "N/A",
-    documentName: "grocery_receipt.png",
-    status: "INVALID",
-    verifiedBy: "Command Officer",
-    issuingAuthority: "N/A",
-    processingTime: "0.7s",
-    errorDetails: "The uploaded file does not contain valid O.R.C.A document verification headers."
-  }
-];
+/**
+ * Where scan history lives.
+ *
+ * Catalyst is the source of truth, read and written through
+ * /api/verification/history so the log is server-side and statewide.
+ *
+ * The route reports `configured: false` while the backing VerificationScan
+ * table is absent - creating it needs the ZohoCatalyst.tables.CREATE scope the
+ * Self Client token does not yet carry. Until then the console keeps its own
+ * local copy so the feature still works on this workstation, and switches over
+ * the moment the table exists with no further change here.
+ *
+ * The old Firestore collection is gone entirely: it was permission-denied on
+ * every read, and the ledger moved to Catalyst long ago.
+ */
+const HISTORY_KEY = "orca_verification_history";
+const HISTORY_LIMIT = 200;
 
 export const DocumentVerification: React.FC = () => {
+  const { officerProfile } = useAuth();
   const [file, setFile] = useState<File | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -151,63 +140,79 @@ export const DocumentVerification: React.FC = () => {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showCollapsiblePayload, setShowCollapsiblePayload] = useState(false);
+  // The record for the scan just performed, so "View Detailed Information"
+  // opens the same modal the history rows use rather than a second layout.
+  const [lastRecord, setLastRecord] = useState<HistoryRecord | null>(null);
+  // Where the listed history came from, so the footer can say so plainly.
+  // "local" is gone with the localStorage copy — the log is either the
+  // statewide Catalyst one, or unavailable.
+  const [historySource, setHistorySource] = useState<"catalyst" | "unavailable">("unavailable");
 
   // Load history on mount
   useEffect(() => {
     loadHistory();
   }, []);
 
+  /**
+   * Scan history comes from Catalyst only.
+   *
+   * There used to be a `localStorage` copy alongside it — written on every scan
+   * and read whenever Catalyst was unreachable. That made the log
+   * browser-specific: an officer on a second machine saw a different history,
+   * with nothing saying which was complete, and the local copy could not be
+   * audited or retained under any policy. The stale key is removed on load so
+   * an old copy cannot resurface.
+   *
+   * When the server cannot be reached the list is empty and says so, rather
+   * than showing a partial local view that looks authoritative.
+   */
   const loadHistory = async () => {
     setIsRefreshing(true);
-    let loaded: HistoryRecord[] = [];
+    if (typeof window !== "undefined") {
+      localStorage.removeItem(HISTORY_KEY);
+    }
 
-    // Try Firestore
     try {
-      const q = query(collection(db, "verification_history"), orderBy("timestamp", "desc"), limit(50));
-      const querySnapshot = await getDocs(q);
-      querySnapshot.forEach((docSnap) => {
-        loaded.push({ id: docSnap.id, ...docSnap.data() } as HistoryRecord);
-      });
-    } catch (err) {
-      console.warn("[Firestore History Read] Using local cache / fallback:", err);
-    }
-
-    // LocalStorage fallback / merge
-    if (loaded.length === 0 && typeof window !== "undefined") {
-      const local = localStorage.getItem("orca_verification_history");
-      if (local) {
-        try {
-          loaded = JSON.parse(local);
-        } catch (e) {}
+      const res = await fetch("/api/verification/history", { credentials: "include" });
+      const data = await res.json();
+      if (data.success && data.configured) {
+        setHistory((data.scans || []) as HistoryRecord[]);
+        setHistorySource("catalyst");
+      } else {
+        setHistory([]);
+        setHistorySource("unavailable");
       }
+    } catch {
+      setHistory([]);
+      setHistorySource("unavailable");
     }
 
-    if (loaded.length === 0) {
-      loaded = initialDemoHistory;
-    }
-
-    setHistory(loaded);
     setIsRefreshing(false);
   };
 
-  const saveRecordToHistory = async (newRecord: HistoryRecord) => {
-    setHistory(prev => [newRecord, ...prev]);
+  const saveRecordToHistory = (newRecord: HistoryRecord) => {
+    // Optimistic, so the scan appears immediately; the row of record is the
+    // one the append below writes.
+    setHistory((prev) => [newRecord, ...prev].slice(0, HISTORY_LIMIT));
 
-    // Save to LocalStorage
-    if (typeof window !== "undefined") {
-      try {
-        const existing = localStorage.getItem("orca_verification_history");
-        const parsed = existing ? JSON.parse(existing) : initialDemoHistory;
-        localStorage.setItem("orca_verification_history", JSON.stringify([newRecord, ...parsed]));
-      } catch (e) {}
-    }
-
-    // Save to Firestore
-    try {
-      await addDoc(collection(db, "verification_history"), newRecord);
-    } catch (err) {
-      console.warn("[Firestore History Write] Cached locally:", err);
-    }
+    // ScannedBy is derived from the session server-side, so nothing
+    // identifying is trusted from this payload.
+    fetch("/api/verification/history", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({
+        id: newRecord.id,
+        verificationId: newRecord.verificationId,
+        caseNumber: newRecord.caseNumber,
+        documentName: newRecord.documentName,
+        status: newRecord.status,
+        processingTime: newRecord.processingTime,
+        errorDetails: newRecord.errorDetails,
+      }),
+    }).catch(() => {
+      // The scan itself succeeded; a failed append must not break it.
+    });
   };
 
   const handleDrag = (e: React.DragEvent) => {
@@ -239,6 +244,7 @@ export const DocumentVerification: React.FC = () => {
     setFile(null);
     setResult(null);
     setError(null);
+    setLastRecord(null);
     const inputEl = document.getElementById("doc-file-input") as HTMLInputElement;
     if (inputEl) {
       inputEl.value = "";
@@ -288,7 +294,7 @@ export const DocumentVerification: React.FC = () => {
         caseNumber: data.data?.caseNumber || "N/A",
         documentName: file.name,
         status: statusVal,
-        verifiedBy: "Command Officer",
+        verifiedBy: officerProfile?.name || "Officer",
         issuingAuthority: data.data?.issuingAuthority || "Karnataka State Police • SCRB",
         processingTime: elapsedTime,
         reportReference: data.data?.reportReference,
@@ -299,10 +305,12 @@ export const DocumentVerification: React.FC = () => {
         classification: data.data?.classification || "RESTRICTED",
         generatedAt: data.data?.generatedAt,
         barcodePayload: `STATUS=${statusVal}|CASE=${data.data?.caseNumber || 'UNKNOWN'}`,
-        errorDetails: data.errorMessage
+        errorDetails: data.errorMessage,
+        detail: data.data,
       };
 
       saveRecordToHistory(newHistItem);
+      setLastRecord(newHistItem);
 
     } catch (err: any) {
       setError(err.message || "Failed to communicate with Zia verification servers.");
@@ -326,13 +334,16 @@ export const DocumentVerification: React.FC = () => {
     });
   }, [history, searchQuery, statusFilter]);
 
-  // Statistics Metrics
+  // Statistics over the scans actually recorded. avgTime used to be the
+  // hardcoded string "1.1s"; it is now the mean of the recorded latencies.
   const stats = useMemo(() => {
     const total = history.length;
-    const verified = history.filter(h => h.status === "VERIFIED").length;
-    const failed = total - verified;
-    const avgTime = total > 0 ? "1.1s" : "0.0s";
-    return { total, verified, failed, avgTime };
+    const verified = history.filter((h) => h.status === "VERIFIED").length;
+    const times = history
+      .map((h) => parseFloat(String(h.processingTime).replace(/[^\d.]/g, "")))
+      .filter((n) => Number.isFinite(n));
+    const avg = times.length ? times.reduce((a, b) => a + b, 0) / times.length : 0;
+    return { total, verified, failed: total - verified, avgTime: `${avg.toFixed(1)}s` };
   }, [history]);
 
   const copyToClipboard = (text: string) => {
@@ -344,41 +355,13 @@ export const DocumentVerification: React.FC = () => {
   return (
     <div style={{ animation: "fadeIn 0.3s ease", display: "flex", flexDirection: "column", gap: 24 }}>
       
-      {/* Header Banner */}
-      <div style={{
-        background: "linear-gradient(135deg, #001f3f 0%, #002855 100%)",
-        padding: "24px 32px",
-        borderRadius: 8,
-        color: "white",
-        boxShadow: "0 4px 15px rgba(0,31,63,0.15)",
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center"
-      }}>
-        <div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <ShieldCheck style={{ width: 28, height: 28, color: "#FF9933" }} />
-            <h2 style={{ fontSize: 20, fontWeight: 800, fontFamily: "var(--font-serif, serif)" }}>
-              Official Document Verification Console
-            </h2>
-          </div>
-          <p style={{ fontSize: 13, color: "rgba(255,255,255,0.7)", marginTop: 4 }}>
-            Verify ORCA-generated intelligence briefings by scanning embedded Code 128 barcode cryptographic signatures.
-          </p>
-        </div>
-        <div style={{
-          background: "rgba(255,255,255,0.1)",
-          border: "1px solid rgba(255,255,255,0.2)",
-          padding: "8px 16px",
-          borderRadius: 4,
-          fontFamily: "monospace",
-          fontSize: 11,
-          color: "#FF9933",
-          fontWeight: 700
-        }}>
-          ZIA BARCODE ENGINE // CODE 128
-        </div>
-      </div>
+      {/* Heading */}
+      <PageHeader
+        title="Official Document Verification Console"
+        subtitle="Verify ORCA-generated intelligence briefings by scanning embedded Code 128 barcode cryptographic signatures."
+        style={{ marginBottom: 0 }}
+        action={<HeaderChip label="VERIFICATION ENGINE" value="ZIA BARCODE // CODE 128" />}
+      />
 
       {/* Top Section: Upload Box & Result Card */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
@@ -558,53 +541,28 @@ export const DocumentVerification: React.FC = () => {
                 </div>
               </div>
 
-              {/* Structured Metadata Card (Populated strictly from Firestore Data) */}
+              {/* Compact particulars. The full dossier and the live case
+                  record live in the modal below - the panel answers "is this
+                  document valid, and which case is it?" at a glance. */}
               {isVerified && result.data && (
                 <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 6, padding: 16 }}>
                   <div style={{ fontSize: 11, fontWeight: 700, color: "#475569", textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "monospace", marginBottom: 12 }}>
-                    Authoritative Firestore Record Dossier
+                    Document Particulars
                   </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, fontSize: 12, fontFamily: "sans-serif" }}>
-                    <div>
-                      <span style={{ fontSize: 10, color: "#64748b", display: "block", fontFamily: "monospace" }}>VERIFICATION STATUS</span>
-                      <strong style={{ color: "#10b981" }}>🟢 {result.data.verificationStatus}</strong>
-                    </div>
-                    <div>
-                      <span style={{ fontSize: 10, color: "#64748b", display: "block", fontFamily: "monospace" }}>VERIFICATION ID</span>
-                      <strong style={{ color: "#003a75", fontFamily: "monospace" }}>{result.data.verificationId}</strong>
-                    </div>
-                    <div>
-                      <span style={{ fontSize: 10, color: "#64748b", display: "block", fontFamily: "monospace" }}>CASE NUMBER</span>
-                      <strong style={{ color: "#001f3f" }}>{result.data.caseNumber}</strong>
-                    </div>
-                    <div>
-                      <span style={{ fontSize: 10, color: "#64748b", display: "block", fontFamily: "monospace" }}>REPORT REFERENCE</span>
-                      <strong style={{ color: "#002855" }}>{result.data.reportReference}</strong>
-                    </div>
-                    <div>
-                      <span style={{ fontSize: 10, color: "#64748b", display: "block", fontFamily: "monospace" }}>INVESTIGATING OFFICER</span>
-                      <strong style={{ color: "#1e293b" }}>{result.data.officerName}</strong>
-                    </div>
-                    <div>
-                      <span style={{ fontSize: 10, color: "#64748b", display: "block", fontFamily: "monospace" }}>OFFICER RANK</span>
-                      <strong style={{ color: "#475569" }}>{result.data.officerRank}</strong>
-                    </div>
-                    <div>
-                      <span style={{ fontSize: 10, color: "#64748b", display: "block", fontFamily: "monospace" }}>POLICE STATION / UNIT</span>
-                      <strong style={{ color: "#334155" }}>{result.data.policeStation}</strong>
-                    </div>
-                    <div>
-                      <span style={{ fontSize: 10, color: "#64748b", display: "block", fontFamily: "monospace" }}>DISTRICT / JURISDICTION</span>
-                      <strong style={{ color: "#334155" }}>{result.data.district}</strong>
-                    </div>
-                    <div>
-                      <span style={{ fontSize: 10, color: "#64748b", display: "block", fontFamily: "monospace" }}>ISSUING AUTHORITY</span>
-                      <strong style={{ color: "#002855" }}>{result.data.issuingAuthority}</strong>
-                    </div>
-                    <div>
-                      <span style={{ fontSize: 10, color: "#64748b", display: "block", fontFamily: "monospace" }}>GENERATED DATE &amp; TIME</span>
-                      <strong style={{ color: "#334155" }}>{result.data.generatedAt}</strong>
-                    </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, fontSize: 12 }}>
+                    {([
+                      ["VERIFICATION ID", result.data.verificationId, "#003a75", true],
+                      ["CASE NUMBER", result.data.caseNumber, "#001f3f", true],
+                      ["POLICE STATION / UNIT", result.data.policeStation, "#334155", false],
+                      ["DISTRICT / JURISDICTION", result.data.district, "#334155", false],
+                      ["DOCUMENT TYPE", result.data.documentType, "#334155", false],
+                      ["VERIFIED ON", result.data.generatedAt, "#334155", false],
+                    ] as [string, string | undefined, string, boolean][]).map(([label, value, colour, mono]) => (
+                      <div key={label}>
+                        <span style={{ fontSize: 10, color: "#64748b", display: "block", fontFamily: "monospace" }}>{label}</span>
+                        <strong style={{ color: colour, fontFamily: mono ? "monospace" : "inherit" }}>{value || "—"}</strong>
+                      </div>
+                    ))}
                   </div>
                   <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid #cbd5e1", fontSize: 11, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <span style={{ color: "#64748b", fontFamily: "monospace" }}>SECURITY CLASSIFICATION:</span>
@@ -613,6 +571,20 @@ export const DocumentVerification: React.FC = () => {
                     </span>
                   </div>
                 </div>
+              )}
+
+              {lastRecord && (
+                <button
+                  onClick={() => setSelectedRecord(lastRecord)}
+                  style={{
+                    width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                    background: "#001f3f", color: "#fff", border: "none", borderRadius: 4,
+                    padding: "11px 18px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                  }}
+                >
+                  <Eye style={{ width: 15, height: 15, color: "#FF9933" }} />
+                  View Detailed Information
+                </button>
               )}
             </div>
           )}
@@ -633,56 +605,152 @@ export const DocumentVerification: React.FC = () => {
         gap: 20
       }}>
         
-        {/* Verification History Banner - Under Active Development */}
-        <div style={{
-          background: "rgba(255, 153, 51, 0.06)",
-          border: "1px dashed rgba(255, 153, 51, 0.35)",
-          borderRadius: 8,
-          padding: "24px 28px",
-          marginTop: 24,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          color: "#001f3f"
-        }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-            <div style={{
-              width: 44,
-              height: 44,
-              borderRadius: "50%",
-              background: "rgba(255, 153, 51, 0.15)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontSize: 22,
-              flexShrink: 0
-            }}>
-              ⚡
+        {/* Scan history.
+            Every verification the officer runs is logged here. Kept in
+            localStorage: the Firestore collection was permission-denied on
+            every read, and Catalyst has no table for a scan log yet, so this
+            is per-workstation rather than statewide. */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 800, color: "#001f3f", fontFamily: "JetBrains Mono, monospace", letterSpacing: "0.02em" }}>
+              VERIFICATION SCAN HISTORY
             </div>
-            <div>
-              <strong style={{ display: "block", fontSize: 14, color: "#001f3f", fontFamily: "JetBrains Mono, monospace", letterSpacing: "0.02em" }}>
-                HISTORICAL VERIFICATION LEDGER & AUDIT ARCHIVE — COMING SOON
-              </strong>
-              <span style={{ fontSize: 12, color: "#475569", marginTop: 4, display: "block", lineHeight: 1.5 }}>
-                Statewide archival history & automated cryptographic ledger integration is currently under active deployment for SCRB Level-3 Nodes.
-              </span>
+            <div style={{ fontSize: 12, color: "#64748b", marginTop: 3 }}>
+              {historySource === "catalyst"
+                ? "Every document checked, statewide, most recent first."
+                : "The scan log could not be reached. Nothing is shown rather than a partial local copy."}
             </div>
           </div>
-          <span style={{
-            background: "#FF9933",
-            color: "#001f3f",
-            fontSize: 10.5,
-            fontWeight: 800,
-            padding: "5px 12px",
-            borderRadius: 12,
-            fontFamily: "JetBrains Mono, monospace",
-            letterSpacing: "0.05em",
-            textTransform: "uppercase",
-            whiteSpace: "nowrap"
-          }}>
-            UNDER DEVELOPMENT
-          </span>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              onClick={loadHistory}
+              style={{
+                display: "flex", alignItems: "center", gap: 7, background: "#fff", color: "#001f3f",
+                border: "1px solid #cbd5e1", borderRadius: 4, padding: "8px 14px",
+                fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+              }}
+            >
+              <RefreshCw style={{ width: 13, height: 13, animation: isRefreshing ? "spin 1s linear infinite" : "none" }} />
+              Refresh
+            </button>
+            {/*
+              No "Clear" button here any more.
+
+              It erased the localStorage copy, which no longer exists. The
+              Catalyst scan log is an audit trail and is deliberately not
+              erasable from the console.
+            */}
+          </div>
         </div>
+
+        {history.length > 0 && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12 }}>
+            {([
+              ["TOTAL SCANS", String(stats.total), "#001f3f"],
+              ["VERIFIED", String(stats.verified), "#166534"],
+              ["FAILED", String(stats.failed), stats.failed > 0 ? "#991b1b" : "#64748b"],
+              ["AVG RESPONSE", stats.avgTime, "#002855"],
+            ] as [string, string, string][]).map(([label, value, colour]) => (
+              <div key={label} style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 6, padding: "10px 13px" }}>
+                <div style={{ fontSize: 10, color: "#64748b", fontFamily: "JetBrains Mono, monospace", letterSpacing: "0.07em" }}>{label}</div>
+                <div style={{ fontSize: 19, fontWeight: 800, color: colour, fontFamily: "JetBrains Mono, monospace", marginTop: 2 }}>{value}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <div style={{ position: "relative", flex: 1, minWidth: 240 }}>
+            <Search style={{ width: 14, height: 14, color: "#64748b", position: "absolute", left: 11, top: 11 }} />
+            <input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search by Verification ID, Case Number or file name"
+              style={{
+                width: "100%", padding: "9px 11px 9px 32px", border: "1px solid #cbd5e1",
+                borderRadius: 4, fontSize: 13, outline: "none", fontFamily: "inherit",
+              }}
+            />
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+            <Filter style={{ width: 14, height: 14, color: "#64748b" }} />
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              style={{
+                padding: "9px 11px", border: "1px solid #cbd5e1", borderRadius: 4,
+                fontSize: 13, outline: "none", background: "#fff", color: "#1e293b", fontFamily: "inherit",
+              }}
+            >
+              <option key="All" value="All">All statuses</option>
+              <option key="Verified" value="Verified">Verified</option>
+              <option key="Tampered" value="Tampered">Tampered</option>
+              <option key="Document Not Found" value="Document Not Found">Document Not Found</option>
+              <option key="Invalid" value="Invalid">Invalid</option>
+            </select>
+          </div>
+        </div>
+
+        {history.length === 0 ? (
+          <div style={{ border: "1px dashed #cbd5e1", borderRadius: 8, padding: "40px 20px", textAlign: "center", background: "#f8fafc" }}>
+            <Clock style={{ width: 32, height: 32, color: "#94a3b8", margin: "0 auto 10px" }} />
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#001f3f" }}>No documents verified yet</div>
+            <div style={{ fontSize: 12, color: "#64748b", marginTop: 4 }}>
+              Scans you run will be listed here.
+            </div>
+          </div>
+        ) : filteredHistory.length === 0 ? (
+          <div style={{ border: "1px dashed #cbd5e1", borderRadius: 8, padding: "40px 20px", textAlign: "center", background: "#f8fafc" }}>
+            <Search style={{ width: 32, height: 32, color: "#94a3b8", margin: "0 auto 10px" }} />
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#001f3f" }}>No scans match that filter</div>
+          </div>
+        ) : (
+          <div style={{ border: "1px solid #e2e8f0", borderRadius: 8, overflow: "hidden" }}>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+                <thead>
+                  <tr>
+                    {["Scanned At", "Verification ID", "Case Number", "Document", "Status", ""].map((h, i) => (
+                      <th key={i} style={{
+                        textAlign: "left", padding: "9px 12px", fontSize: 10, fontWeight: 700,
+                        color: "#64748b", textTransform: "uppercase", letterSpacing: "0.07em",
+                        fontFamily: "JetBrains Mono, monospace", borderBottom: "1px solid #cbd5e1", background: "#f8fafc",
+                      }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredHistory.map((rec) => {
+                    const ok = rec.status === "VERIFIED";
+                    return (
+                      <tr key={rec.id} onClick={() => setSelectedRecord(rec)} style={{ cursor: "pointer", background: "#fff" }}>
+                        <td style={{ padding: "10px 12px", fontSize: 12, borderBottom: "1px solid #e2e8f0", color: "#475569", fontFamily: "monospace", whiteSpace: "nowrap" }}>{rec.timestamp}</td>
+                        <td style={{ padding: "10px 12px", fontSize: 12, borderBottom: "1px solid #e2e8f0", color: "#001f3f", fontFamily: "monospace", fontWeight: 700 }}>{rec.verificationId}</td>
+                        <td style={{ padding: "10px 12px", fontSize: 12, borderBottom: "1px solid #e2e8f0", color: "#1e293b", fontFamily: "monospace" }}>{rec.caseNumber}</td>
+                        <td style={{ padding: "10px 12px", fontSize: 12, borderBottom: "1px solid #e2e8f0", color: "#475569", maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{rec.documentName}</td>
+                        <td style={{ padding: "10px 12px", fontSize: 12, borderBottom: "1px solid #e2e8f0" }}>
+                          <span style={{
+                            background: ok ? "#dcfce7" : "#fee2e2", color: ok ? "#166534" : "#991b1b",
+                            padding: "3px 9px", borderRadius: 3, fontSize: 10, fontWeight: 800,
+                            fontFamily: "JetBrains Mono, monospace", letterSpacing: "0.04em", whiteSpace: "nowrap",
+                          }}>{rec.status}</span>
+                        </td>
+                        <td style={{ padding: "10px 12px", borderBottom: "1px solid #e2e8f0", textAlign: "right" }}>
+                          <Eye style={{ width: 15, height: 15, color: "#64748b" }} />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ padding: "9px 14px", borderTop: "1px solid #e2e8f0", fontSize: 11, color: "#64748b", display: "flex", alignItems: "center", gap: 7, background: "#f8fafc" }}>
+              <Database style={{ width: 13, height: 13 }} />
+              {filteredHistory.length} of {history.length} scan{history.length === 1 ? "" : "s"} - click a row for the full dossier -{" "}
+              from the Catalyst scan log
+            </div>
+          </div>
+        )}
 
       </div>
 
@@ -690,21 +758,28 @@ export const DocumentVerification: React.FC = () => {
       {/* VERIFICATION DETAILS MODAL                                   */}
       {/* ============================================================ */}
       {selectedRecord && (
-        <div style={{
-          position: "fixed",
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          background: "rgba(0,0,0,0.5)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          zIndex: 1000,
-          padding: 24,
-          animation: "fadeIn 0.2s ease"
-        }}>
-          <div style={{
+        <div
+          onClick={() => setSelectedRecord(null)}
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(0,31,63,0.45)",
+            // The page behind the dossier is blurred out so the document under
+            // review is the only thing legible while it is open.
+            backdropFilter: "blur(6px)",
+            WebkitBackdropFilter: "blur(6px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+            padding: 24,
+            animation: "fadeIn 0.2s ease"
+          }}
+        >
+          <div onClick={(e) => e.stopPropagation()} style={{
             background: "#ffffff",
             borderRadius: 8,
             maxWidth: 640,
@@ -760,7 +835,18 @@ export const DocumentVerification: React.FC = () => {
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, fontSize: 12 }}>
                 <div>
                   <span style={{ fontSize: 10, color: "#64748b", display: "block", fontFamily: "monospace" }}>VERIFICATION ID</span>
-                  <strong style={{ color: "#003a75", fontFamily: "monospace" }}>{selectedRecord.verificationId}</strong>
+                  <strong style={{ color: "#003a75", fontFamily: "monospace", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                    {selectedRecord.verificationId}
+                    <button
+                      onClick={() => copyToClipboard(selectedRecord.verificationId)}
+                      title="Copy verification ID"
+                      style={{ background: "none", border: "none", padding: 0, cursor: "pointer", display: "inline-flex" }}
+                    >
+                      {copiedId === selectedRecord.verificationId
+                        ? <Check style={{ width: 13, height: 13, color: "#10b981" }} />
+                        : <Copy style={{ width: 13, height: 13, color: "#94a3b8" }} />}
+                    </button>
+                  </strong>
                 </div>
                 <div>
                   <span style={{ fontSize: 10, color: "#64748b", display: "block", fontFamily: "monospace" }}>CASE NUMBER</span>
@@ -829,6 +915,109 @@ export const DocumentVerification: React.FC = () => {
                   </div>
                 )}
               </div>
+
+              {/* Case record as resolved when this scan ran. For a document
+                  that is not a case file (an AI intelligence brief) there is no
+                  CaseMaster row behind it, so this block simply does not
+                  appear - the document is still authentic. */}
+              {selectedRecord.detail?.documentType === "FIR / CASE FILE" && (
+                <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 6, padding: 16 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: "#475569", textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "monospace" }}>
+                      Case Record
+                    </div>
+                    <div style={{ fontSize: 9.5, color: "#64748b", fontFamily: "monospace" }}>
+                      AS RESOLVED AT SCAN TIME
+                    </div>
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, fontSize: 12, marginBottom: 14 }}>
+                    {([
+                      ["CASE CATEGORY", selectedRecord.detail.caseCategory],
+                      ["REGISTERED ON", selectedRecord.detail.registeredDate],
+                      ["CASE STATUS", selectedRecord.detail.caseStatus],
+                      ["GRAVITY OF OFFENCE", selectedRecord.detail.gravity],
+                      ["COURT", selectedRecord.detail.court],
+                    ] as [string, string | undefined][]).map(([label, value]) => (
+                      <div key={label}>
+                        <span style={{ fontSize: 10, color: "#64748b", display: "block", fontFamily: "monospace" }}>{label}</span>
+                        <strong style={{ color: "#334155" }}>{value || "-"}</strong>
+                      </div>
+                    ))}
+                  </div>
+
+                  {!!selectedRecord.detail.actSections?.length && (
+                    <div style={{ marginBottom: 14 }}>
+                      <div style={{ fontSize: 10, color: "#64748b", fontFamily: "monospace", letterSpacing: "0.05em", marginBottom: 6 }}>
+                        ACTS &amp; SECTIONS INVOKED
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                        {selectedRecord.detail.actSections.map((sec, i) => (
+                          <div key={i} style={{ background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: 4, padding: "7px 10px", fontSize: 12 }}>
+                            <strong style={{ color: "#001f3f", fontFamily: "monospace" }}>{sec.actCode} {sec.section}</strong>
+                            <span style={{ color: "#475569" }}>{sec.sectionDescription ? ` - ${sec.sectionDescription}` : ""}</span>
+                            {sec.act && <div style={{ fontSize: 10.5, color: "#64748b", marginTop: 2 }}>{sec.act}</div>}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {!!selectedRecord.detail.counts && (
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 14 }}>
+                      {([
+                        ["COMPLAINANTS", selectedRecord.detail.counts.complainants],
+                        ["VICTIMS", selectedRecord.detail.counts.victims],
+                        ["ACCUSED", selectedRecord.detail.counts.accused],
+                      ] as [string, number][]).map(([label, n]) => (
+                        <div key={label} style={{ background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: 4, padding: "8px 10px" }}>
+                          <div style={{ fontSize: 10, color: "#64748b", fontFamily: "monospace", letterSpacing: "0.05em" }}>{label}</div>
+                          <div style={{ fontSize: 16, fontWeight: 700, color: "#001f3f", fontFamily: "monospace" }}>{n}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {!!selectedRecord.detail.parties?.accused?.length && (
+                    <div style={{ marginBottom: 14 }}>
+                      <div style={{ fontSize: 10, color: "#64748b", fontFamily: "monospace", letterSpacing: "0.05em", marginBottom: 6 }}>
+                        ACCUSED ON RECORD
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                        {selectedRecord.detail.parties.accused.map((a, i) => (
+                          <div key={i} style={{ background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: 4, padding: "7px 10px", fontSize: 12, display: "flex", gap: 10 }}>
+                            <span style={{ fontFamily: "monospace", color: "#64748b", minWidth: 26 }}>{a.ref}</span>
+                            <strong style={{ color: "#1e293b" }}>{a.name}</strong>
+                            <span style={{ color: "#64748b" }}>
+                              {[a.age && `${a.age} yrs`, genderLabel(a.gender)].filter(Boolean).join(" \u00b7 ")}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {!!selectedRecord.detail.briefFacts && (
+                    <div>
+                      <div style={{ fontSize: 10, color: "#64748b", fontFamily: "monospace", letterSpacing: "0.05em", marginBottom: 6 }}>
+                        BRIEF FACTS OF THE CASE
+                      </div>
+                      <div style={{ background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: 4, padding: 12, fontSize: 12, lineHeight: 1.6, color: "#1e293b", whiteSpace: "pre-wrap" }}>
+                        {selectedRecord.detail.briefFacts}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {selectedRecord.errorDetails && (
+                <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 6, padding: 14 }}>
+                  <div style={{ fontSize: 10, color: "#991b1b", fontFamily: "monospace", letterSpacing: "0.05em", marginBottom: 5 }}>
+                    FAILURE DETAIL
+                  </div>
+                  <div style={{ fontSize: 12, color: "#7f1d1d", lineHeight: 1.6 }}>{selectedRecord.errorDetails}</div>
+                </div>
+              )}
 
             </div>
 

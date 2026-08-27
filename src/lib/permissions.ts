@@ -18,7 +18,10 @@ export type Rank =
   | "DSP"
   | "Inspector"
   | "SI"
-  | "ASI";
+  | "ASI"
+  // Present in the Catalyst Rank table (RankID 11, hierarchy 11) but absent
+  // from this union, so a Constable had no default role or clearance at all.
+  | "Constable";
 
 export const RANKS: Rank[] = [
   "DGP",
@@ -31,6 +34,7 @@ export const RANKS: Rank[] = [
   "Inspector",
   "SI",
   "ASI",
+  "Constable",
 ];
 
 /**
@@ -83,6 +87,7 @@ export type PlatformModule =
   | "criminal_networks"
   | "heatmaps"
   | "ai_chatbot"
+  | "case_registration"
   | "basic_settings"
   // L1 Administration Modules
   | "application_reviews"
@@ -102,14 +107,19 @@ export type PlatformModule =
  */
 export type DashboardRole =
   | "admin_full"
+  | "scrb_officer"
+  /** @deprecated superseded by `scrb_officer`; kept so the one live account resolves. */
   | "admin_scrb"
   | "admin_verification"
+  | "it_admin"
+  | "command_admin_l1"
+  | "command_admin_l2"
+  | "verification_admin_l2"
+  | "verification_admin_l3"
   | "investigation_l2"
   | "investigation_l1"
-  | "investigation"
-  | "admin_l1"
-  | "admin_l2"
-  | "it_admin";
+  | "field_officer_l3"
+  | "field_officer_l4";
 
 export interface DashboardRoleConfig {
   label: string;
@@ -122,14 +132,21 @@ export const DASHBOARD_ROLES: Record<DashboardRole, DashboardRoleConfig> = {
     label: "Full Command Administrator",
     description: "Full access to all operational and administration modules.",
     modules: [
-      "command_overview", "ingestion_copilot", "criminal_networks", "heatmaps", "ai_chatbot", "basic_settings",
+      "command_overview", "ingestion_copilot", "criminal_networks", "heatmaps", "ai_chatbot", "case_registration", "basic_settings",
       "application_reviews", "directory_logs", "verification_overrides",
       "ai_monitoring", "audit_trails", "security_controls", "role_assignment", "system_telemetry"
     ],
   },
+  scrb_officer: {
+    label: "SCRB — State Crime Records Bureau",
+    description:
+      "Statewide crime records: analytics, AI oversight and audit trails. Applied for at sign-up, approved by an administrator, and limited to operational writes.",
+    modules: ["ai_monitoring", "audit_trails", "security_controls", "system_telemetry", "basic_settings"],
+  },
+  /** @deprecated mirrors scrb_officer so the one live `admin_scrb` account still resolves. */
   admin_scrb: {
-    label: "SCRB Executive Administrator",
-    description: "Access to AI & Intelligence and Audit Infrastructure.",
+    label: "SCRB — State Crime Records Bureau",
+    description: "Deprecated alias of scrb_officer. Retire once the live account is migrated.",
     modules: ["ai_monitoring", "audit_trails", "security_controls", "system_telemetry", "basic_settings"],
   },
   admin_verification: {
@@ -140,15 +157,15 @@ export const DASHBOARD_ROLES: Record<DashboardRole, DashboardRoleConfig> = {
   investigation_l2: {
     label: "Level II Investigation Officer",
     description: "Access to operational investigation tools and verification services.",
-    modules: ["command_overview", "ingestion_copilot", "criminal_networks", "heatmaps", "ai_chatbot", "verification_overrides", "basic_settings"],
+    modules: ["command_overview", "ingestion_copilot", "criminal_networks", "heatmaps", "ai_chatbot", "case_registration", "verification_overrides", "basic_settings"],
   },
   investigation_l1: {
     label: "Level I Operational Officer",
     description: "Access to standard operational investigation tools.",
-    modules: ["command_overview", "ingestion_copilot", "criminal_networks", "heatmaps", "ai_chatbot", "basic_settings"],
+    modules: ["command_overview", "ingestion_copilot", "criminal_networks", "heatmaps", "ai_chatbot", "case_registration", "basic_settings"],
   },
-  investigation: {
-    label: "Field Operational Officer",
+  field_officer_l3: {
+    label: "Field Officer (Level III)",
     description:
       "Operational dashboard for field investigations, network graphs, and evidence ingestion.",
     modules: [
@@ -156,12 +173,25 @@ export const DASHBOARD_ROLES: Record<DashboardRole, DashboardRoleConfig> = {
       "ingestion_copilot",
       "criminal_networks",
       "heatmaps",
-      "ai_chatbot",
+      "ai_chatbot", "case_registration",
       "basic_settings",
     ],
   },
-  admin_l1: {
-    label: "Verification Administration Officer",
+  field_officer_l4: {
+    label: "Field Officer (Level IV)",
+    description:
+      "Operational dashboard for field investigations, network graphs, and evidence ingestion.",
+    modules: [
+      "command_overview",
+      "ingestion_copilot",
+      "criminal_networks",
+      "heatmaps",
+      "ai_chatbot", "case_registration",
+      "basic_settings",
+    ],
+  },
+  verification_admin_l2: {
+    label: "Verification Administrator (Level II)",
     description:
       "First-level administrative oversight for officer applications, directories, and verifications.",
     modules: [
@@ -172,8 +202,20 @@ export const DASHBOARD_ROLES: Record<DashboardRole, DashboardRoleConfig> = {
       "verification_overrides",
     ],
   },
-  admin_l2: {
-    label: "Full Command Administrator",
+  verification_admin_l3: {
+    label: "Verification Administrator (Level III)",
+    description:
+      "First-level administrative oversight for officer applications, directories, and verifications.",
+    modules: [
+      "command_overview",
+      "basic_settings",
+      "application_reviews",
+      "directory_logs",
+      "verification_overrides",
+    ],
+  },
+  command_admin_l1: {
+    label: "Command Administrator (Level I)",
     description:
       "Complete platform administration including role assignments, AI monitoring, and security controls.",
     modules: [
@@ -181,7 +223,28 @@ export const DASHBOARD_ROLES: Record<DashboardRole, DashboardRoleConfig> = {
       "ingestion_copilot",
       "criminal_networks",
       "heatmaps",
-      "ai_chatbot",
+      "ai_chatbot", "case_registration",
+      "basic_settings",
+      "application_reviews",
+      "directory_logs",
+      "verification_overrides",
+      "ai_monitoring",
+      "audit_trails",
+      "security_controls",
+      "role_assignment",
+      "system_telemetry",
+    ],
+  },
+  command_admin_l2: {
+    label: "Command Administrator (Level II)",
+    description:
+      "Complete platform administration including role assignments, AI monitoring, and security controls.",
+    modules: [
+      "command_overview",
+      "ingestion_copilot",
+      "criminal_networks",
+      "heatmaps",
+      "ai_chatbot", "case_registration",
       "basic_settings",
       "application_reviews",
       "directory_logs",
@@ -218,46 +281,17 @@ export interface RankDefault {
 }
 
 export const RANK_DEFAULTS: Record<Rank, RankDefault> = {
-  DGP: {
-    isdLevel: "ISD-LEVEL-I",
-    dashboardRole: "admin_l2",
-  },
-  ADGP: {
-    isdLevel: "ISD-LEVEL-I",
-    dashboardRole: "admin_l2",
-  },
-  IGP: {
-    isdLevel: "ISD-LEVEL-I",
-    dashboardRole: "admin_l2",
-  },
-  DIGP: {
-    isdLevel: "ISD-LEVEL-I",
-    dashboardRole: "admin_l1",
-  },
-  SP: {
-    isdLevel: "ISD-LEVEL-I",
-    dashboardRole: "admin_l1",
-  },
-  ASP: {
-    isdLevel: "ISD-LEVEL-II",
-    dashboardRole: "admin_l1",
-  },
-  DSP: {
-    isdLevel: "ISD-LEVEL-II",
-    dashboardRole: "investigation",
-  },
-  Inspector: {
-    isdLevel: "ISD-LEVEL-IV",
-    dashboardRole: "investigation",
-  },
-  SI: {
-    isdLevel: "ISD-LEVEL-IV",
-    dashboardRole: "investigation",
-  },
-  ASI: {
-    isdLevel: "ISD-LEVEL-IV",
-    dashboardRole: "investigation",
-  },
+  DGP:       { isdLevel: "ISD-LEVEL-I",   dashboardRole: "command_admin_l1" },
+  ADGP:      { isdLevel: "ISD-LEVEL-I",   dashboardRole: "command_admin_l1" },
+  IGP:       { isdLevel: "ISD-LEVEL-II",  dashboardRole: "command_admin_l2" },
+  DIGP:      { isdLevel: "ISD-LEVEL-II",  dashboardRole: "verification_admin_l2" },
+  SP:        { isdLevel: "ISD-LEVEL-II",  dashboardRole: "verification_admin_l2" },
+  ASP:       { isdLevel: "ISD-LEVEL-III", dashboardRole: "verification_admin_l3" },
+  DSP:       { isdLevel: "ISD-LEVEL-III", dashboardRole: "field_officer_l3" },
+  Inspector: { isdLevel: "ISD-LEVEL-III", dashboardRole: "field_officer_l3" },
+  SI:        { isdLevel: "ISD-LEVEL-IV",  dashboardRole: "field_officer_l4" },
+  ASI:       { isdLevel: "ISD-LEVEL-IV",  dashboardRole: "field_officer_l4" },
+  Constable: { isdLevel: "ISD-LEVEL-IV",  dashboardRole: "field_officer_l4" },
 };
 
 /**

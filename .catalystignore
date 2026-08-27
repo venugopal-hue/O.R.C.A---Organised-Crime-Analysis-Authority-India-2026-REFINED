@@ -1,0 +1,42 @@
+# What NOT to upload to AppSail.
+#
+# The CLI packs a deploy by opening a read stream for EVERY file in the build
+# path at the same time. With node_modules included that is tens of thousands
+# of simultaneous handles, and Windows answers EMFILE: too many open files.
+# The deploy then dies, and the CLI's own error handler hits the same limit
+# reading its config — producing an unhandled-rejection loop that wrote a
+# 12.9 GB catalyst-debug.log before it was stopped.
+#
+# Catalyst installs dependencies and runs `npm run build` on its side, so none
+# of this needs to travel.
+#
+# Both directory and glob forms are listed deliberately: the packer matches
+# with minimatch against paths that use the platform separator, so on Windows a
+# pattern written only as `node_modules/**/*` can fail to match
+# `node_modules\next\...`. The bare directory entry prunes the walk instead.
+
+node_modules
+node_modules/**
+node_modules/**/*
+
+.next
+.next/**
+.next/**/*
+
+.git
+.git/**
+.git/**/*
+
+.claude
+.claude/**
+.claude/**/*
+
+# Secrets belong in the AppSail service's environment variables, never inside
+# the uploaded package.
+.env
+.env.local
+.env.*.local
+.env.local.backup-*
+
+*.log
+catalyst-debug.log

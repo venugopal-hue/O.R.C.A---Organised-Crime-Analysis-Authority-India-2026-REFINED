@@ -3,7 +3,8 @@
 import React, { useState, useRef, useEffect } from "react";
 import { 
   Paperclip, 
-  Mic, 
+  Mic,
+  MicOff,
   Send, 
   Sparkles, 
   Bot, 
@@ -35,18 +36,30 @@ import {
   Zap
 } from "lucide-react";
 import { Letterhead } from "./Letterhead";
-import { aiReportDatabase, AIPresetBrief } from "@/lib/mock";
+// aiReportDatabase (a fabricated dossier) is deliberately NOT imported —
+// see the note in the send handler. Only the shape is still needed.
+import { AIPresetBrief } from "@/lib/intelligenceTypes";
 import { useAuth } from "@/context/AuthContext";
+import { useVoice } from "@/lib/useVoice";
+import { useCatalystProfile } from "@/lib/useCatalystProfile";
 import { useIntelligence } from "@/context/IntelligenceContext";
+import { imagePayload, buildPromptWithAttachments, readAttachment, ATTACHMENT_ACCEPT } from "@/lib/imageAttachment";
 import { AttachmentFile, ChatMessage, ChatConversation } from "@/lib/chatService";
+import { EvidenceTrail } from "@/components/dynamic/EvidenceTrail";
+
+/** Matches the language picker. Used where a tag would be unreadable. */
+const LANGUAGE_NAMES: Record<string, string> = {
+  "en-US": "English",
+  "hi-IN": "Hindi",
+  "kn-IN": "Kannada",
+};
 
 const getHumanReadableTab = (tab: string) => {
   switch (tab) {
     case "dashboard": return "Dashboard";
     case "analytics": return "Analytics";
-    case "fir": return "FIR Vault";
     case "heatmap": return "Heatmap";
-    case "networks": return "Criminal Networks";
+    case "networks": return "Threat Mapping";
     case "copilot": return "Copilot";
     case "reports": return "Reports";
     case "verification-document": return "Verification";
@@ -55,15 +68,6 @@ const getHumanReadableTab = (tab: string) => {
   }
 };
 
-const detectTextLanguage = (text: string): string => {
-  if (/[\u0C80-\u0CFF]/.test(text)) {
-    return "kn-IN";
-  }
-  if (/[\u0900-\u097F]/.test(text)) {
-    return "hi-IN";
-  }
-  return "en-US";
-};
 
 const UI_TRANSLATIONS: Record<string, {
   title: string;
@@ -82,14 +86,14 @@ const UI_TRANSLATIONS: Record<string, {
     followUpPlaceholder: "Ask ORCA follow-up query...",
     exportBrief: "Export Brief",
     newConversation: "New Conversation",
-    auditingText: "O.R.C.A AI is auditing statewide crime records...",
+    auditingText: "O.R.C.A AI is thinking...",
     cards: [
-      { title: "Generate Intelligence Brief", desc: "Compile incident points for a custom FIR Case Number.", prompt: "Generate an intelligence brief for the latest high priority cases." },
-      { title: "Explain Evidence Files", desc: "Breakdown metadata check logs of document verification.", prompt: "Explain the forensic evidence verification logs for current documents." },
-      { title: "Analyze Incident Dossier", desc: "Search syndicate network details for a target name.", prompt: "Analyze the syndicate networks and cross-district crime connections." },
-      { title: "Summarize Case Reports", desc: "Synthesize modus operandi mapped to BNS legal clauses.", prompt: "Summarize recent case reports and map to BNS legal sections." },
-      { title: "Help Audit Code logs", desc: "Inspect database node timeouts or API logs.", prompt: "Help audit recent API logs and database node timeouts." },
-      { title: "Statewide Threat Analysis", desc: "List high-risk districts above threat level 8.0.", prompt: "Provide a statewide threat analysis for high risk districts." }
+      { title: "Draft an FIR narrative", desc: "Turn your incident notes into a structured narrative.", prompt: "Help me draft a clear, factual FIR narrative. I will paste the incident details next." },
+      { title: "Explain a BNS section", desc: "What a section covers, in plain language.", prompt: "Explain the BNS section I name: what it covers, its essential ingredients, and the punishment. Mention the IPC equivalent if there is one." },
+      { title: "Which sections may apply", desc: "Describe an incident, get candidate sections.", prompt: "I will describe an incident. Suggest which BNS sections may apply and why, and flag anything that must be confirmed against the bare act before filing." },
+      { title: "Translate a public notice", desc: "Into Kannada or Hindi for community communication.", prompt: "Translate the notice I paste into Kannada and Hindi, keeping legal terminology accurate." },
+      { title: "IPC to BNS equivalent", desc: "Find the section that replaced an older one.", prompt: "I will give an IPC section number. Tell me the corresponding BNS section, note any change in scope or punishment, and say clearly if the mapping is not one-to-one. Remind me to confirm against the bare act before relying on it." },
+      { title: "Summarise a statement", desc: "Condense a witness or complainant statement.", prompt: "Summarise the statement I paste into key facts: who, what, when, where, and what was seen or heard. Do not add, infer or embellish anything that is not in the text, and list separately any point that is unclear or contradictory." }
     ]
   },
   "hi-IN": {
@@ -99,14 +103,14 @@ const UI_TRANSLATIONS: Record<string, {
     followUpPlaceholder: "ओआरसीए से अगला प्रश्न पूछें...",
     exportBrief: "संक्षिप्त विवरण निर्यात करें",
     newConversation: "नई बातचीत",
-    auditingText: "ओ.आर.सी.ए एआई राज्यव्यापी अपराध रिकॉर्ड की जांच कर रहा है...",
+    auditingText: "ओ.आर.सी.ए एआई सोच रहा है...",
     cards: [
-      { title: "खुफिया संक्षिप्त विवरण बनाएं", desc: "एफआईआर मामला संख्या के लिए घटना विवरण संकलित करें।", prompt: "नवीनतम उच्च प्राथमिकता वाले मामलों के लिए खुफिया संक्षिप्त रिपोर्ट तैयार करें।" },
-      { title: "साक्ष्य फ़ाइलों को समझाएं", desc: "दस्तावेज़ सत्यापन के मेटाडेटा लॉग का विश्लेषण करें।", prompt: "वर्तमान दस्तावेजों के फॉरेंसिक साक्ष्य सत्यापन लॉग को समझाएं।" },
-      { title: "घटना फ़ाइल का विश्लेषण करें", desc: "लक्ष्य नाम के लिए सिंडिकेट नेटवर्क विवरण खोजें।", prompt: "सिंडिकेट नेटवर्क और अंतर-जिला अपराध संबंधों का विश्लेषण करें।" },
-      { title: "मामले की रिपोर्ट का सारांश दें", desc: "बीएनएस कानूनी धाराओं के साथ कार्यप्रणाली को मैप करें।", prompt: "हाल की केस रिपोर्टों का सारांश दें और बीएनएस कानूनी धाराओं के साथ मैप करें।" },
-      { title: "सिस्टम लॉग ऑडिट में सहायता", desc: "डेटाबेस नोड टाइमआउट या एपीआई लॉग का निरीक्षण करें।", prompt: "हाल के एपीआई लॉग और डेटाबेस नोड टाइमआउट का ऑडिट करें।" },
-      { title: "राज्यव्यापी खतरा विश्लेषण", desc: "थ्रेट स्तर 8.0 से ऊपर के उच्च जोखिम वाले जिलों की सूची।", prompt: "उच्च जोखिम वाले जिलों के लिए राज्यव्यापी खतरा विश्लेषण प्रदान करें।" }
+      { title: "एफआईआर विवरण का प्रारूप बनाएं", desc: "अपने घटना नोट्स को व्यवस्थित विवरण में बदलें।", prompt: "मुझे एक स्पष्ट और तथ्यात्मक एफआईआर विवरण का प्रारूप तैयार करने में मदद करें। घटना का विवरण मैं आगे भेजूँगा।" },
+      { title: "बीएनएस धारा समझाएं", desc: "कोई धारा क्या कवर करती है, सरल भाषा में।", prompt: "मैं जिस बीएनएस धारा का नाम बताऊँ उसे समझाएं: वह क्या कवर करती है, उसके आवश्यक तत्व और दंड। यदि आईपीसी समकक्ष धारा हो तो बताएं।" },
+      { title: "कौन सी धाराएँ लागू हो सकती हैं", desc: "घटना बताएं, संभावित धाराएँ पाएं।", prompt: "मैं एक घटना का विवरण दूँगा। बताएं कि कौन सी बीएनएस धाराएँ लागू हो सकती हैं और क्यों, तथा दर्ज करने से पहले मूल अधिनियम से जिनकी पुष्टि आवश्यक है उन्हें चिह्नित करें।" },
+      { title: "सार्वजनिक सूचना का अनुवाद", desc: "समुदाय संचार के लिए कन्नड़ या हिंदी में।", prompt: "मैं जो सूचना भेजूँ उसका कन्नड़ और हिंदी में अनुवाद करें, कानूनी शब्दावली की सटीकता बनाए रखते हुए।" },
+      { title: "आईपीसी से बीएनएस समकक्ष", desc: "पुरानी धारा की जगह लेने वाली धारा खोजें।", prompt: "मैं एक आईपीसी धारा संख्या दूँगा। संबंधित बीएनएस धारा बताएं, दायरे या दंड में कोई बदलाव हो तो उल्लेख करें, और यदि मानचित्रण एक-से-एक नहीं है तो स्पष्ट रूप से कहें। उपयोग से पहले मूल अधिनियम से पुष्टि करने की याद दिलाएं।" },
+      { title: "बयान का सारांश दें", desc: "गवाह या शिकायतकर्ता के बयान को संक्षेप में प्रस्तुत करें।", prompt: "मैं जो बयान भेजूँ उसका सारांश मुख्य तथ्यों में दें: कौन, क्या, कब, कहाँ, और क्या देखा या सुना गया। पाठ में जो नहीं है उसे न जोड़ें, न अनुमान लगाएं; जो बिंदु अस्पष्ट या विरोधाभासी हों उन्हें अलग सूचीबद्ध करें।" }
     ]
   },
   "kn-IN": {
@@ -116,20 +120,22 @@ const UI_TRANSLATIONS: Record<string, {
     followUpPlaceholder: "ಮುಂದಿನ ಪ್ರಶ್ನೆ ಕೇಳಿ...",
     exportBrief: "ವರದಿ ರಫ್ತು ಮಾಡಿ",
     newConversation: "ಹೊಸ ಸಂಭಾಷಣೆ",
-    auditingText: "ಒ.ಆರ್.ಸಿ.ಎ ಎಐ ರಾಜ್ಯದ ಅಪರಾಧ ದಾಖಲೆಗಳನ್ನು ಪರಿಶೀಲಿಸುತ್ತಿದೆ...",
+    auditingText: "ಒ.ಆರ್.ಸಿ.ಎ ಎಐ ಯೋಚಿಸುತ್ತಿದೆ...",
     cards: [
-      { title: "ಗುಪ್ತಚರ ಸಾರಾಂಶ ರಚಿಸಿ", desc: "ಎಫ್‌ಐಆರ್ ಪ್ರಕರಣದ ವಿವರಗಳನ್ನು ಕ್ರೋಢೀಕರಿಸಿ.", prompt: "ಇತ್ತೀಚಿನ ಪ್ರಮುಖ ಪ್ರಕರಣಗಳ ಕುರಿತು ಗುಪ್ತಚರ ವರದಿ ಸಿದ್ಧಪಡಿಸಿ." },
-      { title: "ಸಾಕ್ಷ್ಯಾಧಾರ ದಾಖಲೆ ವಿಶ್ಲೇಷಿಸಿ", desc: "ದಾಖಲೆ ಪರಿಶೀಲನೆಯ ಮೆಟಾಡೇಟಾ ವಿವರಗಳನ್ನು ಪರಿಶೀಲಿಸಿ.", prompt: "ಪ್ರಸ್ತುತ ದಾಖಲೆಗಳ ವಿಧಿವಿಜ್ಞಾನ ಸಾಕ್ಷ್ಯ ಪರಿಶೀಲನೆ ವಿವರಗಳನ್ನು ವಿವರಿಸಿ." },
-      { title: "ಅಪರಾಧ ಜಾಲದ ಪರಿಶೀಲನೆ", desc: "ಸಂಘಟಿತ ಅಪರಾಧ ಜಾಲದ ವಿವರಗಳನ್ನು ಹುಡುಕಿ.", prompt: "ಅಪರಾಧ ಜಾಲ ಮತ್ತು ಜಿಲ್ಲಾಂತರ ಸಂಪರ್ಕಗಳನ್ನು ವಿಶ್ಲೇಷಿಸಿ." },
-      { title: "ಪ್ರಕರಣದ ವರದಿ ಸಾರಾಂಶ", desc: "ಬಿಎನ್‌ಎಸ್‌ ಕಾನೂನು ಕಾಯ್ದೆಗಳೊಂದಿಗೆ ವರದಿ ಜೋಡಿಸಿ.", prompt: "ಇತ್ತೀಚಿನ ಪ್ರಕರಣಗಳ ವರದಿಯನ್ನು ಬಿಎನ್‌ಎಸ್ ಕಾನೂನು ಕಾಯ್ದೆಗಳಿಗೆ ಸಾರಾಂಶಗೊಳಿಸಿ." },
-      { title: "ಸಿಸ್ಟಮ್ ಲಾಗ್ ಪರಿಶೀಲನೆ", desc: "ಡೇಟಾಬೇಸ್ ನೋಡ್ ಸಮಯ ಮೀರುವಿಕೆ ಮತ್ತು ಎಪಿಐ ಲಾಗ್‌ಗಳನ್ನು ಪರಿಶೀಲಿಸಿ.", prompt: "ಇತ್ತೀಚಿನ ಎಪಿಐ ಲಾಗ್‌ಗಳು ಮತ್ತು ಡೇಟಾಬೇಸ್ ನೋಡ್‌ಗಳನ್ನು ಪರಿಶೀಲಿಸಲು ಸಹಾಯ ಮಾಡಿ." },
-      { title: "ರಾಜ್ಯಮಟ್ಟದ ಬೆದರಿಕೆ ವಿಶ್ಲೇಷಣೆ", desc: "ಹೆಚ್ಚಿನ ಬೆದರಿಕೆ ಹಂತ 8.0 ಮೇಲಿರುವ ಜಿಲ್ಲೆಗಳ ಪಟ್ಟಿ.", prompt: "ಹೆಚ್ಚಿನ ಅಪಾಯವಿರುವ ಜಿಲ್ಲೆಗಳ ರಾಜ್ಯಮಟ್ಟದ ಬೆದರಿಕೆ ವಿಶ್ಲೇಷಣೆ ನೀಡಿ." }
+      { title: "ಎಫ್‌ಐಆರ್ ವಿವರಣೆ ಸಿದ್ಧಪಡಿಸಿ", desc: "ನಿಮ್ಮ ಘಟನೆಯ ಟಿಪ್ಪಣಿಗಳನ್ನು ಕ್ರಮಬದ್ಧ ವಿವರಣೆಯಾಗಿ ಪರಿವರ್ತಿಸಿ.", prompt: "ಸ್ಪಷ್ಟ ಮತ್ತು ವಾಸ್ತವಿಕ ಎಫ್‌ಐಆರ್ ವಿವರಣೆ ಸಿದ್ಧಪಡಿಸಲು ಸಹಾಯ ಮಾಡಿ. ಘಟನೆಯ ವಿವರಗಳನ್ನು ಮುಂದೆ ನೀಡುತ್ತೇನೆ." },
+      { title: "ಬಿಎನ್‌ಎಸ್ ಕಲಂ ವಿವರಿಸಿ", desc: "ಒಂದು ಕಲಂ ಏನನ್ನು ಒಳಗೊಂಡಿದೆ, ಸರಳ ಭಾಷೆಯಲ್ಲಿ.", prompt: "ನಾನು ಹೆಸರಿಸುವ ಬಿಎನ್‌ಎಸ್ ಕಲಂ ಅನ್ನು ವಿವರಿಸಿ: ಅದು ಏನನ್ನು ಒಳಗೊಂಡಿದೆ, ಅದರ ಅಗತ್ಯ ಅಂಶಗಳು ಮತ್ತು ಶಿಕ್ಷೆ. ಐಪಿಸಿ ಸಮಾನ ಕಲಂ ಇದ್ದರೆ ತಿಳಿಸಿ." },
+      { title: "ಯಾವ ಕಲಂಗಳು ಅನ್ವಯಿಸಬಹುದು", desc: "ಘಟನೆ ವಿವರಿಸಿ, ಸಂಭಾವ್ಯ ಕಲಂಗಳನ್ನು ಪಡೆಯಿರಿ.", prompt: "ನಾನು ಒಂದು ಘಟನೆಯನ್ನು ವಿವರಿಸುತ್ತೇನೆ. ಯಾವ ಬಿಎನ್‌ಎಸ್ ಕಲಂಗಳು ಅನ್ವಯಿಸಬಹುದು ಮತ್ತು ಏಕೆ ಎಂದು ಸೂಚಿಸಿ; ದಾಖಲಿಸುವ ಮೊದಲು ಮೂಲ ಕಾಯ್ದೆಯಿಂದ ಖಚಿತಪಡಿಸಿಕೊಳ್ಳಬೇಕಾದವುಗಳನ್ನು ಗುರುತಿಸಿ." },
+      { title: "ಸಾರ್ವಜನಿಕ ಪ್ರಕಟಣೆ ಅನುವಾದ", desc: "ಸಮುದಾಯ ಸಂವಹನಕ್ಕಾಗಿ ಕನ್ನಡ ಅಥವಾ ಹಿಂದಿಗೆ.", prompt: "ನಾನು ನೀಡುವ ಪ್ರಕಟಣೆಯನ್ನು ಕನ್ನಡ ಮತ್ತು ಹಿಂದಿಗೆ ಅನುವಾದಿಸಿ, ಕಾನೂನು ಪದಗಳ ನಿಖರತೆ ಕಾಪಾಡಿ." },
+      { title: "ಐಪಿಸಿಯಿಂದ ಬಿಎನ್‌ಎಸ್ ಸಮಾನ ಕಲಂ", desc: "ಹಳೆಯ ಕಲಂ ಬದಲಿಗೆ ಬಂದ ಕಲಂ ಹುಡುಕಿ.", prompt: "ನಾನು ಐಪಿಸಿ ಕಲಂ ಸಂಖ್ಯೆ ನೀಡುತ್ತೇನೆ. ಅದಕ್ಕೆ ಸಂಬಂಧಿಸಿದ ಬಿಎನ್‌ಎಸ್ ಕಲಂ ತಿಳಿಸಿ, ವ್ಯಾಪ್ತಿ ಅಥವಾ ಶಿಕ್ಷೆಯಲ್ಲಿ ಬದಲಾವಣೆ ಇದ್ದರೆ ಸೂಚಿಸಿ, ಮತ್ತು ಹೊಂದಾಣಿಕೆ ಒಂದಕ್ಕೊಂದು ಅಲ್ಲದಿದ್ದರೆ ಸ್ಪಷ್ಟವಾಗಿ ಹೇಳಿ. ಬಳಸುವ ಮೊದಲು ಮೂಲ ಕಾಯ್ದೆಯಿಂದ ಖಚಿತಪಡಿಸಿಕೊಳ್ಳಲು ನೆನಪಿಸಿ." },
+      { title: "ಹೇಳಿಕೆಯ ಸಾರಾಂಶ", desc: "ಸಾಕ್ಷಿ ಅಥವಾ ದೂರುದಾರರ ಹೇಳಿಕೆಯನ್ನು ಸಂಕ್ಷಿಪ್ತಗೊಳಿಸಿ.", prompt: "ನಾನು ನೀಡುವ ಹೇಳಿಕೆಯನ್ನು ಮುಖ್ಯ ಸಂಗತಿಗಳಲ್ಲಿ ಸಾರಾಂಶಗೊಳಿಸಿ: ಯಾರು, ಏನು, ಯಾವಾಗ, ಎಲ್ಲಿ, ಮತ್ತು ಏನು ಕಂಡರು ಅಥವಾ ಕೇಳಿದರು. ಪಠ್ಯದಲ್ಲಿ ಇಲ್ಲದ್ದನ್ನು ಸೇರಿಸಬೇಡಿ ಅಥವಾ ಊಹಿಸಬೇಡಿ; ಅಸ್ಪಷ್ಟ ಅಥವಾ ವಿರೋಧಾಭಾಸದ ಅಂಶಗಳನ್ನು ಪ್ರತ್ಯೇಕವಾಗಿ ಪಟ್ಟಿ ಮಾಡಿ." }
     ]
   }
 };
 
 export const AIChatbotModule: React.FC = () => {
   const { officerProfile } = useAuth();
+  // Firebase authenticates; Catalyst holds the officer record.
+  const { profile: catalystProfile } = useCatalystProfile();
   const {
     conversations,
     activeConvId,
@@ -203,10 +209,12 @@ export const AIChatbotModule: React.FC = () => {
   const [inputText, setInputText] = useState("");
   const [pendingAttachments, setPendingAttachments] = useState<AttachmentFile[]>([]);
 
-  // Voice States
-  const [isListening, setIsListening] = useState(false);
+  // Voice States. The recognition and synthesis plumbing lives in useVoice —
+  // it was duplicated here and in MiniAIAssistant, and the copy here could not
+  // actually stop the microphone. See src/lib/useVoice.ts.
   const [speechLanguage, setSpeechLanguage] = useState("en-US");
   const [ttsEnabled, setTtsEnabled] = useState(false);
+  const [handsFree, setHandsFree] = useState(false);
 
   const chatContainerRef = useRef<HTMLDivElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -254,93 +262,63 @@ export const AIChatbotModule: React.FC = () => {
   };
 
   // Handle File Upload Attachment
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files) {
-      const filesArray = Array.from(e.target.files).map(file => ({
-        name: file.name,
-        size: file.size,
-        type: file.type || "document"
-      }));
-      setPendingAttachments(prev => [...prev, ...filesArray]);
-    }
+  /**
+   * File types whose text the assistant can genuinely use. Anything else is
+   * accepted but flagged, rather than being attached and silently ignored.
+   */
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files) return;
+    // Reading, downscaling and the "cannot read this" wording all live in
+    // imageAttachment, so this surface and MiniAIAssistant cannot drift apart.
+    const files = await Promise.all(Array.from(e.target.files).map(readAttachment));
+    setPendingAttachments(prev => [...prev, ...files]);
   };
 
   const removeAttachment = (index: number) => {
     setPendingAttachments(prev => prev.filter((_, i) => i !== index));
   };
 
-  // Browser Speech-to-Text Recognition
-  const startListening = () => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      alert("Speech recognition is not supported in this browser. Please use Chrome or Safari.");
-      return;
-    }
-    
-    const recognition = new SpeechRecognition();
-    recognition.lang = speechLanguage;
-    recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
+  /*
+   * Dictation and narration, from the shared hook.
+   *
+   * Hands-free needs `submitMessage`, which is declared below, so the hook is
+   * handed a ref rather than the function itself — a plain reference here would
+   * be a use-before-declaration.
+   */
+  const submitRef = useRef<(text: string) => void>(() => {});
 
-    setIsListening(true);
-    recognition.start();
+  const voice = useVoice({
+    language: speechLanguage,
+    narrate: ttsEnabled,
+    handsFree,
+    onTranscript: (text) => setInputText(text),
+    onUtteranceComplete: (text) => {
+      setInputText("");
+      submitRef.current(text);
+    },
+  });
 
-    recognition.onresult = (event: any) => {
-      const speechToText = event.results[0][0].transcript;
-      setInputText(prev => prev + (prev ? " " : "") + speechToText);
-    };
+  const { micState, interim, speaking } = voice;
+  const isListening = micState === "listening";
 
-    recognition.onerror = (event: any) => {
-      if (event.error === "no-speech") {
-        console.warn("Speech recognition: no speech detected (silent timeout).");
-      } else {
-        console.error("Speech recognition error:", event.error);
-      }
-      setIsListening(false);
-    };
-
-    recognition.onend = () => {
-      setIsListening(false);
-    };
-  };
-
-  const toggleMicrophone = () => {
-    if (isListening) {
-      setIsListening(false);
-    } else {
-      startListening();
-    }
-  };
-
-  // Browser Text-to-Speech Narration
-  const speakText = (text: string) => {
-    if (typeof window === "undefined" || !window.speechSynthesis) return;
-    window.speechSynthesis.cancel();
-    const cleanText = text.replace(/[*#`_\-⚠️]/g, "").trim();
-    const utterance = new SpeechSynthesisUtterance(cleanText);
-    
-    // Dynamically detect language from the actual text block characters
-    const detectedLang = detectTextLanguage(cleanText);
-    utterance.lang = detectedLang;
-    
-    const voices = window.speechSynthesis.getVoices();
-    let voice = voices.find(v => v.lang.toLowerCase() === detectedLang.toLowerCase().replace("_", "-"));
-    if (!voice) {
-      const langPrefix = detectedLang.split("-")[0].toLowerCase();
-      voice = voices.find(v => v.lang.toLowerCase().startsWith(langPrefix));
-    }
-    if (voice) {
-      utterance.voice = voice;
-    }
-    
-    window.speechSynthesis.speak(utterance);
-  };
-
-  const stopSpeaking = () => {
-    if (typeof window !== "undefined" && window.speechSynthesis) {
-      window.speechSynthesis.cancel();
-    }
-  };
+  /**
+   * Why the microphone cannot be used, in the officer's words rather than the
+   * browser's. `inputAllowed` is null until the department policy has loaded,
+   * and the control stays disabled until it is known — never optimistic.
+   */
+  const micUsable = micState !== "unsupported" && micState !== "disabled" && voice.inputAllowed === true;
+  const micTitle =
+    voice.transcribing ? "Transcribing your dictation..."
+    : micState === "listening" ? (voice.cloudStt ? "Recording — click to stop and transcribe" : "Listening — click to stop")
+    : micState === "unsupported" ? "This browser cannot capture speech. Chrome or Edge can."
+    : micState === "disabled" || voice.inputAllowed === false ? "Voice input is switched off for this department in System Settings"
+    : voice.inputAllowed === null ? "Checking whether voice input is permitted..."
+    : micState === "denied" ? "Microphone access was blocked. Allow it in your browser's site settings."
+    : micState === "error" ? "The microphone could not be started. Try again."
+    : "Dictate a question";
+  const speakText = voice.speak;
+  const stopSpeaking = voice.stopSpeaking;
+  const toggleMicrophone = voice.toggleListening;
 
   const handleToggleTts = () => {
     const nextVal = !ttsEnabled;
@@ -360,7 +338,22 @@ export const AIChatbotModule: React.FC = () => {
     if (!promptText.trim() && attachments.length === 0) return;
 
     const cleanPrompt = promptText.trim();
-    
+
+    /**
+     * Attachment text, appended to what the model receives.
+     *
+     * Attachments used to be display-only: the chip appeared in the thread and
+     * nothing was sent, so the assistant answered "you didn't paste the notice"
+     * while the officer was looking at their own attached file.
+     *
+     * Files that could not be read are named explicitly rather than dropped, so
+     * the assistant can say so instead of ignoring a file the officer can see.
+     */
+    // One attachment is not one image: a scanned PDF contributes a page each.
+    const imageParts = imagePayload(attachments);
+
+    const promptForModel = buildPromptWithAttachments(cleanPrompt, attachments);
+
     // Add user message to sync context
     const targetConvId = await addMessageToActiveConv(cleanPrompt, attachments, undefined, "user", targetConvIdParam);
     
@@ -368,12 +361,31 @@ export const AIChatbotModule: React.FC = () => {
 
     try {
       const currentQuery = cleanPrompt.toLowerCase();
+
+      /**
+       * Intent routing.
+       *
+       * These branches used to fire on bare substrings, which misrouted ordinary
+       * questions:
+       *   includes("map")      matched "mapping is not one-to-one"
+       *   includes("generate") matched "generate an intelligence brief"
+       *   includes("track")    matched "contract", "backtrack"
+       *   includes("show me")  matched almost any polite request
+       *
+       * A request now has to actually ask for a picture or a place, and the
+       * keyword has to stand as its own word.
+       */
+      const WANTS_IMAGE =
+        /\b(?:generate|create|draw|make|render|produce|show)\b[^.?!]{0,40}\b(?:image|picture|photo|portrait|sketch|mugshot)\b/i;
+      const WANTS_MAP =
+        /\b(?:show|draw|display|open|get|find|plot)\b[^.?!]{0,30}\bmap\b|\bmap\s+of\b|\bwhere\s+is\b|\blocate\b|\bcoordinates?\s+(?:of|for)\b|\broute\s+(?:to|from|between)\b/i;
       let responseText = "";
       let structuredReport: AIPresetBrief | undefined = undefined;
       let media: any = undefined;
       let isMocked = false;
+      let evidence: ChatMessage["evidence"] | undefined = undefined;
 
-      if (currentQuery.includes("image") || currentQuery.includes("picture") || currentQuery.includes("photo") || currentQuery.includes("generate") || currentQuery.includes("show me") || currentQuery.includes("biometric") || currentQuery.includes("mugshot") || currentQuery.includes("portrait")) {
+      if (WANTS_IMAGE.test(cleanPrompt) && !imageParts.length) {
         isMocked = true;
 
         // --- Extract subject from prompt ---
@@ -396,17 +408,69 @@ export const AIChatbotModule: React.FC = () => {
         // Fallback to full prompt if extraction strips too much
         if (subject.length < 2) subject = cleanPrompt;
 
-        // Encode for Pollinations URL
-        const pollinationsSubject = encodeURIComponent(`realistic professional portrait of ${subject}, detailed face, high resolution, dramatic lighting`);
-        const imageUrl = `https://image.pollinations.ai/prompt/${pollinationsSubject}?width=768&height=512&seed=${Date.now()}&nologo=true`;
+        /**
+         * FACES OF PEOPLE ARE REFUSED.
+         *
+         * The prompt sent to the image service used to be
+         *
+         *     "realistic professional portrait of <subject>, detailed face,
+         *      high resolution, dramatic lighting"
+         *
+         * and the extraction above deliberately strips "mugshot of",
+         * "portrait of" and "biometric profile of" — so typing
+         * "mugshot of <name>" in a police console produced a photorealistic
+         * synthetic face of a named individual, from a public text-to-image
+         * service, with the officer's text sent to that third party.
+         *
+         * The disclaimer under it was accurate but is not a control: a
+         * realistic face, once rendered, gets screenshotted, forwarded and
+         * mistaken for a record. There is no legitimate investigative use for
+         * a generated likeness of a person, so the request is declined rather
+         * than answered carefully.
+         *
+         * Illustrations of objects, scenes and diagrams still work.
+         */
+        // Built via RegExp so the word-boundary escapes survive: written as a
+        // literal here, the escape was emitted as an actual backspace byte,
+        // and unbounded "face" matches inside "interface".
+        const PERSON_REQUEST = new RegExp(
+          String.raw`\b(mugshot|portrait|suspect|accused|face|likeness|biometric)\b`,
+          "i"
+        );
+        // Two capitalised words in a row reads as a personal name.
+        const namedPerson = new RegExp(String.raw`\b[A-Z][a-z]+\s+[A-Z][a-z]+\b`).test(subject);
 
-        responseText = `**O.R.C.A Biometric Synthesis Array Online**\n\nStaging high-fidelity image reconstruction for target: **${subject}**.\nCross-referencing surveillance files, database mugshots, and state intelligence records.\n\nSuspect biometric profile compiled successfully:`;
-        media = {
-          type: "image",
-          url: imageUrl,
-          caption: `AI Suspect Reconstruction // Case ID Ref: KSP-ISD-${Date.now().toString().slice(-6)} // Target: ${subject}`
-        };
-      } else if (currentQuery.includes("map") || currentQuery.includes("route") || currentQuery.includes("location") || currentQuery.includes("grid") || currentQuery.includes("coordinate") || currentQuery.includes("track") || currentQuery.includes("draw a map") || currentQuery.includes("show map")) {
+        if (PERSON_REQUEST.test(cleanPrompt) || namedPerson) {
+          responseText = `**Request declined**
+
+I do not generate images of people — including likenesses, portraits, mugshots or biometric reconstructions — in this console.
+
+A generated face is not evidence and is not drawn from any police record, but once rendered it can be mistaken for one. If you need a photograph of a person on a case, it belongs in that person's record, not in a generated image.
+
+I can still illustrate objects, vehicles, scenes and diagrams.`;
+          media = undefined;
+        } else {
+          /**
+           * A public text-to-image service. It consults NO police record, and
+           * the subject text IS sent to a third party — so nothing that
+           * identifies a person should reach it. That is what the check above
+           * is for.
+           */
+          const pollinationsSubject = encodeURIComponent(`illustration of ${subject}, clean, neutral, diagrammatic`);
+          const imageUrl = `https://image.pollinations.ai/prompt/${pollinationsSubject}?width=768&height=512&seed=${Date.now()}&nologo=true`;
+
+          responseText = `**AI-generated illustration**
+
+Rendered from your description of **${subject}** by a public image model.
+
+⚠️ This is an artist's impression, not a photograph and not evidence. It is **not** drawn from any police record and must not be used to identify anything or anyone.`;
+          media = {
+            type: "image",
+            url: imageUrl,
+            caption: `AI-generated illustration from a text description · not evidence, not from any police record · subject as described: ${subject}`
+          };
+        }
+      } else if (WANTS_MAP.test(cleanPrompt) && !imageParts.length) {
         isMocked = true;
 
         // --- Extract location from the prompt ---
@@ -446,7 +510,15 @@ export const AIChatbotModule: React.FC = () => {
 
         const iframeSrc = `https://www.openstreetmap.org/export/embed.html?bbox=${bbox.west},${bbox.south},${bbox.east},${bbox.north}&layer=mapnik&marker=${lat},${lon}`;
 
-        responseText = `**O.R.C.A Geospatial Target Matrix Activated**\n\nSynchronizing with satellite uplinks and regional intercept sensors.\nLocking geospatial grid on: **${displayName}**\n\n* **Grid Center:** ${lat.toFixed(4)}° N, ${lon.toFixed(4)}° E\n* **Integrity Lock:** 97.3% confidence index\n* **Source:** OpenStreetMap / ORCA GIS Layer`;
+        // The geocoding IS real (Nominatim). The claims around it were not: there
+        // are no satellite uplinks, no intercept sensors, no "ORCA GIS Layer", and
+        // the "97.3% confidence index" was a constant.
+        responseText = `**Location lookup**
+
+Matched **${displayName}**
+
+* **Coordinates:** ${lat.toFixed(4)}° N, ${lon.toFixed(4)}° E
+* **Source:** OpenStreetMap / Nominatim — public map data, not a police source`;
         media = {
           type: "map",
           iframeSrc,
@@ -462,7 +534,15 @@ export const AIChatbotModule: React.FC = () => {
         const res = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt: cleanPrompt, history: messages, speechLanguage })
+          body: JSON.stringify({
+            prompt: promptForModel,
+            // Logged to the audit trail instead of promptForModel, which
+            // carries the contents of any attached file.
+            auditPrompt: cleanPrompt,
+            history: messages,
+            speechLanguage,
+            images: imageParts,
+          })
         });
         let data: any = {};
         const contentType = res.headers.get("content-type");
@@ -478,16 +558,39 @@ export const AIChatbotModule: React.FC = () => {
         }
 
         responseText = data.text || "ORCA AI Core processed your directive.";
-        if (currentQuery.includes("fir") || currentQuery.includes("report") || currentQuery.includes("briefing") || currentQuery.includes("dossier")) {
-          structuredReport = aiReportDatabase["preset-1"];
+        /*
+         * The evidence trail travels with the answer.
+         *
+         * It is assembled on the server from the rows actually retrieved, so
+         * nothing here is re-derived from the reply text: if the model names a
+         * record it never read, `unsupported` says so and the panel below the
+         * message labels it rather than letting it read as a finding.
+         */
+        if (data.retrieval || data.retrievalError || (data.unsupported || []).length || data.contradiction || data.unverifiedAbsence) {
+          evidence = {
+            retrieval: data.retrieval ?? null,
+            retrievalError: data.retrievalError ?? null,
+            unsupported: data.unsupported || [],
+            contradiction: !!data.contradiction,
+            unverifiedAbsence: !!data.unverifiedAbsence,
+          };
         }
+        // A hardcoded dossier used to be attached here whenever the question
+        // mentioned "fir", "report", "briefing" or "dossier": a SECRET-classified
+        // brief naming a suspect, with invented bank-ledger tables, presented
+        // beside a genuine AI answer as though the system had produced it.
+        // Nothing generated it and nothing verified it. A structured report is
+        // attached only when there is a real source for one.
       }
 
       // Add assistant response to sync context with report & media
-      await addMessageToActiveConv(responseText, undefined, structuredReport, "orca", targetConvId, media);
+      await addMessageToActiveConv(responseText, undefined, structuredReport, "orca", targetConvId, media, evidence);
 
-      if (ttsEnabled) {
-        speakText(responseText);
+      // Narrates when enabled, and in hands-free mode reopens the microphone
+      // once narration has FINISHED — never during it, or the assistant
+      // transcribes its own voice.
+      if (ttsEnabled || handsFree) {
+        voice.handleReply(responseText);
       }
     } catch (err: any) {
       console.error("[NVIDIA NIM Chat Error]:", err);
@@ -497,6 +600,9 @@ export const AIChatbotModule: React.FC = () => {
       setIsGeneratingChat(false);
     }
   };
+
+  // Kept current so hands-free dictation reaches the real submit function.
+  useEffect(() => { submitRef.current = (text: string) => { submitMessage(text, []); }; });
 
   const querySentRef = useRef(false);
 
@@ -546,8 +652,20 @@ export const AIChatbotModule: React.FC = () => {
       return;
     }
 
-    const officerName = officerProfile?.name || "Command Officer";
+    // From Catalyst, so an exported brief carries the officer's actual
+    // identity and clearance rather than a constant.
+    const officerName = catalystProfile?.name || "Not on record";
+    const officerClearance = catalystProfile?.clearanceLevel || "Not on record";
+    const officerKgid = catalystProfile?.kgid || "Not on record";
     const dateStr = new Date().toLocaleString() + " IST";
+
+    // Citations carry names and places typed by officers. They go into the
+    // document as text, never as markup.
+    const esc = (v: unknown) =>
+      String(v ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
     
     const messagesHtml = activeConv.messages.map(msg => {
       const senderLabel = msg.sender === "user" ? "Investigating Officer" : "O.R.C.A AI Core";
@@ -562,10 +680,65 @@ export const AIChatbotModule: React.FC = () => {
         formattedText = formattedText.replace(/```(\w*)\n([\s\S]*?)```/g, "<pre><code class='language-$1'>$2</code></pre>");
       }
 
+      /*
+       * The evidence trail is part of the document, not a screen decoration.
+       *
+       * An exported briefing gets filed, forwarded and quoted long after the
+       * conversation is gone. A paragraph about an FIR is only usable if the
+       * page also carries which query produced it, whose jurisdiction applied
+       * and which records back it - and, where it applies, the warning that a
+       * reference in the text is unsourced.
+       */
+      const ev = msg.evidence;
+      let evidenceHtml = "";
+
+      if (ev?.unsupported?.length) {
+        evidenceHtml += `
+          <div class="evidence-warning">
+            <div class="evidence-label">UNVERIFIED REFERENCE</div>
+            <div>The text above mentions ${esc(ev.unsupported.join(", "))}, which
+            ${ev.unsupported.length === 1 ? "does" : "do"} not appear in any record retrieved for
+            this question. Verify against the case file before acting on
+            ${ev.unsupported.length === 1 ? "it" : "them"}.</div>
+          </div>`;
+      }
+      if (ev?.retrievalError) {
+        evidenceHtml += `
+          <div class="evidence-warning">
+            <div class="evidence-label">RECORDS UNAVAILABLE</div>
+            <div>The crime database could not be read for this question
+            (${esc(ev.retrievalError)}). Nothing above is drawn from case records.</div>
+          </div>`;
+      }
+      if (ev?.retrieval) {
+        const r = ev.retrieval;
+        const filters = Object.entries(r.args || {})
+          .filter(([, v]) => String(v ?? "").trim())
+          .map(([k, v]) => `${k}: ${v}`)
+          .join("  &middot;  ") || "no filters";
+        const cites = (r.citations || []).length
+          ? `<ul class="evidence-list">${(r.citations || [])
+              .map((c: any) => `<li><strong>${esc(c.label)}</strong>${c.detail ? ` &mdash; ${esc(c.detail)}` : ""}<span class="evidence-src">${esc(c.table)} &middot; ${esc(c.recordId)}</span></li>`)
+              .join("")}</ul>`
+          : `<div class="evidence-note">A count rather than a set of records, computed over ${r.matched} case record(s). No individual record to cite.</div>`;
+
+        evidenceHtml += `
+          <div class="evidence">
+            <div class="evidence-label">EVIDENCE TRAIL</div>
+            <div class="evidence-row"><span>QUERY</span>${esc(r.toolLabel || r.tool)} (${esc(r.tool)})</div>
+            <div class="evidence-row"><span>FILTERS</span>${esc(filters)}</div>
+            <div class="evidence-row"><span>MATCHED</span>${r.matched} record(s)${r.truncated ? `, ${r.returned} used in the answer` : ""}</div>
+            <div class="evidence-row"><span>JURISDICTION</span>${esc(r.scopeNote || "")}</div>
+            ${cites}
+            ${(r.notes || []).length ? `<div class="evidence-note">${esc((r.notes || []).join(" "))}</div>` : ""}
+          </div>`;
+      }
+
       return `
         <div class="message-card ${msg.sender}">
           <div class="message-meta">${senderLabel} &bull; ${msg.timestamp}</div>
           <div class="message-body">${formattedText}</div>
+          ${evidenceHtml}
         </div>
       `;
     }).join("");
@@ -723,6 +896,84 @@ export const AIChatbotModule: React.FC = () => {
               color: #1e293b;
             }
 
+            .evidence {
+              margin-top: 12px;
+              border: 1px solid #cbd5e1;
+              border-left: 3px solid #FF9933;
+              border-radius: 6px;
+              padding: 10px 12px;
+              background: #f8fafc;
+              font-size: 11px;
+              color: #334155;
+              page-break-inside: avoid;
+            }
+
+            .evidence-warning {
+              margin-top: 12px;
+              border: 1px solid #b91c1c;
+              border-radius: 6px;
+              padding: 10px 12px;
+              background: #fef2f2;
+              font-size: 11px;
+              color: #7f1d1d;
+              line-height: 1.6;
+              page-break-inside: avoid;
+            }
+
+            .evidence-label {
+              font-family: 'JetBrains Mono', monospace;
+              font-size: 9px;
+              letter-spacing: 0.08em;
+              font-weight: 700;
+              color: #001f3f;
+              margin-bottom: 6px;
+            }
+
+            .evidence-warning .evidence-label { color: #b91c1c; }
+
+            .evidence-row {
+              display: flex;
+              gap: 10px;
+              margin-bottom: 4px;
+              line-height: 1.5;
+            }
+
+            .evidence-row span {
+              font-family: 'JetBrains Mono', monospace;
+              font-size: 9px;
+              letter-spacing: 0.06em;
+              color: #94a3b8;
+              min-width: 82px;
+              flex-shrink: 0;
+              padding-top: 2px;
+            }
+
+            .evidence-list {
+              margin: 8px 0 0 0;
+              padding-left: 16px;
+            }
+
+            .evidence-list li {
+              margin-bottom: 5px;
+              line-height: 1.5;
+            }
+
+            .evidence-src {
+              display: block;
+              font-family: 'JetBrains Mono', monospace;
+              font-size: 9px;
+              color: #94a3b8;
+              letter-spacing: 0.04em;
+            }
+
+            .evidence-note {
+              margin-top: 8px;
+              padding-top: 7px;
+              border-top: 1px solid #cbd5e1;
+              color: #475569;
+              line-height: 1.6;
+            }
+
             pre {
               background: #f1f5f9;
               border: 1px solid #cbd5e1;
@@ -816,7 +1067,8 @@ export const AIChatbotModule: React.FC = () => {
               <div class="header-meta">
                 Ref: BRIEF-${activeConv.id.substring(5, 12).toUpperCase()}<br/>
                 Officer: ${officerName}<br/>
-                Clearance: ISD-LEVEL-IV
+                KGID: ${officerKgid}<br/>
+                Clearance: ${officerClearance}
               </div>
             </header>
             
@@ -898,15 +1150,8 @@ export const AIChatbotModule: React.FC = () => {
   );
   const groupedConvs = groupConversationsByDate(filteredConvs);
 
-  // Suggestion Prompts Welcome dashboard config
-  const welcomeSuggestions = [
-    { title: "Generate Intelligence Brief", desc: "Compile incident points for a custom FIR Case Number.", prompt: "" },
-    { title: "Explain Evidence Files", desc: "Breakdown metadata check logs of document verification.", prompt: "Audit the document hash parameters of case VER-2026-ISD-CR-9000 and verify chain of custody logs." },
-    { title: "Analyze Incident Dossier", desc: "Search syndicate network details for a target name.", prompt: "" },
-    { title: "Summarize Case Reports", desc: "Synthesize modus operandi mapped to BNS legal clauses.", prompt: "Summarize the legal sections of the active case dossier and list BNS extortion and forgery mappings." },
-    { title: "Help Audit Code logs", desc: "Inspect database node timeouts or API logs.", prompt: "Audit the command center active cell fluctuations and telemetry dashboard scoring math." },
-    { title: "Statewide Threat Analysis", desc: "List high-risk districts above threat level 8.0.", prompt: "Analyze the Geospatial Heatmap and list districts projecting threat indices exceeding level 8.0." }
-  ];
+  // `welcomeSuggestions` was removed: it duplicated the quick-action cards,
+  // was never rendered, and still held the retired copy.
 
   return (
     <div style={{
@@ -1222,6 +1467,79 @@ export const AIChatbotModule: React.FC = () => {
               <option value="kn-IN">Kannada (ಕನ್ನಡ)</option>
             </select>
 
+            {/*
+              One switch for both halves of voice.
+
+              Narration is always available — it runs in the browser and no
+              audio leaves the machine. Hands-free additionally opens the
+              MICROPHONE after each reply, so it is offered only where the
+              department has permitted voice input.
+            */}
+            <button
+              onClick={handleToggleTts}
+              disabled={voice.narrationVoiceMissing}
+              title={
+                voice.narrationVoiceMissing
+                  ? `No ${LANGUAGE_NAMES[speechLanguage] || speechLanguage} voice is installed on this computer, so replies in that language cannot be read aloud. Install one from Windows Settings > Time & language > Speech.`
+                  : ttsEnabled
+                    ? `Stop reading replies aloud${voice.narrationVoiceName ? ` (${voice.narrationVoiceName})` : ""}`
+                    : `Read replies aloud${voice.narrationVoiceName ? ` (${voice.narrationVoiceName})` : ""}`
+              }
+              aria-pressed={ttsEnabled}
+              style={{
+                opacity: voice.narrationVoiceMissing ? 0.45 : 1,
+                cursor: voice.narrationVoiceMissing ? "not-allowed" : "pointer",
+                background: ttsEnabled ? "rgba(0,31,63,0.08)" : "#f1f5f9",
+                border: `1px solid ${ttsEnabled ? "#001f3f" : "#cbd5e1"}`,
+                borderRadius: 6,
+                padding: "6px 10px",
+                fontSize: 12,
+                fontWeight: 600,
+                color: "#1e293b",
+                display: "flex",
+                alignItems: "center",
+                gap: 6
+              }}
+            >
+              {ttsEnabled && !voice.narrationVoiceMissing
+                ? <Volume2 style={{ width: 14, height: 14 }} />
+                : <VolumeX style={{ width: 14, height: 14 }} />}
+              <span>{voice.narrationVoiceMissing ? "No voice installed" : "Read aloud"}</span>
+            </button>
+
+            {voice.inputAllowed === true && (
+              <button
+                onClick={() => {
+                  const next = !handsFree;
+                  setHandsFree(next);
+                  if (next) { setTtsEnabled(true); voice.startListening(); }
+                  else { voice.stopListening(); voice.stopSpeaking(); }
+                }}
+                title={
+                  handsFree
+                    ? "Hands-free is on. The microphone reopens after each reply. Click to stop."
+                    : "Hands-free: speak, and the question sends itself when you stop. Replies are read aloud."
+                }
+                aria-pressed={handsFree}
+                style={{
+                  background: handsFree ? "rgba(255,153,51,0.12)" : "#f1f5f9",
+                  border: `1px solid ${handsFree ? "#FF9933" : "#cbd5e1"}`,
+                  borderRadius: 6,
+                  padding: "6px 10px",
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: "#1e293b",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6
+                }}
+              >
+                <Mic style={{ width: 14, height: 14 }} className={handsFree && isListening ? "animate-pulse" : ""} />
+                <span>Hands-free</span>
+              </button>
+            )}
+
              {/* A4 Export Brief */}
             <button
               onClick={handleExportPdf}
@@ -1303,29 +1621,29 @@ export const AIChatbotModule: React.FC = () => {
                 marginBottom: 32,
                 fontWeight: 500
               }}>
-                {(UI_TRANSLATIONS[speechLanguage] || UI_TRANSLATIONS["en-US"]).welcome(officerProfile?.name || "Officer")}
+                {(UI_TRANSLATIONS[speechLanguage] || UI_TRANSLATIONS["en-US"]).welcome(catalystProfile?.name || officerProfile?.name || "Officer")}
               </p>
 
               {/* Suggestions Prompts Grid */}
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16, width: "100%" }}>
                 {(UI_TRANSLATIONS[speechLanguage] || UI_TRANSLATIONS["en-US"]).cards.map((card, idx) => {
-                  let cardAction = () => handleSuggestionClick(card.prompt);
-                  
-                  if (idx === 0) {
-                    cardAction = () => {
-                      const val = window.prompt("Enter FIR Case Number:", "FIR/2026/BLR/104");
-                      if (val === null) return;
-                      const activeVal = val.trim() || "FIR/2026/BLR/104";
-                      handleSuggestionClick("Generate a structured police intelligence brief outlining the operational facts and coordinates of " + activeVal);
-                    };
-                  } else if (idx === 2) {
-                    cardAction = () => {
-                      const val = window.prompt("Enter Syndicate Member Name:", "Vikram Hegde");
-                      if (val === null) return;
-                      const activeVal = val.trim() || "Vikram Hegde";
-                      handleSuggestionClick("Analyze the criminal network graph mapping " + activeVal + "'s high-weight financial associates.");
-                    };
-                  }
+                  // Every card sends its own prompt. Two cards used to be special-cased
+                  // BY INDEX, which broke silently when the card set changed:
+                  //
+                  //   idx 0 opened window.prompt("Enter FIR Case Number:") pre-filled
+                  //     with "FIR/2026/BLR/104" — a mock.ts format that does not exist
+                  //     in the schema. A real case is CrimeNo, 18 digits (§4/§7):
+                  //     1 category + 4 district + 4 unit + 4 year + 5 serial.
+                  //     It then asked the model for "operational facts" about a case it
+                  //     cannot read.
+                  //   idx 2 opened window.prompt("Enter Syndicate Member Name:")
+                  //     pre-filled with "Vikram Hegde" — the fabricated suspect from the
+                  //     dossier removed in §23, still leaking into the UI.
+                  //
+                  // After the cards were rewritten those handlers landed on unrelated
+                  // cards, so "Draft an FIR narrative" asked for a case number and
+                  // "Which sections may apply" asked for a syndicate member.
+                  const cardAction = () => handleSuggestionClick(card.prompt);
 
                   return (
                     <div
@@ -1416,6 +1734,22 @@ export const AIChatbotModule: React.FC = () => {
                       {msg.attachments && msg.attachments.length > 0 && (
                         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
                           {msg.attachments.map((att, i) => (
+                            att.dataUrl || att.thumbUrl ? (
+                              /* eslint-disable-next-line @next/next/no-img-element */
+                              <img
+                                key={i}
+                                src={att.dataUrl || att.thumbUrl}
+                                alt={att.name}
+                                title={att.name}
+                                style={{
+                                  maxWidth: 180,
+                                  maxHeight: 180,
+                                  borderRadius: 8,
+                                  border: "1px solid rgba(255,255,255,0.35)",
+                                  objectFit: "cover"
+                                }}
+                              />
+                            ) : (
                             <div key={i} style={{
                               background: "rgba(255,255,255,0.15)",
                               padding: "4px 8px",
@@ -1428,6 +1762,7 @@ export const AIChatbotModule: React.FC = () => {
                               <FileText style={{ width: 12, height: 12, color: "#FF9933" }} />
                               <span>{att.name}</span>
                             </div>
+                            )
                           ))}
                         </div>
                       )}
@@ -1462,6 +1797,21 @@ export const AIChatbotModule: React.FC = () => {
                           );
                         })}
                       </div>
+
+                      {/*
+                        What the assistant read, under what it said. Renders
+                        nothing for an ordinary conversational reply that
+                        consulted no records.
+                      */}
+                      {msg.sender === "orca" && msg.evidence && (
+                        <EvidenceTrail
+                          retrieval={msg.evidence.retrieval}
+                          retrievalError={msg.evidence.retrievalError}
+                          unsupported={msg.evidence.unsupported}
+                          contradiction={msg.evidence.contradiction}
+                          unverifiedAbsence={msg.evidence.unverifiedAbsence}
+                        />
+                      )}
 
                       {/* Letterhead embedded police brief component */}
                       {msg.report && (
@@ -1578,7 +1928,7 @@ export const AIChatbotModule: React.FC = () => {
                             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                               <span style={{ color: "#FF9933", fontSize: 14 }}>📍</span>
                               <span style={{ fontSize: "11.5px", fontWeight: 700, fontFamily: "JetBrains Mono, monospace", letterSpacing: "0.05em", color: "rgba(255,255,255,0.9)" }}>
-                                GEOSPATIAL INTELLIGENCE GRID — {msg.media.locationName?.toUpperCase()}
+                                LOCATION — {msg.media.locationName?.toUpperCase()}
                               </span>
                             </div>
                             <span style={{
@@ -1591,7 +1941,7 @@ export const AIChatbotModule: React.FC = () => {
                               fontFamily: "JetBrains Mono",
                               border: "1px solid rgba(255,153,51,0.25)"
                             }}>
-                              ACTIVE SCAN
+                              OPENSTREETMAP
                             </span>
                           </div>
 
@@ -1618,7 +1968,7 @@ export const AIChatbotModule: React.FC = () => {
                               color: "rgba(255,255,255,0.7)",
                               border: "1px solid rgba(255,255,255,0.08)"
                             }}>
-                              {msg.media.lat?.toFixed(4)}° N · {msg.media.lon?.toFixed(4)}° E · O.R.C.A GIS LAYER
+                              {msg.media.lat?.toFixed(4)}° N · {msg.media.lon?.toFixed(4)}° E · OpenStreetMap
                             </div>
                           </div>
 
@@ -1632,7 +1982,7 @@ export const AIChatbotModule: React.FC = () => {
                             fontSize: "11px"
                           }}>
                             <span style={{ color: "rgba(255,255,255,0.6)" }}>
-                              <strong style={{ color: "#FF9933" }}>Grid Center:</strong> {msg.media.locationName}
+                              <strong style={{ color: "#FF9933" }}>Matched place:</strong> {msg.media.locationName}
                             </span>
                             <a
                               href={`https://www.openstreetmap.org/?mlat=${msg.media.lat}&mlon=${msg.media.lon}#map=10/${msg.media.lat}/${msg.media.lon}`}
@@ -1664,7 +2014,9 @@ export const AIChatbotModule: React.FC = () => {
                 <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 18px", background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: 12, width: "fit-content" }}>
                   <Loader2 style={{ width: 18, height: 18, color: "#FF9933", animation: "spin 1s linear infinite" }} />
                   <span style={{ fontSize: "13px", color: "#475569", fontWeight: 600 }}>
-                    O.R.C.A AI is auditing statewide crime records...
+                    {/* Was hardcoded English claiming a records audit — it reads
+                        no records, and it ignored the officer's chosen language. */}
+                    {(UI_TRANSLATIONS[speechLanguage] || UI_TRANSLATIONS["en-US"]).auditingText}
                   </span>
                 </div>
               )}
@@ -1698,25 +2050,45 @@ export const AIChatbotModule: React.FC = () => {
               {pendingAttachments.length > 0 && (
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 8, paddingBottom: 6, borderBottom: "1px solid #f1f5f9" }}>
                   {pendingAttachments.map((att, idx) => (
-                    <div key={idx} style={{
+                    <div key={idx} title={att.readError || undefined} style={{
                       display: "flex",
                       alignItems: "center",
                       gap: 6,
-                      background: "#f1f5f9",
-                      border: "1px solid #cbd5e1",
+                      // An unreadable file is marked at attach time. Previously
+                      // every file looked identical, so an officer had no way to
+                      // know the assistant would never see their image.
+                      background: att.readError ? "#fef3c7" : "#f1f5f9",
+                      border: `1px solid ${att.readError ? "#f59e0b" : "#cbd5e1"}`,
                       borderRadius: 16,
                       padding: "4px 10px",
                       fontSize: 12,
-                      color: "#1e293b",
+                      color: att.readError ? "#92400e" : "#1e293b",
                       fontWeight: 600
                     }}>
-                      <FileText style={{ width: 14, height: 14, color: "#002855" }} />
+                      {att.dataUrl || att.thumbUrl ? (
+                        /* eslint-disable-next-line @next/next/no-img-element */
+                        <img
+                          src={att.dataUrl || att.thumbUrl}
+                          alt=""
+                          style={{ width: 18, height: 18, borderRadius: 4, objectFit: "cover" }}
+                        />
+                      ) : (
+                        <FileText style={{ width: 14, height: 14, color: att.readError ? "#b45309" : "#002855" }} />
+                      )}
                       <span>{att.name}</span>
+                      {att.readError ? (
+                        <span style={{ fontWeight: 500, fontSize: 11 }}>· not readable</span>
+                      ) : null}
                       <button onClick={() => removeAttachment(idx)} style={{ background: "none", border: "none", cursor: "pointer", color: "#64748b", padding: 0 }}>
                         <X style={{ width: 14, height: 14 }} />
                       </button>
                     </div>
                   ))}
+                  {pendingAttachments.some((a) => a.readError) && (
+                    <div style={{ width: "100%", fontSize: 11, color: "#92400e", fontWeight: 500, paddingTop: 2 }}>
+                      {pendingAttachments.find((a) => a.readError)?.readError}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1732,7 +2104,7 @@ export const AIChatbotModule: React.FC = () => {
                 <input
                   type="file"
                   ref={bottomFileInputRef}
-                  accept="image/*,.pdf"
+                  accept={ATTACHMENT_ACCEPT}
                   onChange={handleFileUpload}
                   onClick={(e) => { (e.target as HTMLInputElement).value = ""; }}
                   multiple
@@ -1749,7 +2121,13 @@ export const AIChatbotModule: React.FC = () => {
                       handleSubmit();
                     }
                   }}
-                  placeholder={messages.length === 0 ? (UI_TRANSLATIONS[speechLanguage] || UI_TRANSLATIONS["en-US"]).placeholder : (UI_TRANSLATIONS[speechLanguage] || UI_TRANSLATIONS["en-US"]).followUpPlaceholder}
+                  placeholder={
+                    isListening
+                      ? (interim || "Listening...")
+                      : messages.length === 0
+                        ? (UI_TRANSLATIONS[speechLanguage] || UI_TRANSLATIONS["en-US"]).placeholder
+                        : (UI_TRANSLATIONS[speechLanguage] || UI_TRANSLATIONS["en-US"]).followUpPlaceholder
+                  }
                   style={{
                     flex: 1,
                     border: "none",
@@ -1761,11 +2139,21 @@ export const AIChatbotModule: React.FC = () => {
                   }}
                 />
 
-                {/* Micro Audio capture */}
+                {/*
+                  Microphone.
+
+                  Every reason it cannot be used is stated on the control
+                  itself. The old version popped an alert() for an unsupported
+                  browser and logged a denied permission to the console, so an
+                  officer whose microphone was blocked saw a button that simply
+                  did nothing.
+                */}
                 <button
                   type="button"
                   onClick={toggleMicrophone}
-                  title={isListening ? "Listening... click to stop" : "Voice input transcription"}
+                  disabled={!micUsable}
+                  title={micTitle}
+                  aria-label={micTitle}
                   style={{
                     background: isListening ? "rgba(239, 68, 68, 0.1)" : "none",
                     border: isListening ? "1px solid #ef4444" : "none",
@@ -1775,12 +2163,39 @@ export const AIChatbotModule: React.FC = () => {
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
-                    cursor: "pointer",
+                    cursor: micUsable ? "pointer" : "not-allowed",
+                    opacity: micUsable ? 1 : 0.4,
                     color: isListening ? "#ef4444" : "#64748b"
                   }}
                 >
-                  <Mic style={{ width: 16, height: 16 }} className={isListening ? "animate-pulse" : ""} />
+                  {micUsable
+                    ? <Mic style={{ width: 16, height: 16 }} className={isListening ? "animate-pulse" : ""} />
+                    : <MicOff style={{ width: 16, height: 16 }} />}
                 </button>
+
+                {/* Stop narration. Only there while it is talking. */}
+                {speaking && (
+                  <button
+                    type="button"
+                    onClick={stopSpeaking}
+                    title="Stop reading aloud"
+                    aria-label="Stop reading aloud"
+                    style={{
+                      background: "rgba(0,31,63,0.06)",
+                      border: "none",
+                      borderRadius: "50%",
+                      width: 32,
+                      height: 32,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      cursor: "pointer",
+                      color: "#001f3f"
+                    }}
+                  >
+                    <VolumeX style={{ width: 16, height: 16 }} />
+                  </button>
+                )}
 
                 <button
                   type="button"
@@ -1843,7 +2258,7 @@ export const AIChatbotModule: React.FC = () => {
                   Chatbot Configurations
                 </h2>
                 <p style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", margin: "4px 0 0", fontFamily: "JetBrains Mono, monospace" }}>
-                  {officerProfile?.email || "officer@orca.gov.in"}
+                  {catalystProfile?.email || "Not on record"}
                 </p>
               </div>
               <button

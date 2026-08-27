@@ -14,9 +14,17 @@ interface Barcode128Props {
   value: string;
   className?: string;
   showDebug?: boolean;
+  /**
+   * Module (narrowest bar) width in px. The footer slot on a letterhead scales
+   * the barcode down to roughly 250-380px wide, and ZXing needs about 1.8
+   * device pixels per module to decode. 2.2 only survives that for very short
+   * payloads — pass 3 alongside a compact payload for anything meant to be
+   * scanned back. See the round-trip probe in the handoff notes.
+   */
+  moduleWidth?: number;
 }
 
-export const Barcode128: React.FC<Barcode128Props> = ({ value, className = "", showDebug = false }) => {
+export const Barcode128: React.FC<Barcode128Props> = ({ value, className = "", showDebug = false, moduleWidth = 2.2 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [imgSrc, setImgSrc] = useState<string>("");
   const [isValidated, setIsValidated] = useState<boolean | null>(null);
@@ -30,7 +38,7 @@ export const Barcode128: React.FC<Barcode128Props> = ({ value, className = "", s
         const canvas = canvasRef.current;
 
         // Step 1 & Step 6 — High-precision CODE128 generation
-        // Module Width: 2.2px (high resolution crisp bars)
+        // Module Width: moduleWidth px (high resolution crisp bars)
         // Height: 75px (ample vertical optical clearance)
         // Quiet Zone Margin: 24px on both left and right sides
         JsBarcode(canvas, value, {
@@ -38,7 +46,7 @@ export const Barcode128: React.FC<Barcode128Props> = ({ value, className = "", s
           displayValue: false,
           margin: 24,
           height: 75,
-          width: 2.2,
+          width: moduleWidth,
           background: "#ffffff",
           lineColor: "#000000",
         });
@@ -81,7 +89,7 @@ export const Barcode128: React.FC<Barcode128Props> = ({ value, className = "", s
         setErrorDetails(err.message || "JsBarcode rendering exception");
       }
     }
-  }, [value]);
+  }, [value, moduleWidth]);
 
   return (
     <div className={`inline-block text-center ${className}`} style={{ textIndent: 0 }}>
@@ -114,6 +122,7 @@ export const Barcode128: React.FC<Barcode128Props> = ({ value, className = "", s
       {showDebug && (
         <div className="mt-2 text-[9px] font-mono bg-slate-900 text-slate-200 p-2 rounded text-left border border-slate-700">
           <div><strong>Format:</strong> CODE128</div>
+          <div><strong>Module Width:</strong> {moduleWidth}px</div>
           <div><strong>Payload:</strong> {value}</div>
           <div><strong>Canvas Dim:</strong> {dimensions.width}px × {dimensions.height}px</div>
           <div><strong>Pre-Verification:</strong> {isValidated ? "✅ PASSED" : "❌ FAILED"}</div>

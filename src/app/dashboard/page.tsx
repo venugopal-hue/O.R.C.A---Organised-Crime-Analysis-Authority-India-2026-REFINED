@@ -1,28 +1,37 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { db } from "@/lib/firebase";
-import { collection, query, orderBy, limit, onSnapshot } from "firebase/firestore";
 import { useIntelligence } from "@/context/IntelligenceContext";
 import { useAuth } from "@/context/AuthContext";
 import { canAccessTab, getRoleConfig } from "@/lib/rbac";
 import { Topbar } from "@/components/layout/Topbar";
 import { Sidebar } from "@/components/layout/Sidebar";
+import { PageHeader } from "@/components/layout/PageHeader";
+import { ORCA_TOKENS } from "@/lib/theme";
 import { Telemetry } from "@/components/dynamic/Telemetry";
 import { Intercepts } from "@/components/dynamic/Intercepts";
 import { MapGrid } from "@/components/dynamic/MapGrid";
 import { Network } from "@/components/dynamic/Network";
-import { Letterhead } from "@/components/dynamic/Letterhead";
 import { DocumentVerification } from "@/components/dynamic/DocumentVerification";
+import { EvidenceRegistration } from "@/components/dynamic/EvidenceRegistration";
+import { CaseRegistration } from "@/components/dynamic/CaseRegistration";
 import { AIChatbotModule } from "@/components/dynamic/AIChatbotModule";
 import { MiniAIAssistant } from "@/components/dynamic/MiniAIAssistant";
+import { meetsClearance } from "@/lib/clearance";
+import { fetchTelemetry } from "@/lib/officerTelemetryClient";
+import { useActiveSession, formatElapsed } from "@/lib/useActiveSession";
+import { useOfficerPhoto } from "@/lib/useOfficerPhoto";
 import { CommandAdminCenter } from "@/components/dynamic/CommandAdminCenter";
+import { DistrictDossier } from "@/components/dynamic/DistrictDossier";
+import { PropertyRegister } from "@/components/dynamic/PropertyRegister";
+import { TaskAssignment } from "@/components/dynamic/TaskAssignment";
+import { TaskSummaryCard } from "@/components/dynamic/TaskSummaryCard";
 import { LiveNewsFeeds } from "@/components/dynamic/LiveNewsFeeds";
-import { districtDatabase, suspectDossiers } from "@/lib/mock";
+import { CrimeAnalytics } from "@/components/dynamic/CrimeAnalytics";
 import { 
   Plus, 
-  UploadCloud, 
   ChevronRight, 
   AlertTriangle, 
   FileCheck, 
@@ -36,33 +45,15 @@ import {
   Loader2,
   Fingerprint,
   Network as NetworkIcon,
-  Map as MapIcon,
-  FolderLock,
-  Cpu
+  Map as MapIcon
 } from "lucide-react";
 
 // ============================================================
 // O.R.C.A Design System Tokens (inline, matching dashboard.html)
 // ============================================================
-const ORCA = {
-  navy: "#001f3f",
-  navyMid: "#002855",
-  navyLight: "#003366",
-  gold: "#FF9933",
-  white: "#ffffff",
-  offWhite: "#f8fafc",
-  textDark: "#1e293b",
-  textGray: "#475569",
-  textMuted: "#94a3b8",
-  border: "#cbd5e1",
-  red: "#ef4444",
-  redDark: "#990000",
-  green: "#10b981",
-  orange: "#f97316",
-  blue: "#1E3A8A",
-  shadow: "0 1px 3px rgba(0,0,0,0.1)",
-  shadowMd: "0 4px 6px -1px rgba(0,0,0,0.1)",
-};
+// The palette now lives in src/lib/theme.ts, shared with the admin console —
+// which used to carry an identical copy under different names.
+const ORCA = ORCA_TOKENS;
 
 // ============================================================
 // O.R.C.A Panel Component (matches .panel, .panel-header, .panel-body)
@@ -110,27 +101,17 @@ const Panel: React.FC<{
 
 // ============================================================
 // O.R.C.A Page Header Component (matches .page-header)
+// Now lives in components/layout/PageHeader so the sections that render their
+// own shell can use the same heading instead of inventing one.
 // ============================================================
-const PageHeader: React.FC<{
-  title: string;
-  subtitle?: React.ReactNode;
-  action?: React.ReactNode;
-}> = ({ title, subtitle, action }) => (
-  <div className="orca-page-header" style={{ marginBottom: 24, display: "flex", justifyContent: "space-between", alignItems: "flex-end" }}>
-    <div>
-      <h1 style={{ fontSize: 22, fontWeight: 700, color: ORCA.navy, marginBottom: 4 }}>{title}</h1>
-      {subtitle && <p style={{ fontSize: 13, color: ORCA.textGray }}>{subtitle}</p>}
-    </div>
-    {action}
-  </div>
-);
 
 // ============================================================
 // O.R.C.A Button Styles
 // ============================================================
-const BtnNavy: React.FC<{ onClick?: () => void; children: React.ReactNode; style?: React.CSSProperties }> = ({ onClick, children, style }) => (
+const BtnNavy: React.FC<{ onClick?: () => void; children: React.ReactNode; style?: React.CSSProperties; disabled?: boolean }> = ({ onClick, children, style, disabled }) => (
   <button
     onClick={onClick}
+    disabled={disabled}
     style={{
       padding: "6px 14px",
       background: ORCA.navy,
@@ -139,11 +120,12 @@ const BtnNavy: React.FC<{ onClick?: () => void; children: React.ReactNode; style
       borderRadius: 4,
       fontSize: 12,
       fontWeight: 600,
-      cursor: "pointer",
+      cursor: disabled ? "not-allowed" : "pointer",
+      opacity: disabled ? 0.5 : 1,
       fontFamily: "'Inter', sans-serif",
       ...style
     }}
-    onMouseEnter={e => (e.currentTarget.style.background = ORCA.navyMid)}
+    onMouseEnter={e => { if (!disabled) e.currentTarget.style.background = ORCA.navyMid; }}
     onMouseLeave={e => (e.currentTarget.style.background = ORCA.navy)}
   >
     {children}
@@ -204,10 +186,10 @@ const MainContent: React.FC = () => {
     setActiveTab,
     activeFirId, 
     setActiveFirId,
-    selectedSuspectId, 
-    setSelectedSuspectId,
     selectedDistrictCode,
     firCases,
+    activeCase,
+    activeCaseLoading,
     aiReportLoading,
     activeReport,
     runAiQuery,
@@ -223,93 +205,190 @@ const MainContent: React.FC = () => {
     uploadLogs
   } = useIntelligence();
 
-  const [dragOver, setDragOver] = useState(false);
   const [customQueryText, setCustomQueryText] = useState("");
-  const [networkSubTab, setNetworkSubTab] = useState<"visualizer" | "heatmap">("visualizer");
-  const [forensicSubTab, setForensicSubTab] = useState<"vault" | "copilot">("vault");
+  // Heatmap opens first: it reads real district counts and is legible with no
+  // data selected, whereas the relation graph needs an accused record chosen
+  // before it shows anything.
+  const [networkSubTab, setNetworkSubTab] = useState<"heatmap" | "visualizer">("heatmap");
+  // Relation graph — real-data, from src/lib/networkGraph.ts via /api/network/*.
+  const [graphMode, setGraphMode] = useState<"case" | "notes">("case");
+  const [caseQuery, setCaseQuery] = useState("");
+  const [notesText, setNotesText] = useState("");
+  const [graphData, setGraphData] = useState<{ nodes: any[]; links: any[] } | null>(null);
+  const [graphMeta, setGraphMeta] = useState<any>(null);
+  const [graphLoading, setGraphLoading] = useState(false);
+  const [graphError, setGraphError] = useState("");
+  const [graphNode, setGraphNode] = useState<any>(null);
+  const graphSeq = useRef(0);
   const [profileTab, setProfileTab] = useState<"ingress" | "downloads" | "ai_queries" | "devices">("ingress");
-  const [liveSessionLogs, setLiveSessionLogs] = useState<any[]>([]);
+
+  // Officer Audit Profile data, all from Catalyst. Before this, the profile card
+  // fell back to invented values ("Superintendent of Police", "+91 94808-01001",
+  // "admin@orca.gov") and the Downloads / AI Audits tabs rendered hardcoded rows.
+  const [catalystProfile, setCatalystProfile] = useState<any>(null);
+  const [telemetry, setTelemetry] = useState<{
+    configured: boolean;
+    sessions: any[];
+    downloads: any[];
+    aiQueries: any[];
+  }>({ configured: false, sessions: [], downloads: [], aiQueries: [] });
+  const [telemetryLoading, setTelemetryLoading] = useState(false);
 
   const { officerProfile, dashboardRole } = useAuth();
+  const activeSession = useActiveSession();
+  const officerPhoto = useOfficerPhoto();
 
   useEffect(() => {
-    if (activeTab === "settings" || profileTab === "ingress") {
+    if (activeTab !== "settings") return;
+    let cancelled = false;
+    setTelemetryLoading(true);
+    (async () => {
       try {
-        const q = query(collection(db, "audit_logs"), orderBy("timestamp", "desc"), limit(30));
-        const unsubscribe = onSnapshot(q, (snapshot) => {
-          const logsList: any[] = [];
-          snapshot.forEach(docSnap => {
-            logsList.push({ id: docSnap.id, ...docSnap.data() });
-          });
-          if (logsList.length > 0) {
-            setLiveSessionLogs(logsList);
-          }
-        }, (err) => {
-          // Fallback to API endpoint
-          fetch("/api/admin/rbac/logs")
-            .then(res => res.json())
-            .then(data => {
-              if (data.success && data.logs) setLiveSessionLogs(data.logs);
-            })
-            .catch(() => {});
-        });
-        return () => unsubscribe();
-      } catch (e) {
-        fetch("/api/admin/rbac/logs")
-          .then(res => res.json())
-          .then(data => {
-            if (data.success && data.logs) setLiveSessionLogs(data.logs);
-          })
-          .catch(() => {});
+        const [profileRes, telemetryRes] = await Promise.all([
+          fetch("/api/officer/profile").then((r) => r.json()),
+          // Shared with useActiveSession, which reads the same endpoint.
+          fetchTelemetry(),
+        ]);
+        if (cancelled) return;
+        setCatalystProfile(profileRes?.profile || null);
+        setTelemetry(telemetryRes);
+      } catch {
+        // Leave the empty state in place rather than showing anything invented.
+      } finally {
+        if (!cancelled) setTelemetryLoading(false);
       }
-    }
-  }, [activeTab, profileTab]);
+    })();
+    return () => { cancelled = true; };
+  }, [activeTab]);
+
+  /**
+   * Catalyst is the ONLY source for the profile card.
+   *
+   * There used to be a Firestore fallback here, from before the officers were
+   * migrated. It had to go: with it in place the card silently mixed sources,
+   * so a value that failed to map to a reference row (e.g. station
+   * "Central Command", which matched no Unit) still displayed - and looked
+   * exactly like a properly linked record. Every such value is now either
+   * mapped to a real reference row or genuinely absent.
+   *
+   * An unset field reads "Not on record" rather than a plausible placeholder,
+   * which in a police console is indistinguishable from real data.
+   *
+   * If an officer has no OfficerAccount row at all the whole card reads
+   * "Not on record" - correct, and a visible signal that the account was never
+   * provisioned, rather than Firestore quietly covering for it.
+   */
+  const profileField = (catalystKey: string, _legacyKey?: string): string => {
+    const value = catalystProfile?.[catalystKey];
+    if (value) return String(value);
+    // Before the fetch resolves every field would otherwise flash
+    // "Not on record", which reads as data loss rather than loading.
+    return telemetryLoading && !catalystProfile ? "…" : "Not on record";
+  };
+
+  /**
+   * Console role, presented for a human. `getRoleConfig` already carries a label
+   * for every role in RBAC_CONFIG; the screen was printing the enum slug instead.
+   * The scope line is counted from the same config, so it cannot drift from what
+   * the role actually grants.
+   */
+  const roleSlug = profileField("dashboardRole", "role");
+  const profileRoleConfig = getRoleConfig(roleSlug);
+  const roleLabel = profileRoleConfig?.label || (roleSlug === "Not on record" ? roleSlug : "Unrecognised role");
+  const roleScope = profileRoleConfig
+    ? `${profileRoleConfig.allowedTabs.length} console section${profileRoleConfig.allowedTabs.length === 1 ? "" : "s"}` +
+      (profileRoleConfig.allowedAdminSubSections.length ? " · admin controls" : "")
+    : "";
+
+  const formatDuration = (seconds: number | null): string => {
+    if (seconds === null || !Number.isFinite(seconds)) return "—";
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const sec = seconds % 60;
+    return `${String(h).padStart(2, "0")}h ${String(m).padStart(2, "0")}m ${String(sec).padStart(2, "0")}s`;
+  };
+
+  // The audit_logs snapshot listener that used to live here fed the old Login
+  // History tab. That tab now reads the officer's own sessions from Catalyst
+  // (OfficerSession), and the listener additionally pulled EVERY officer's
+  // audit rows into one console — so it is gone rather than left running.
+
 
   // --- Official Bulletins States ---
-  const INITIAL_BULLETINS = [
-    {
-      id: "BLT-2026-901",
-      title: "MHA Directive: Cyber Syndicate Darknet Wallet Tracking",
-      category: "HIGH URGENCY",
-      date: "Today, 10:30 IST",
-      summary: "Ministry of Home Affairs has flag-tagged 12 secure cryptocurrency wallets linked to extortion rackets operating in Bengaluru. Officers must log and cross-reference wallet hashes against financial forensic audits.",
-      body: "Operational Guidelines: When auditing digital wallets in suspect files, cross-match public keys with the KSP Financial Forensic Intelligence repository. Any hash similarity above 90% must be escalated to cyber unit immediately.",
-      author: "Office of the Superintendent of Police, SCRB",
-      attachment: "MHA_Darknet_Tracking_v2.pdf"
-    },
-    {
-      id: "BLT-2026-884",
-      title: "SCRB Circular: Standardizing Mobile Intercept Audits",
-      category: "INTELLIGENCE ADV",
-      date: "Yesterday, 14:15 IST",
-      summary: "New protocols for active cell-tower intercept auditing are effective immediately. Every intercept log must be authenticated with ISD session tokens and signed-off by rank Inspector or higher.",
-      body: "Administrative Directives: All surveillance logs require automated synchronization with the secure storage backup. Standby mobile ingress terminals must be audited daily under security codes.",
-      author: "Internal Security Division (ISD) Headquarters",
-      attachment: "KSP_Surveillance_Protocol_98.pdf"
-    },
-    {
-      id: "BLT-2026-850",
-      title: "Routine Brief: Inter-State Border Patrol Grid Co-ordination",
-      category: "ROUTINE BRIEF",
-      date: "02 July 2026, 09:00 IST",
-      summary: "Weekly coordination brief with Tamil Nadu and Andhra Pradesh border checkposts. Focus is on tracking cargo transit vehicles matching gang logistics profiles.",
-      body: "Security measures: Border checkposts must run automated license plate scans on all container trucks. Cross-check transit registers against the ORCA Organized Crime Database daily.",
-      author: "Border Patrol Command Center",
-      attachment: "Border_Patrol_Weekly_Brief_26.pdf"
-    }
-  ];
+  /**
+   * No seeded bulletins.
+   *
+   * Three invented circulars used to be written into localStorage on first
+   * load and rendered as official advisories: an "MHA Directive" naming twelve
+   * flagged cryptocurrency wallets, an "SCRB Circular" on intercept audits, and
+   * a border-coordination brief — each attributed to a real office ("Office of
+   * the Superintendent of Police, SCRB", "DG & IGP Office") with a named PDF
+   * attachment that did not exist.
+   *
+   * The panel carried a "SAMPLE DATA" chip, which is not enough: the chip sat
+   * in the corner while the content read as genuine departmental instruction.
+   * Bulletins an officer publishes are still kept; nothing is seeded.
+   */
+  const INITIAL_BULLETINS: any[] = [];
 
-  const [bulletins, setBulletins] = useState(() => {
-    if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("orca_official_bulletins");
-      if (saved) return JSON.parse(saved);
-    }
-    return INITIAL_BULLETINS;
-  });
+  /**
+   * The three seeded bulletins are purged from localStorage, not just
+   * un-seeded.
+   *
+   * Emptying INITIAL_BULLETINS only stops NEW browsers being seeded. Anyone who
+   * has already opened this console has the invented circulars saved under
+   * `orca_official_bulletins`, and they would keep rendering as official
+   * advisories indefinitely.
+   *
+   * They are identifiable with certainty: the seed used the fixed ids
+   * BLT-2026-901, BLT-2026-884 and BLT-2026-850, while a bulletin an officer
+   * publishes is keyed `BLT-${Date.now()}`. Only those three are dropped.
+   */
+  /**
+   * Bulletins come from Catalyst, shared across the force.
+   *
+   * They were held in `localStorage`, which made "Publish Bulletin" a private
+   * note: the officer who published saw it and nobody else ever did — on a
+   * screen whose whole purpose is telling other officers something. The list
+   * was also seeded with three invented circulars attributed to real offices.
+   *
+   * The stale localStorage key is cleared on load so the old seeded entries
+   * cannot reappear in a browser that still holds them.
+   */
+  const [bulletins, setBulletins] = useState<any[]>([]);
+  const [bulletinsLoaded, setBulletinsLoaded] = useState(false);
+  const [reports, setReports] = useState<any[]>([]);
+  const [reportsLoaded, setReportsLoaded] = useState(false);
+  const [publishError, setPublishError] = useState("");
 
   useEffect(() => {
-    localStorage.setItem("orca_official_bulletins", JSON.stringify(bulletins));
-  }, [bulletins]);
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("orca_official_bulletins");
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/bulletins", { credentials: "include" });
+        const data = await res.json();
+        if (!cancelled && data?.success) setBulletins(data.bulletins || []);
+      } catch {
+        /* empty list is the honest answer */
+      } finally {
+        if (!cancelled) setBulletinsLoaded(true);
+      }
+
+      try {
+        const res = await fetch("/api/reports", { credentials: "include" });
+        const data = await res.json();
+        if (!cancelled && data?.success) setReports(data.reports || []);
+      } catch {
+        /* empty list is the honest answer */
+      } finally {
+        if (!cancelled) setReportsLoaded(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   const [bulletinSearch, setBulletinSearch] = useState("");
   const [bulletinFilter, setBulletinFilter] = useState("ALL");
@@ -319,28 +398,51 @@ const MainContent: React.FC = () => {
   const [newBSummary, setNewBSummary] = useState("");
   const [newBBody, setNewBBody] = useState("");
   const [newBAttachment, setNewBAttachment] = useState("");
+  const [publishing, setPublishing] = useState(false);
 
-  const handlePublishBulletin = (e: React.FormEvent) => {
+  /**
+   * Publishing writes to Catalyst and only then updates the list.
+   *
+   * It used to push straight into local state with an id built from
+   * `Math.random()`, a date of "Just now", and a default attachment name of
+   * "ISD_Security_Notice.pdf" for a file that did not exist — so a bulletin
+   * always LOOKED published whether or not anything had been stored.
+   */
+  const handlePublishBulletin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newBTitle || !newBSummary) return;
+    if (!newBTitle || !newBSummary || publishing) return;
+    setPublishing(true);
+    setPublishError("");
 
-    const newBulletin = {
-      id: `BLT-2026-${Math.floor(100 + Math.random() * 900)}`,
-      title: newBTitle,
-      category: newBCategory,
-      date: "Just now",
-      summary: newBSummary,
-      body: newBBody,
-      author: officerProfile ? `${officerProfile.rank} ${officerProfile.name}` : "Audit Command Node",
-      attachment: newBAttachment || "ISD_Security_Notice.pdf"
-    };
-
-    setBulletins([newBulletin, ...bulletins]);
-    setIsCreateBulletinOpen(false);
-    setNewBTitle("");
-    setNewBSummary("");
-    setNewBBody("");
-    setNewBAttachment("");
+    try {
+      const res = await fetch("/api/bulletins", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          title: newBTitle,
+          category: newBCategory,
+          summary: newBSummary,
+          body: newBBody,
+          // No invented default filename — blank means no attachment.
+          attachment: newBAttachment,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || `Publish failed (${res.status})`);
+      }
+      setBulletins((prev) => [data.bulletin, ...prev]);
+      setIsCreateBulletinOpen(false);
+      setNewBTitle("");
+      setNewBSummary("");
+      setNewBBody("");
+      setNewBAttachment("");
+    } catch (err: any) {
+      setPublishError(err?.message || "Could not publish the bulletin.");
+    } finally {
+      setPublishing(false);
+    }
   };
 
   const [expandedBulletinId, setExpandedBulletinId] = useState<string | null>(null);
@@ -355,7 +457,6 @@ const MainContent: React.FC = () => {
       const allPossibleTabs = [
         "dashboard",
         "analytics",
-        "fir",
         "heatmap",
         "networks",
         "chatbot",
@@ -372,17 +473,6 @@ const MainContent: React.FC = () => {
   }, [activeTab, officerProfile]);
 
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      const pending = sessionStorage.getItem("orca_pending_query") || localStorage.getItem("orca_pending_query");
-      if (pending) {
-        setCustomQueryText(pending);
-        setActiveTab("fir");
-        setForensicSubTab("copilot");
-        sessionStorage.removeItem("orca_pending_query");
-        localStorage.removeItem("orca_pending_query");
-      }
-    }
-
     const handleGlobalSearch = (e: Event) => {
       const query = (e as CustomEvent).detail;
       if (query) {
@@ -396,22 +486,56 @@ const MainContent: React.FC = () => {
     return () => window.removeEventListener("orca_search", handleGlobalSearch);
   }, [setActiveTab]);
 
-  const activeCase = firCases.find(c => c.id === activeFirId) || firCases[0];
-  const activeDistrict = districtDatabase[selectedDistrictCode] || districtDatabase["BLR_U"];
-  const activeDossier = suspectDossiers[selectedSuspectId] || suspectDossiers["sus-01"];
+  /*
+   * `activeCase` now comes from the context, which fetches the full record.
+   * It used to be `firCases.find(c => c.id === activeFirId) || firCases[0]`,
+   * over a list of RAW Catalyst rows that carried none of the fields read
+   * below — so the fallback handed back a row whose `.district` was undefined
+   * and the tab threw on `.toUpperCase()`. Empty tables were all that hid it.
+   */
+  // The person selected on the relation graph. `selectedSuspectId` holds an
+  // Accused ROWID now, not a mock.ts "sus-01".
+  const buildCaseGraph = async () => {
+    const q = caseQuery.trim();
+    if (!q) return;
+    const seq = ++graphSeq.current;
+    setGraphLoading(true); setGraphError(""); setGraphNode(null);
+    try {
+      const res = await fetch(`/api/network/case?q=${encodeURIComponent(q)}`, { credentials: "include" });
+      const data = await res.json();
+      if (seq !== graphSeq.current) return;
+      if (!data?.success) { setGraphError(data?.error || "Could not build the graph."); setGraphData(null); setGraphMeta(null); }
+      else { setGraphData(data.graph); setGraphMeta(data.graph.meta); }
+    } catch (e: any) {
+      if (seq === graphSeq.current) { setGraphError(e?.message || "Could not reach the records store."); setGraphData(null); }
+    } finally {
+      if (seq === graphSeq.current) setGraphLoading(false);
+    }
+  };
 
-  const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); setDragOver(true); };
-  const handleDragLeave = () => setDragOver(false);
-  const handleDrop = async (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(false);
-    const files = e.dataTransfer.files;
-    if (files.length > 0) await ingestNewCase(files[0]);
+  const buildNotesGraph = async () => {
+    const text = notesText.trim();
+    if (!text) return;
+    const seq = ++graphSeq.current;
+    setGraphLoading(true); setGraphError(""); setGraphNode(null);
+    try {
+      const res = await fetch("/api/network/notes", {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      const data = await res.json();
+      if (seq !== graphSeq.current) return;
+      if (!data?.success) { setGraphError(data?.error || "Could not read the notes."); setGraphData(null); setGraphMeta(null); }
+      else if (!data.graph.nodes.length) { setGraphError("No people or links were found in those notes."); setGraphData(null); }
+      else { setGraphData(data.graph); setGraphMeta(data.graph.meta); }
+    } catch (e: any) {
+      if (seq === graphSeq.current) { setGraphError(e?.message || "Could not reach the AI service."); setGraphData(null); }
+    } finally {
+      if (seq === graphSeq.current) setGraphLoading(false);
+    }
   };
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (files && files.length > 0) await ingestNewCase(files[0]);
-  };
+
 
   const demoStepDescriptions = [
     "",
@@ -444,7 +568,7 @@ const MainContent: React.FC = () => {
   };
 
   // 3. Check for valid dashboardRole from custom claims
-  const validRoles = ["admin_full", "admin_scrb", "admin_verification", "investigation_l2", "investigation_l1", "admin_l2", "admin_l1", "it_admin", "investigation"];
+  const validRoles = ["admin_full", "scrb_officer", "admin_scrb", "admin_verification", "investigation_l2", "investigation_l1", "command_admin", "verification_admin", "it_admin", "field_officer"];
   if (!dashboardRole || !validRoles.includes(dashboardRole)) {
     return (
       <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 32, background: ORCA.offWhite }}>
@@ -526,17 +650,24 @@ const MainContent: React.FC = () => {
                 <PageHeader
                   title="Internal Security Division Command Center"
                   subtitle={<>State Intelligence Directorate <span style={{ background: "rgba(0,0,0,0.05)", padding: "2px 6px", borderRadius: 4, fontWeight: 600, fontSize: 11, marginLeft: 8 }}>INTERNAL SECURITY FORCE DISPATCH</span></>}
-                  action={
-                    <BtnNavy onClick={() => setActiveTab("fir")}>
-                      <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <Plus style={{ width: 14, height: 14 }} /> Import Incident File
-                      </span>
-                    </BtnNavy>
-                  }
                 />
 
+                 {/*
+                   The officer's own workload, before the statewide figures.
+                   Compact by design — Command Overview is a briefing, not the
+                   Task module, and every number here is fetched from the same
+                   authorized endpoint the module uses.
+                 */}
+                 <div style={{ marginBottom: 20 }}>
+                   <TaskSummaryCard />
+                 </div>
+
                  {/* Statewide Telemetry */}
-                 {["ISD-LEVEL-I", "ISD-LEVEL-II", "ISD-LEVEL-4", "ISD-LEVEL-2"].includes(officerProfile?.clearanceLevel || officerProfile?.isdLevel || "") ? (
+                 {/* Level II and above. Compared through meetsClearance, not a list of
+                     spellings: the old check listed ISD-LEVEL-4 alongside the roman
+                     forms to cope with inconsistent data, which let the LOWEST
+                     clearance through. See src/lib/clearance.ts. */}
+                 {meetsClearance(officerProfile?.clearanceLevel || officerProfile?.isdLevel, "ISD-LEVEL-II") ? (
                    <Telemetry />
                  ) : (
                    <div style={{
@@ -566,36 +697,65 @@ const MainContent: React.FC = () => {
                   {/* Live intercept log */}
                   <Panel
                     header="Live State Threat Intercept Log"
-                    headerRight={<span style={{ color: ORCA.orange, fontSize: 11 }}>REALTIME SYNC</span>}
+                    // "REALTIME SYNC" contradicted the panel below it, which now
+                    // states there is no feed connected. The badge only appears
+                    // when something is actually arriving.
+                    headerRight={
+                      telemetryLogs.length > 0
+                        ? <span style={{ color: ORCA.orange, fontSize: 11 }}>REALTIME SYNC</span>
+                        : <span style={{ color: ORCA.textMuted, fontSize: 11 }}>NO FEED</span>
+                    }
                     bodyStyle={{ padding: 0, maxHeight: 320, overflowY: "auto" }}
                   >
                     <div style={{ padding: 16 }}>
-                      <Intercepts />
+                      {/*
+                        Empty until a real feed exists. This panel used to fill
+                        with invented pings every six seconds — tower anomalies,
+                        threat-index moves, border watch activations — none of
+                        which came from anywhere.
+                      */}
+                      {telemetryLogs.length === 0 ? (
+                        <div style={{ padding: "20px 8px", textAlign: "center", fontSize: 12, color: ORCA.textMuted }}>
+                          No intercept telemetry. This console has no live state feed connected.
+                        </div>
+                      ) : (
+                        <Intercepts />
+                      )}
                     </div>
                   </Panel>
 
-                  {/* Crime Bulletins */}
+                  {/*
+                    Crime Bulletins — empty state.
+
+                    Two notices were hard-coded into this panel and shown to
+                    every officer as live intelligence: an "Interpol Notice #442"
+                    about antiquities smuggling on the Karnataka coast, marked
+                    SECURE, and a "Cert-In Advisory VULN-902" mandating
+                    immediate validation of municipal terminal links. Both were
+                    invented, neither could ever change, and the second gave an
+                    instruction an officer might actually carry out.
+
+                    Bulletins officers publish are listed under Official
+                    Bulletins; nothing is seeded here.
+                  */}
                   <Panel header="Crime Bulletins & Notices" bodyStyle={{ maxHeight: 320, overflowY: "auto" }}>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                      <div style={{ borderLeft: `3px solid ${ORCA.orange}`, paddingLeft: 12, paddingTop: 8, paddingBottom: 8, borderBottom: `1px solid ${ORCA.border}` }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "JetBrains Mono, monospace", fontSize: 10, fontWeight: 700, color: ORCA.navy, textTransform: "uppercase", marginBottom: 4 }}>
-                          <span>Interpol Notice #442</span>
-                          <span style={{ color: ORCA.green }}>SECURE</span>
-                        </div>
-                        <p style={{ fontSize: 12, color: ORCA.textGray, lineHeight: 1.6 }}>
-                          Biometric profiles synchronized for domestic maritime borders matching known antiquities smuggling cells entering Karnataka coastal boundaries.
-                        </p>
+                    {bulletins.length === 0 ? (
+                      <div style={{ padding: "28px 8px", textAlign: "center", fontSize: 12, color: ORCA.textMuted }}>
+                        No bulletins or notices published.
                       </div>
-                      <div style={{ borderLeft: "3px solid #1E3A8A", paddingLeft: 12, paddingTop: 8, paddingBottom: 8 }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "JetBrains Mono, monospace", fontSize: 10, fontWeight: 700, color: ORCA.navy, textTransform: "uppercase", marginBottom: 4 }}>
-                          <span>Cert-In Advisory</span>
-                          <span style={{ color: ORCA.redDark }}>VULN-902</span>
-                        </div>
-                        <p style={{ fontSize: 12, color: ORCA.textGray, lineHeight: 1.6 }}>
-                          Critical zero-day patch released for state government proxy firewalls. Mandating immediate validation of all active municipal terminal links.
-                        </p>
+                    ) : (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                        {bulletins.slice(0, 6).map((b: any) => (
+                          <div key={b.id} style={{ borderLeft: `3px solid ${ORCA.orange}`, paddingLeft: 12, paddingTop: 8, paddingBottom: 8, borderBottom: `1px solid ${ORCA.border}` }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "JetBrains Mono, monospace", fontSize: 10, fontWeight: 700, color: ORCA.navy, textTransform: "uppercase", marginBottom: 4 }}>
+                              <span>{b.category}</span>
+                              <span style={{ color: ORCA.textMuted }}>{b.date}</span>
+                            </div>
+                            <p style={{ fontSize: 12, color: ORCA.textGray, lineHeight: 1.6 }}>{b.summary}</p>
+                          </div>
+                        ))}
                       </div>
-                    </div>
+                    )}
                   </Panel>
 
                   {/* Officer Activity Stream */}
@@ -622,475 +782,14 @@ const MainContent: React.FC = () => {
               <div style={{ animation: "fadeIn 0.3s ease" }}>
                 <PageHeader
                   title="Crime Analytics Directorate"
-                  subtitle="Statewide statistics, frequency tables, and geographical crime correlations"
-                  action={<BtnNavy>Filter State Records</BtnNavy>}
+                  subtitle="District statistics counted from registered cases"
                 />
 
-                <Panel noPadding>
-                  {/* Filter bar — matches .filter-bar */}
-                  <div style={{
-                    display: "flex",
-                    gap: 16,
-                    padding: "12px 16px",
-                    background: "rgba(0,0,0,0.02)",
-                    borderBottom: `1px solid ${ORCA.border}`
-                  }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, fontWeight: 600, color: ORCA.textGray, textTransform: "uppercase" }}>
-                      <label>Sector District:</label>
-                      <select style={{ padding: "4px 8px", border: `1px solid ${ORCA.border}`, borderRadius: 4, fontSize: 13, fontFamily: "'Inter', sans-serif" }}>
-                        <option>All Districts (Karnataka)</option>
-                        <option>Bengaluru Urban</option>
-                        <option>Mysuru</option>
-                        <option>Mangaluru</option>
-                        <option>Hubballi-Dharwad</option>
-                      </select>
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, fontWeight: 600, color: ORCA.textGray, textTransform: "uppercase" }}>
-                      <label>BNS Classification:</label>
-                      <select style={{ padding: "4px 8px", border: `1px solid ${ORCA.border}`, borderRadius: 4, fontSize: 13, fontFamily: "'Inter', sans-serif" }}>
-                        <option>All Classifications</option>
-                        <option>BNS Section 308 (Extortion)</option>
-                        <option>BNS Section 111 (Organized Crime)</option>
-                        <option>BNS Section 318 (Cheating)</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  {/* Data table — matches .data-table */}
-                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                    <thead>
-                      <tr>
-                        {["District", "Severe Crimes (BNS 111)", "Financial Cyber Crimes", "Patrol Dispatch Rate", "Avg Resolution", "Threat Index Score"].map(h => (
-                          <th key={h} style={{
-                            textAlign: "left",
-                            padding: "12px 16px",
-                            fontSize: 11,
-                            fontWeight: 700,
-                            color: ORCA.textGray,
-                            textTransform: "uppercase",
-                            borderBottom: `2px solid ${ORCA.border}`,
-                            background: "rgba(0,0,0,0.01)",
-                            fontFamily: "'Inter', sans-serif"
-                          }}>{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {[
-                        { district: "Bengaluru Urban", severe: "28 Cases", cyber: "1,104 Cases", patrol: "96%", rate: "96% (Optimal)", resolution: "4.2 Hours", threat: "9.4 Critical", threatColor: ORCA.red },
-                        { district: "Mysuru", severe: "14 Cases", cyber: "182 Cases", patrol: "88%", rate: "88% (Secured)", resolution: "8.6 Hours", threat: "6.8 High", threatColor: ORCA.orange },
-                        { district: "Mangaluru (DK)", severe: "19 Cases", cyber: "241 Cases", patrol: "91%", rate: "91% (Optimal)", resolution: "6.1 Hours", threat: "7.2 High", threatColor: ORCA.orange },
-                        { district: "Hubballi-Dharwad", severe: "11 Cases", cyber: "94 Cases", patrol: "82%", rate: "82% (Nominal)", resolution: "12.4 Hours", threat: "5.1 Moderate", threatColor: ORCA.blue },
-                      ].map((row, idx) => (
-                        <tr key={idx} style={{ borderBottom: `1px solid ${ORCA.border}` }}
-                          onMouseEnter={e => (e.currentTarget.style.background = "rgba(0,0,0,0.015)")}
-                          onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
-                        >
-                          <td style={{ padding: "16px", fontSize: 13, fontWeight: 600 }}>{row.district}</td>
-                          <td style={{ padding: "16px", fontSize: 13, fontFamily: "JetBrains Mono, monospace" }}>{row.severe}</td>
-                          <td style={{ padding: "16px", fontSize: 13, fontFamily: "JetBrains Mono, monospace" }}>{row.cyber}</td>
-                          <td style={{ padding: "16px", fontSize: 13, fontFamily: "JetBrains Mono, monospace", color: ORCA.green, fontWeight: 600 }}>{row.rate}</td>
-                          <td style={{ padding: "16px", fontSize: 13, fontFamily: "JetBrains Mono, monospace" }}>{row.resolution}</td>
-                          <td style={{ padding: "16px" }}>
-                            <span style={{
-                              background: `${row.threatColor}18`,
-                              color: row.threatColor,
-                              padding: "2px 6px",
-                              borderRadius: 4,
-                              fontSize: 11,
-                              fontWeight: 600
-                            }}>{row.threat}</span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </Panel>
-              </div>
-            )}
-
-            {/* ============================================================ */}
-            {/* 3. FIR EVIDENCE VAULT                                         */}
-            {/* ============================================================ */}
-            {activeTab === "fir" && (
-              <div style={{ animation: "fadeIn 0.3s ease", flex: 1, display: "flex", flexDirection: "column" }}>
-                {/* Warning Banner inside Forensic section */}
-                <div 
-                  className="breathing-alert-banner"
-                  style={{
-                    color: "#713f12",
-                    padding: "8px 16px",
-                    textAlign: "center",
-                    fontSize: "11px",
-                    fontWeight: 700,
-                    fontFamily: "var(--font-sans), sans-serif",
-                    letterSpacing: "0.04em",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    gap: 8,
-                    userSelect: "none",
-                    flexShrink: 0,
-                    borderRadius: "6px",
-                    marginBottom: "16px",
-                    border: "1px solid #fde047"
-                  }}
-                >
-                  <span>⚠️ COMING SOON: THESE SECTIONS ARE UNDER DEVELOPMENT AND TESTING</span>
-                </div>
-                <PageHeader
-                  title={forensicSubTab === "vault" ? "Forensic Evidence Ingress" : "ISD Intelligence Copilot"}
-                  subtitle={forensicSubTab === "vault" ? "Upload and parse official FIR records using semantic OCR extraction engines" : "Structured intelligence query workbench & law enforcement correlation system"}
-                  action={
-                    <div style={{
-                      display: "inline-flex",
-                      background: "rgba(0,31,63,0.04)",
-                      padding: 4,
-                      borderRadius: 8,
-                      border: `1px solid ${ORCA.border}`
-                    }}>
-                      <button
-                        onClick={() => setForensicSubTab("vault")}
-                        style={{
-                          padding: "6px 14px",
-                          background: forensicSubTab === "vault" ? ORCA.navy : "transparent",
-                          color: forensicSubTab === "vault" ? "white" : ORCA.textGray,
-                          border: "none",
-                          borderRadius: 6,
-                          fontSize: 12,
-                          fontWeight: 600,
-                          cursor: "pointer",
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 6,
-                          transition: "all 0.2s"
-                        }}
-                      >
-                        <FolderLock style={{ width: 14, height: 14 }} />
-                        Ingress Vault
-                      </button>
-                      <button
-                        onClick={() => setForensicSubTab("copilot")}
-                        style={{
-                          padding: "6px 14px",
-                          background: forensicSubTab === "copilot" ? ORCA.navy : "transparent",
-                          color: forensicSubTab === "copilot" ? "white" : ORCA.textGray,
-                          border: "none",
-                          borderRadius: 6,
-                          fontSize: 12,
-                          fontWeight: 600,
-                          cursor: "pointer",
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 6,
-                          transition: "all 0.2s"
-                        }}
-                      >
-                        <Cpu style={{ width: 14, height: 14 }} />
-                        AI Report Generator
-                      </button>
-                    </div>
-                  }
-                />
-
-                {forensicSubTab === "vault" ? (
-                  /* vault-grid: 300px left, 1fr mid, 350px right */
-                  <div style={{ display: "grid", gridTemplateColumns: "300px 1fr 350px", gap: 24, flex: 1, minHeight: 0 }}>
-
-                    {/* Left column */}
-                    <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-                      <Panel header="Evidence Vault Ingestion">
-                        {uploadingState === "idle" ? (
-                          <div
-                            onDragOver={handleDragOver}
-                            onDragLeave={handleDragLeave}
-                            onDrop={handleDrop}
-                            onClick={() => document.getElementById("hidden-file-input")?.click()}
-                            style={{
-                              textAlign: "center",
-                              padding: "40px 20px",
-                              border: `2px dashed ${dragOver ? ORCA.gold : ORCA.border}`,
-                              borderRadius: 8,
-                              cursor: "pointer",
-                              background: dragOver ? "rgba(255,153,51,0.05)" : ORCA.offWhite,
-                              transition: "all 0.2s"
-                            }}
-                            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = ORCA.gold; }}
-                            onMouseLeave={e => { if (!dragOver) (e.currentTarget as HTMLElement).style.borderColor = ORCA.border; }}
-                          >
-                            <UploadCloud style={{ width: 32, height: 32, color: ORCA.textMuted, margin: "0 auto 8px" }} />
-                            <div style={{ fontWeight: 600, fontSize: 14, color: ORCA.navy, marginBottom: 4 }}>Ingest Scanned File</div>
-                            <div style={{ fontSize: 11, color: ORCA.textMuted }}>Drag and drop PDF or TXT records here</div>
-                            <input type="file" id="hidden-file-input" style={{ display: "none" }} accept=".txt,.pdf" onChange={handleFileChange} />
-                          </div>
-                        ) : (
-                          <div style={{ background: "black", color: "#10b981", fontFamily: "JetBrains Mono, monospace", fontSize: 10, padding: 12, borderRadius: 4, minHeight: 120, display: "flex", flexDirection: "column", gap: 4 }}>
-                            <div style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px solid rgba(16,185,129,0.3)", paddingBottom: 4, marginBottom: 4, fontSize: 9, color: "#34d399" }}>
-                              <span>OCR STREAM ENGINE ACTIVE</span>
-                              <Loader2 style={{ width: 12, height: 12, animation: "spin 1s linear infinite" }} />
-                            </div>
-                            {uploadLogs.map((logMsg, idx) => (
-                              <div key={idx}>&gt; {logMsg}</div>
-                            ))}
-                          </div>
-                        )}
-                      </Panel>
-
-                      <Panel header="Active Incident Warrants" noPadding>
-                        <div style={{ padding: "8px 0" }}>
-                          {firCases.map(fir => (
-                            <div
-                              key={fir.id}
-                              onClick={() => setActiveFirId(fir.id)}
-                              style={{
-                                padding: "10px 16px",
-                                cursor: "pointer",
-                                borderLeft: activeFirId === fir.id ? `3px solid ${ORCA.gold}` : "3px solid transparent",
-                                background: activeFirId === fir.id ? "rgba(255,153,51,0.05)" : "transparent",
-                                borderBottom: `1px solid ${ORCA.border}`,
-                                transition: "all 0.15s"
-                              }}
-                              onMouseEnter={e => { if (activeFirId !== fir.id) (e.currentTarget as HTMLElement).style.background = "rgba(0,0,0,0.02)"; }}
-                              onMouseLeave={e => { if (activeFirId !== fir.id) (e.currentTarget as HTMLElement).style.background = "transparent"; }}
-                            >
-                              <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11, fontWeight: 700, color: ORCA.navy }}>{fir.id}</div>
-                              <div style={{ fontSize: 11, color: ORCA.textDark, marginTop: 2 }}>{fir.title}</div>
-                              <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 9.5, color: ORCA.textGray, display: "flex", justifyContent: "space-between", marginTop: 4 }}>
-                                <span>{fir.district}</span>
-                                <span style={{ color: fir.severity === "severe" ? ORCA.redDark : ORCA.orange, fontWeight: 700, textTransform: "uppercase" }}>{fir.severity}</span>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </Panel>
-                    </div>
-
-                    {/* Middle column — case workspace */}
-                    <div style={{ background: ORCA.white, border: `1px solid ${ORCA.border}`, borderRadius: 8, boxShadow: ORCA.shadow, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-                      <div style={{
-                        padding: "12px 16px",
-                        borderBottom: `1px solid ${ORCA.border}`,
-                        background: "rgba(0,0,0,0.01)",
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                        flexShrink: 0
-                      }}>
-                        <div>
-                          <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 13 }}>{activeCase.id}</div>
-                          <div style={{ fontSize: 10, color: ORCA.textGray, fontFamily: "JetBrains Mono, monospace", marginTop: 2 }}>
-                            SECTOR DISTRICT: <strong style={{ color: ORCA.navy }}>{activeCase.district.toUpperCase()}</strong>
-                            &nbsp;|&nbsp; UTC RECORDED: {activeCase.datetime}
-                            &nbsp;|&nbsp; CLASS: {activeCase.category.toUpperCase()}
-                          </div>
-                        </div>
-                        <BtnOutline onClick={() => window.print()}>Export Sealed Case Summary</BtnOutline>
-                      </div>
-
-                      <div style={{ padding: 16, overflowY: "auto", flex: 1, display: "grid", gridTemplateColumns: "1fr", gap: 16 }}>
-                        <div style={{ border: `1px solid ${ORCA.border}`, borderRadius: 8, padding: 16, background: "#f8fafc", boxShadow: "0 1px 2px rgba(0,0,0,0.02)" }}>
-                          <div style={{ fontSize: 11, fontWeight: 700, color: ORCA.textGray, textTransform: "uppercase", marginBottom: 8, fontFamily: "JetBrains Mono, monospace" }}>Unified Evidence Summary Brief</div>
-                          <p style={{ fontSize: 14, lineHeight: 1.6, color: ORCA.textDark }}>{activeCase.summary}</p>
-                        </div>
-                        <div style={{ border: `1px solid ${ORCA.border}`, borderRadius: 8, padding: 16, background: "#f8fafc", boxShadow: "0 1px 2px rgba(0,0,0,0.02)" }}>
-                          <div style={{ fontSize: 11, fontWeight: 700, color: ORCA.textGray, textTransform: "uppercase", marginBottom: 8, fontFamily: "JetBrains Mono, monospace" }}>Operational Modus Operandi (MO)</div>
-                          <p style={{ fontSize: 14, fontWeight: 600, color: ORCA.navy, fontFamily: "JetBrains Mono, monospace" }}>{activeCase.modusOperandi}</p>
-                        </div>
-                        <div style={{ border: `1px solid ${ORCA.border}`, borderRadius: 8, padding: 16, background: "#f8fafc", boxShadow: "0 1px 2px rgba(0,0,0,0.02)" }}>
-                          <div style={{ fontSize: 11, fontWeight: 700, color: ORCA.textGray, textTransform: "uppercase", marginBottom: 12, fontFamily: "JetBrains Mono, monospace" }}>Extracted Suspect Matrix</div>
-                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-                            {activeCase.suspects.map(sus => (
-                              <div
-                                key={sus.id}
-                                onClick={() => { setSelectedSuspectId(sus.id); setActiveTab("networks"); }}
-                                style={{
-                                  border: `1px solid ${ORCA.border}`,
-                                  borderRadius: 6,
-                                  padding: 12,
-                                  display: "flex",
-                                  gap: 12,
-                                  alignItems: "center",
-                                  cursor: "pointer",
-                                  background: "white",
-                                  transition: "all 0.15s"
-                                }}
-                                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = ORCA.navyMid; (e.currentTarget as HTMLElement).style.boxShadow = "0 2px 4px rgba(0,0,0,0.05)"; }}
-                                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = ORCA.border; (e.currentTarget as HTMLElement).style.boxShadow = "none"; }}
-                              >
-                                <div style={{ width: 40, height: 40, background: "rgba(0,0,0,0.05)", borderRadius: 4, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                                  <UserCheck style={{ width: 20, height: 20, color: ORCA.textGray }} />
-                                </div>
-                                <div>
-                                  <div style={{ fontSize: 14, fontWeight: 600 }}>{sus.name}</div>
-                                  <div style={{ fontSize: 11, color: ORCA.textGray }}>{sus.role.split(" / ")[0]}</div>
-                                  <div style={{ fontSize: 10, color: ORCA.green, marginTop: 2, fontFamily: "JetBrains Mono, monospace" }}>Sync match: {sus.confidence}</div>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-
-                        <div style={{ border: `1px solid ${ORCA.border}`, borderRadius: 8, padding: 16, background: "#f8fafc", boxShadow: "0 1px 2px rgba(0,0,0,0.02)" }}>
-                          <div style={{ fontSize: 11, fontWeight: 700, color: ORCA.textGray, textTransform: "uppercase", marginBottom: 12, fontFamily: "JetBrains Mono, monospace" }}>Case Sequence Chronology</div>
-                          <div style={{ position: "relative", paddingLeft: 16 }}>
-                            <div style={{ position: "absolute", left: 4, top: 4, bottom: 4, width: 1.5, background: ORCA.border }} />
-                            {activeCase.timeline.map((item, idx) => (
-                              <div key={idx} style={{ position: "relative", marginBottom: 12 }}>
-                                <div style={{
-                                  position: "absolute",
-                                  left: -12,
-                                  top: 6,
-                                  width: 8, height: 8,
-                                  borderRadius: "50%",
-                                  background: ORCA.white,
-                                  border: `1.5px solid ${item.severe ? ORCA.redDark : ORCA.blue}`
-                                }} />
-                                <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, fontWeight: 700, color: ORCA.textGray }}>{item.time} IST</div>
-                                <p style={{ fontSize: 12, color: ORCA.textDark, marginTop: 2, lineHeight: 1.5 }}>{item.desc}</p>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Right column */}
-                    <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-                      <Panel header="Evidence Chain of Custody">
-                        <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: ORCA.textGray, marginBottom: 12, wordBreak: "break-all" }}>
-                          PACKET HASH: {activeCase.sha256Hash}
-                        </div>
-                        {activeCase.chainOfCustody.map((log, idx) => (
-                          <div key={idx} style={{ marginBottom: 8, fontSize: 10, fontFamily: "JetBrains Mono, monospace", lineHeight: 1.6 }}>
-                            <span style={{ color: ORCA.textMuted }}>[{log.timestamp}]</span> {log.action}<br/>
-                            <strong style={{ color: ORCA.textDark }}>{log.operator}</strong> (Key: {log.hash})
-                          </div>
-                        ))}
-                      </Panel>
-
-                      <Panel header="BNS Codified Charges Mapped">
-                        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                          {activeCase.legalSections.map((section, idx) => (
-                            <div key={idx} style={{ border: `1px solid ${ORCA.border}`, borderRadius: 4, padding: 10 }}>
-                              <div style={{ fontSize: 12, fontWeight: 700, color: ORCA.navy, fontFamily: "JetBrains Mono, monospace" }}>{section.code}: {section.title}</div>
-                              <div style={{ fontSize: 11, color: ORCA.textGray, marginTop: 4, lineHeight: 1.5 }}>{section.desc}</div>
-                            </div>
-                          ))}
-                        </div>
-                      </Panel>
-                    </div>
-                  </div>
-                ) : (
-                  /* AI Copilot Query Workbench */
-                  <div style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 24, flex: 1, minHeight: 0 }}>
-                    {/* Query sidebar */}
-                    <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
-                      <Panel style={{ flex: 1, display: "flex", flexDirection: "column" }} bodyStyle={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
-                        <div style={{ border: `1px solid ${ORCA.border}`, borderRadius: 8, padding: 16, background: "#f8fafc", marginBottom: 16 }}>
-                          <div style={{ fontSize: 11, fontWeight: 700, color: ORCA.textGray, textTransform: "uppercase", marginBottom: 12, fontFamily: "JetBrains Mono, monospace", letterSpacing: "0.05em" }}>Operational Presets</div>
-                          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                            {[
-                              "QUERY: ORG_FINANCIAL_FLOW (SUSPECT: vikram_hegde)",
-                              "QUERY: MATCH_MODUS_OPERANDI (CASE: FIR/2026/BLR/104)",
-                              "QUERY: COMPILE_CHARGESHEET (BNS_CODES: FIR/104)"
-                            ].map((q, idx) => (
-                              <button
-                                key={idx}
-                                onClick={() => { setCustomQueryText(q); runAiQuery(`preset-${idx + 1}`); }}
-                                style={{
-                                  background: "white",
-                                  border: `1px solid ${ORCA.border}`,
-                                  borderRadius: 4,
-                                  padding: 8,
-                                  textAlign: "left",
-                                  fontFamily: "JetBrains Mono, monospace",
-                                  fontSize: 10.5,
-                                  color: ORCA.textDark,
-                                  cursor: "pointer",
-                                  lineHeight: 1.4,
-                                  transition: "0.2s"
-                                }}
-                                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#e8f0fe"; (e.currentTarget as HTMLElement).style.color = ORCA.blue; }}
-                                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "white"; (e.currentTarget as HTMLElement).style.color = ORCA.textDark; }}
-                              >
-                                {q}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-
-                        <div style={{ border: `1px solid ${ORCA.border}`, borderRadius: 8, padding: 16, background: "#f8fafc" }}>
-                          <div style={{ fontSize: 11, fontWeight: 700, color: ORCA.textGray, textTransform: "uppercase", marginBottom: 8, fontFamily: "JetBrains Mono, monospace" }}>Custom Analytical Inquiry Console</div>
-                          <textarea
-                            value={customQueryText}
-                            onChange={(e) => setCustomQueryText(e.target.value)}
-                            placeholder="COMPILE CHARGESHEET (CASE: ISD-CR-2026-104) or search..."
-                            style={{
-                              width: "100%",
-                              border: `1px solid ${ORCA.border}`,
-                              borderRadius: 4,
-                              padding: 8,
-                              fontSize: 12,
-                              fontFamily: "'Inter', sans-serif",
-                              height: 96,
-                              resize: "none",
-                              outline: "none",
-                              background: "white"
-                            }}
-                          />
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
-                            <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 9, color: ORCA.textGray }}>SECURED ENCRYPTED LINK</span>
-                            <BtnNavy onClick={() => runAiQuery(null, customQueryText)}>Run Inquiry</BtnNavy>
-                          </div>
-                        </div>
-                        <div style={{
-                          background: ORCA.offWhite,
-                          border: `1px solid ${ORCA.border}`,
-                          borderRadius: 4,
-                          padding: 10,
-                          fontSize: 9.5,
-                          color: ORCA.textGray,
-                          lineHeight: 1.6,
-                          fontFamily: "JetBrains Mono, monospace",
-                          marginTop: 16
-                        }}>
-                          <strong>CRITICAL PROTOCOL:</strong> Every dynamic query executed inside O.R.C.A is logged and linked to user IPS credentials. Generates court-admissible audit reports.
-                        </div>
-                      </Panel>
-                    </div>
-
-                    {/* Report output */}
-                    <Panel
-                      header="Secured Report Output"
-                      headerRight={
-                        <button
-                          onClick={() => window.print()}
-                          style={{
-                            padding: "6px 14px",
-                            background: ORCA.gold,
-                            color: ORCA.navy,
-                            border: "none",
-                            borderRadius: 6,
-                            fontSize: 12,
-                            fontWeight: 700,
-                            cursor: "pointer",
-                            fontFamily: "'Inter', sans-serif",
-                            boxShadow: "0 2px 4px rgba(255, 153, 51, 0.2)",
-                            transition: "background 0.15s ease"
-                          }}
-                          onMouseEnter={e => { e.currentTarget.style.background = "#e68a00"; }}
-                          onMouseLeave={e => { e.currentTarget.style.background = ORCA.gold; }}
-                        >
-                          Print Secure Letterhead
-                        </button>
-                      }
-                      style={{ display: "flex", flexDirection: "column" }}
-                      bodyStyle={{ flex: 1, overflowY: "auto", padding: 0 }}
-                    >
-                      <Letterhead report={activeReport} loading={aiReportLoading} />
-                    </Panel>
-                  </div>
-                )}
+                {/* Mounted bare, like CaseRegistration, and NOT inside <Panel>:
+                    Panel sets overflow:hidden for its rounded corners, which
+                    clips the filter dropdowns half way down. CrimeAnalytics
+                    carries the panel styling itself. */}
+                <CrimeAnalytics />
               </div>
             )}
 
@@ -1100,8 +799,8 @@ const MainContent: React.FC = () => {
             {activeTab === "networks" && (
               <div style={{ animation: "fadeIn 0.3s ease", flex: 1, display: "flex", flexDirection: "column" }}>
                 <PageHeader
-                  title={networkSubTab === "visualizer" ? "Criminal Networks Visualizer" : "State Incident Density Heatmap"}
-                  subtitle={networkSubTab === "visualizer" ? "Relational tracking of connected suspects, phone vectors, financial trails, and physical logistics" : "Geospatial distribution models mapping threat frequencies across Karnataka sectors"}
+                  title={networkSubTab === "visualizer" ? "Relation Graph" : "State Incident Density Heatmap"}
+                  subtitle={networkSubTab === "visualizer" ? "People and cases connected through registered records — enter a case to map its network, or extract a graph from notes" : "Geospatial distribution models mapping threat frequencies across Karnataka sectors"}
                   action={
                     /* Segmented Sub-Tab Switcher */
                     <div style={{
@@ -1111,26 +810,6 @@ const MainContent: React.FC = () => {
                       borderRadius: 8,
                       border: `1px solid ${ORCA.border}`
                     }}>
-                      <button
-                        onClick={() => setNetworkSubTab("visualizer")}
-                        style={{
-                          padding: "6px 14px",
-                          background: networkSubTab === "visualizer" ? ORCA.navy : "transparent",
-                          color: networkSubTab === "visualizer" ? "white" : ORCA.textGray,
-                          border: "none",
-                          borderRadius: 6,
-                          fontSize: 12,
-                          fontWeight: 600,
-                          cursor: "pointer",
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 6,
-                          transition: "all 0.2s"
-                        }}
-                      >
-                        <NetworkIcon style={{ width: 14, height: 14 }} />
-                        Relation Graph
-                      </button>
                       <button
                         onClick={() => setNetworkSubTab("heatmap")}
                         style={{
@@ -1151,101 +830,208 @@ const MainContent: React.FC = () => {
                         <MapIcon style={{ width: 14, height: 14 }} />
                         Threat Heatmap
                       </button>
+                      <button
+                        onClick={() => setNetworkSubTab("visualizer")}
+                        style={{
+                          padding: "6px 14px",
+                          background: networkSubTab === "visualizer" ? ORCA.navy : "transparent",
+                          color: networkSubTab === "visualizer" ? "white" : ORCA.textGray,
+                          border: "none",
+                          borderRadius: 6,
+                          fontSize: 12,
+                          fontWeight: 600,
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 6,
+                          transition: "all 0.2s"
+                        }}
+                      >
+                        <NetworkIcon style={{ width: 14, height: 14 }} />
+                        Relation Graph
+                      </button>
                     </div>
                   }
                 />
 
                 {networkSubTab === "visualizer" ? (
-                  /* Relations Graph Visualizer */
-                  <div style={{ display: "flex", gap: 24, flex: 1, minHeight: 480 }}>
-                    <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
-                      <Network />
+                  /* Relation Graph — real records, one hop */
+                  <div style={{ display: "flex", flexDirection: "column", gap: 16, flex: 1, minHeight: 480 }}>
+                    {/* Input toolbar */}
+                    <div style={{ background: ORCA.white, border: `1px solid ${ORCA.border}`, borderRadius: 8, boxShadow: ORCA.shadow, padding: 16 }}>
+                      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                        {([["case", "By Case Number"], ["notes", "From Notes"]] as const).map(([m, label]) => (
+                          <button key={m} onClick={() => setGraphMode(m)}
+                            style={{ padding: "6px 14px", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer",
+                              border: `1px solid ${graphMode === m ? ORCA.navy : ORCA.border}`,
+                              background: graphMode === m ? ORCA.navy : "transparent",
+                              color: graphMode === m ? "white" : ORCA.textGray }}>
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+
+                      {graphMode === "case" ? (
+                        <div style={{ display: "flex", gap: 10 }}>
+                          <input
+                            value={caseQuery}
+                            onChange={(e) => setCaseQuery(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === "Enter") buildCaseGraph(); }}
+                            placeholder="Enter a Crime Number, Case Number, or Case ID…"
+                            style={{ flex: 1, border: `1px solid ${ORCA.border}`, borderRadius: 6, padding: "10px 12px", fontSize: 13, fontFamily: "JetBrains Mono, monospace", outline: "none" }}
+                          />
+                          <BtnNavy onClick={buildCaseGraph} disabled={graphLoading || !caseQuery.trim()}>
+                            {graphLoading ? "Building…" : "Build Graph"}
+                          </BtnNavy>
+                        </div>
+                      ) : (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                          <textarea
+                            value={notesText}
+                            onChange={(e) => setNotesText(e.target.value)}
+                            placeholder="Paste investigation notes. The AI extracts only the people, vehicles and links you have written; the records then confirm which are real."
+                            style={{ width: "100%", minHeight: 90, border: `1px solid ${ORCA.border}`, borderRadius: 6, padding: "10px 12px", fontSize: 13, fontFamily: "'Inter', sans-serif", outline: "none", resize: "vertical" }}
+                          />
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <span style={{ fontSize: 11, color: ORCA.textMuted, fontFamily: "JetBrains Mono, monospace" }}>
+                              Extraction only — nothing is invented. Solid = matched a record, hollow = notes only.
+                            </span>
+                            <BtnNavy onClick={buildNotesGraph} disabled={graphLoading || !notesText.trim()}>
+                              {graphLoading ? "Analysing…" : "Generate Graph"}
+                            </BtnNavy>
+                          </div>
+                        </div>
+                      )}
+
+                      {graphError && (
+                        <div style={{ marginTop: 10, fontSize: 12, color: ORCA.redDark, fontWeight: 600 }}>{graphError}</div>
+                      )}
+                      {graphMeta && !graphError && (
+                        <div style={{ marginTop: 10, fontSize: 11, color: ORCA.textGray, display: "flex", gap: 14, flexWrap: "wrap", fontFamily: "JetBrains Mono, monospace" }}>
+                          {graphMode === "case" ? (
+                            <>
+                              <span>ROOT: {graphMeta.rootCrimeNo}</span>
+                              <span>ACCUSED: {graphMeta.counts?.accused ?? 0}</span>
+                              <span>OTHER CASES: {graphMeta.otherCaseCount ?? 0}</span>
+                            </>
+                          ) : (
+                            <>
+                              <span>ENTITIES: {graphMeta.counts?.entities ?? 0}</span>
+                              <span>CONFIRMED: {graphMeta.counts?.confirmed ?? 0}</span>
+                              <span>UNVERIFIED: {graphMeta.counts?.unverified ?? 0}</span>
+                            </>
+                          )}
+                        </div>
+                      )}
                     </div>
 
-                    {/* Intelligence dossier */}
-                    <div style={{ width: 350, flexShrink: 0 }}>
-                      <Panel header="Official Intelligence Dossier (Form ISD-D-09)" style={{ height: "100%" }} bodyStyle={{ overflowY: "auto" }}>
-                        <div style={{ display: "flex", gap: 16, alignItems: "center", marginBottom: 24 }}>
-                          <div style={{ width: 50, height: 50, background: "rgba(0,0,0,0.05)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, color: ORCA.navy, fontSize: 18, flexShrink: 0 }}>
-                            {activeDossier.name.split(' ').map((n: string) => n[0]).join('')}
+                    {/* Graph + dossier */}
+                    <div style={{ display: "flex", gap: 24, flex: 1, minHeight: 420 }}>
+                      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+                        {graphLoading ? (
+                          <div style={{ flex: 1, background: "#080f1e", border: "1px solid #1e293b", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 420 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 10, color: "#94a3b8", fontSize: 13 }}>
+                              <Loader2 style={{ width: 16, height: 16, animation: "spin 1s linear infinite" }} />
+                              {graphMode === "case" ? "Reading records…" : "Extracting entities…"}
+                            </div>
                           </div>
-                          <div>
-                            <div style={{ fontSize: 16, fontWeight: 700, color: ORCA.navy }}>{activeDossier.name}</div>
-                            <div style={{ fontSize: 11, color: ORCA.textGray }}>Aliases: {activeDossier.aliases}</div>
-                            <div style={{
-                              fontSize: 10,
-                              background: `${ORCA.red}18`,
-                              color: ORCA.red,
-                              padding: "2px 6px",
-                              borderRadius: 4,
-                              display: "inline-block",
-                              marginTop: 4,
-                              fontWeight: 700,
-                              fontFamily: "JetBrains Mono, monospace"
-                            }}>{activeDossier.tier}</div>
+                        ) : graphData ? (
+                          <Network data={graphData} selectedId={graphNode?.id} onSelect={setGraphNode} />
+                        ) : (
+                          <div style={{ flex: 1, background: "#080f1e", border: "1px solid #1e293b", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 420, padding: 32 }}>
+                            <div style={{ textAlign: "center", maxWidth: 380 }}>
+                              <NetworkIcon style={{ width: 34, height: 34, color: "#334155", margin: "0 auto 12px" }} />
+                              <div style={{ fontSize: 14, fontWeight: 700, color: "#cbd5e1", marginBottom: 8 }}>
+                                {graphMode === "case" ? "Enter a case to map its network" : "Paste notes to map them"}
+                              </div>
+                              <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "#64748b", margin: 0 }}>
+                                {graphMode === "case"
+                                  ? "The graph shows the case, the people named on it, and any other case those accused also appear on — all from registered records."
+                                  : "The AI reads only what you wrote; the records confirm which people are real."}
+                              </p>
+                            </div>
                           </div>
-                        </div>
+                        )}
+                      </div>
 
-                        {[
-                          { label: "Clearance Status", value: activeDossier.status, color: ORCA.red },
-                          { label: "Last Known Location", value: activeDossier.location },
-                          { label: "Linked Case Files", value: activeDossier.firs },
-                          { label: "Tower Burners Registered", value: activeDossier.contacts },
-                          { label: "Linked Fleet Logistics", value: activeDossier.vehicles },
-                          { label: "Mule Accounts Logged", value: activeDossier.accounts },
-                        ].map(({ label, value, color }) => (
-                          <div key={label} style={{ display: "flex", justifyContent: "space-between", padding: "10px 0", borderBottom: `1px solid ${ORCA.border}`, fontSize: 13 }}>
-                            <span style={{ color: ORCA.textGray }}>{label}</span>
-                            <strong style={{ color: color || ORCA.textDark, fontFamily: "JetBrains Mono, monospace", maxWidth: 200, textAlign: "right" }}>{value}</strong>
-                          </div>
-                        ))}
+                      {/* Selected-node record panel */}
+                      <div style={{ width: 350, flexShrink: 0 }}>
+                        <Panel header="Record Detail" style={{ height: "100%" }} bodyStyle={{ overflowY: "auto" }}>
+                          {!graphNode ? (
+                            <div style={{ padding: "28px 8px", textAlign: "center" }}>
+                              <div style={{ fontSize: 13, fontWeight: 700, color: ORCA.navy, marginBottom: 8 }}>No node selected</div>
+                              <p style={{ fontSize: 12, lineHeight: 1.6, color: ORCA.textGray, margin: 0 }}>
+                                Click any node on the graph to see the record behind it.
+                              </p>
+                            </div>
+                          ) : (
+                            <>
+                              <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16 }}>
+                                <div style={{ width: 46, height: 46, background: "rgba(0,0,0,0.05)", borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, color: ORCA.navy, fontSize: 16, flexShrink: 0, textTransform: "uppercase" }}>
+                                  {String(graphNode.label || "?").split(" ").filter(Boolean).map((n: string) => n[0]).join("").slice(0, 2) || "?"}
+                                </div>
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ fontSize: 15, fontWeight: 700, color: ORCA.navy, wordBreak: "break-word" }}>{graphNode.label}</div>
+                                  <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+                                    <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", fontFamily: "JetBrains Mono, monospace", padding: "2px 6px", borderRadius: 3, background: "rgba(0,31,63,0.08)", color: ORCA.navy }}>{graphNode.kind}</span>
+                                    <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", fontFamily: "JetBrains Mono, monospace", padding: "2px 6px", borderRadius: 3,
+                                      background: graphNode.verified ? "rgba(16,185,129,0.12)" : "rgba(180,83,9,0.12)",
+                                      color: graphNode.verified ? "#047857" : "#b45309" }}>
+                                      {graphNode.verified ? "VERIFIED RECORD" : "FROM NOTES"}
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
 
-                        <div style={{ marginTop: 16 }}>
-                          <div style={{ fontSize: 10, fontFamily: "JetBrains Mono, monospace", fontWeight: 700, color: ORCA.orange, textTransform: "uppercase", marginBottom: 4 }}>Financial Telemetry Anomaly</div>
-                          <p style={{ fontSize: 12, lineHeight: 1.6, color: ORCA.textDark }}>{activeDossier.financialAnomaly}</p>
-                        </div>
-                        <div style={{ marginTop: 12 }}>
-                          <div style={{ fontSize: 10, fontFamily: "JetBrains Mono, monospace", fontWeight: 700, color: ORCA.textGray, textTransform: "uppercase", marginBottom: 4 }}>Operational Case Notes</div>
-                          <p style={{ fontSize: 12, lineHeight: 1.6, color: ORCA.textGray }}>{activeDossier.notes}</p>
-                        </div>
-                      </Panel>
+                              {(graphNode.detail || []).map(({ label, value }: any, i: number) => (
+                                <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "10px 0", borderBottom: `1px solid ${ORCA.border}`, fontSize: 13 }}>
+                                  <span style={{ color: ORCA.textGray, flexShrink: 0 }}>{label}</span>
+                                  <strong style={{ color: ORCA.textDark, fontFamily: "JetBrains Mono, monospace", textAlign: "right", wordBreak: "break-word" }}>{value}</strong>
+                                </div>
+                              ))}
+
+                              {graphMeta && (
+                                <div style={{ marginTop: 16, background: "rgba(0,31,63,0.04)", border: `1px solid ${ORCA.border}`, borderRadius: 4, padding: 12 }}>
+                                  <div style={{ fontSize: 10, fontFamily: "JetBrains Mono, monospace", fontWeight: 700, color: ORCA.textGray, textTransform: "uppercase", marginBottom: 6 }}>
+                                    What this graph is
+                                  </div>
+                                  <p style={{ fontSize: 11.5, lineHeight: 1.6, color: ORCA.textGray, margin: 0 }}>{graphMeta.note}</p>
+                                  <p style={{ fontSize: 11.5, lineHeight: 1.6, color: ORCA.textGray, margin: "6px 0 0 0" }}>{graphMeta.identityBasis}</p>
+                                </div>
+                              )}
+                            </>
+                          )}
+                        </Panel>
+                      </div>
                     </div>
                   </div>
                 ) : (
+
                   /* Geospatial Heatmap Visualizer */
                   <div style={{ display: "flex", gap: 24, flex: 1, minHeight: 480 }}>
                     <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
                       <MapGrid />
                     </div>
 
-                    {/* Dossier panel */}
+                    {/*
+                      District dossier.
+
+                      This showed `districtDatabase` from mock.ts: an invented
+                      crime density rating, a 30-day FIR count, "Force Grid
+                      Coverage", a count of ISD special squads and an "AI
+                      Advisory Dispatch Directive" — all presented as
+                      operational intelligence for a real Karnataka district.
+
+                      It now carries the REAL counts for whichever district is
+                      selected, read from the same hook the map uses so the
+                      panel can never explain a colour the map is no longer
+                      showing. Those counts were briefly in a card floating over
+                      the map; it covered the shapes it described and had to be
+                      tiny to stay out of the way.
+                    */}
                     <div style={{ width: 350, flexShrink: 0 }}>
                       <Panel header="District Geospatial Dossier" style={{ height: "100%" }} bodyStyle={{ overflowY: "auto" }}>
-                        <h2 style={{ fontSize: 18, fontWeight: 700, color: ORCA.navy, textTransform: "uppercase" }}>{activeDistrict.name}</h2>
-                        <div style={{ color: ORCA.red, fontSize: 12, fontWeight: 700, marginTop: 4, marginBottom: 24 }}>{activeDistrict.level}</div>
-
-                        <div style={{ display: "flex", justifyContent: "space-between", padding: "12px 0", borderBottom: `1px solid ${ORCA.border}`, fontSize: 13 }}>
-                          <span style={{ color: ORCA.textGray }}>Crime Density Rating</span>
-                          <strong style={{ color: ORCA.red }}>{activeDistrict.density}</strong>
-                        </div>
-                        <div style={{ display: "flex", justifyContent: "space-between", padding: "12px 0", borderBottom: `1px solid ${ORCA.border}`, fontSize: 13 }}>
-                          <span style={{ color: ORCA.textGray }}>Total FIRs (Last 30 Days)</span>
-                          <strong>{activeDistrict.firs}</strong>
-                        </div>
-                        <div style={{ display: "flex", justifyContent: "space-between", padding: "12px 0", borderBottom: `1px solid ${ORCA.border}`, fontSize: 13 }}>
-                          <span style={{ color: ORCA.textGray }}>Force Grid Coverage</span>
-                          <strong style={{ color: ORCA.green }}>{activeDistrict.patrol}</strong>
-                        </div>
-                        <div style={{ display: "flex", justifyContent: "space-between", padding: "12px 0", borderBottom: `1px solid ${ORCA.border}`, fontSize: 13 }}>
-                          <span style={{ color: ORCA.textGray }}>ISD Special Squads</span>
-                          <strong style={{ fontFamily: "JetBrains Mono, monospace" }}>{activeDistrict.squads}</strong>
-                        </div>
-                        <div style={{ marginTop: 16, background: "rgba(255,153,51,0.08)", border: `1px solid rgba(255,153,51,0.3)`, borderRadius: 4, padding: 12 }}>
-                          <div style={{ fontFamily: "JetBrains Mono, monospace", fontWeight: 800, fontSize: 11.5, color: "#b45309", textTransform: "uppercase", display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
-                            <AlertTriangle style={{ width: 14, height: 14, color: "#b45309" }} /> AI Advisory Dispatch Directive
-                          </div>
-                          <p style={{ fontSize: 12, lineHeight: 1.6, color: ORCA.textDark }}>{activeDistrict.advisory}</p>
-                        </div>
+                        <DistrictDossier />
                       </Panel>
                     </div>
                   </div>
@@ -1258,6 +1044,40 @@ const MainContent: React.FC = () => {
             {/* ============================================================ */}
             {activeTab === "news" && (
               <LiveNewsFeeds />
+            )}
+
+            {/* ============================================================ */}
+            {/* 7B. CASE REGISTRATION (FIR / UDR / PAR / Zero FIR)            */}
+            {/* ============================================================ */}
+            {activeTab === "case-registration" && (
+              <CaseRegistration />
+            )}
+
+            {/* ============================================================ */}
+            {/* 7C. EVIDENCE REGISTRATION (+ chain of custody)                */}
+            {/* ============================================================ */}
+            {/* Mounted bare, NOT inside <Panel>: Panel's overflow:hidden
+                clips the searchable dropdowns. Same rule as CaseRegistration. */}
+            {activeTab === "evidence" && (
+              <EvidenceRegistration />
+            )}
+
+            {/* ============================================================ */}
+            {/* 7D. LOST & STOLEN PROPERTY REGISTER                           */}
+            {/* ============================================================ */}
+            {/* Bare, not inside <Panel>: Panel's overflow:hidden clips the
+                searchable dropdowns. Same rule as CaseRegistration. */}
+            {activeTab === "property-register" && (
+              <PropertyRegister />
+            )}
+
+            {/* ============================================================ */}
+            {/* 7E. TASK & ASSIGNMENT                                         */}
+            {/* ============================================================ */}
+            {/* Bare, not inside <Panel>: Panel's overflow:hidden clips the
+                searchable dropdowns. Same rule as CaseRegistration. */}
+            {activeTab === "tasks" && (
+              <TaskAssignment />
             )}
 
             {/* ============================================================ */}
@@ -1278,69 +1098,46 @@ const MainContent: React.FC = () => {
             {/* 9C. OFFICIAL SECURITY BULLETINS                              */}
             {/* ============================================================ */}
             {activeTab === "reports" && (() => {
-              const MOCK_REPORTS = [
-                { id: "REP-2026-004", title: "KSP ISD Annual Counter-Terrorism Intelligence Assessment", classification: "SECRET", date: "04 July 2026", size: "2.4 MB", type: "PDF", author: "Internal Security Division" },
-                { id: "REP-2026-003", title: "Cyber Syndicate & Darknet Financial Vector Mapping", classification: "SECRET", date: "03 July 2026", size: "1.8 MB", type: "PDF", author: "Cyber Crime Cell, CID" },
-                { id: "REP-2026-002", title: "Standardized Standing Order: Mobile Intercept Compliance", classification: "CONFIDENTIAL", date: "02 July 2026", size: "480 KB", type: "PDF", author: "DG & IGP Office" },
-                { id: "REP-2026-001", title: "Inter-State Border Patrol Grid Logistics Mapping Data", classification: "RESTRICTED", date: "30 June 2026", size: "14.2 MB", type: "XLSX", author: "Border Security Command" },
-                { id: "REP-2026-015", title: "State Intelligence Advisory: High-Profile Convict Escape Risk", classification: "SECRET", date: "28 June 2026", size: "1.1 MB", type: "PDF", author: "Intelligence Department" }
-              ];
+              /**
+               * No fabricated reports.
+               *
+               * Five invented documents used to be listed here as downloadable
+               * departmental intelligence — "KSP ISD Annual Counter-Terrorism
+               * Intelligence Assessment" (SECRET, 2.4 MB), a darknet financial
+               * mapping, a standing order on lawful interception, a border
+               * logistics grid, and a convict escape advisory.
+               *
+               * Each opened a printable document built from `getReportData`,
+               * complete with data tables. The escape advisory named three
+               * individuals with case references, threat levels and last-known
+               * locations, and recommended "Immediate APB" — a page an officer
+               * could print on O.R.C.A letterhead and act on. None of them were
+               * real people or real cases.
+               *
+               * There is no report repository behind this screen yet, so it
+               * lists only what officers publish through Publish Bulletin.
+               */
+              /**
+               * Real sealed documents from the verification ledger.
+               *
+               * `reports` is loaded from /api/reports, which reads the Catalyst
+               * `VerifiedDocument` table — one row per document actually sealed,
+               * carrying its crime number, SHA-256 and issuer.
+               *
+               * `size` and `type` are not stored, so they are not claimed: the
+               * old list invented "2.4 MB / PDF" per row alongside invented
+               * SECRET classifications.
+               */
+              const PUBLISHED_REPORTS = reports;
 
-              const getReportData = (title: string) => {
-                switch (title) {
-                  case "KSP ISD Annual Counter-Terrorism Intelligence Assessment":
-                    return {
-                      headers: ["Threat Vector", "Target Profile", "Activity Score", "Countermeasure", "Risk Index"],
-                      rows: [
-                        ["Border Crossing Vectors", "Level III Alert", "84.2", "Patrol Grid Sync", "HIGH"],
-                        ["Encrypted Telegram Cells", "Financial Vectors", "92.1", "Core Decrypt Sweeps", "CRITICAL"],
-                        ["UAV Ingress Surveillance", "Air Corridor 2", "44.8", "Ground Radar Lock", "MEDIUM"]
-                      ],
-                      desc: "Annual internal intelligence brief mapping active insurgent/extremist cells, financial indicators, and regional alert vectors within state jurisdictions."
-                    };
-                  case "Cyber Syndicate & Darknet Financial Vector Mapping":
-                    return {
-                      headers: ["Financial Node", "Cryptocurrency Wallet", "Estimated Flow", "Primary IP Source", "Status"],
-                      rows: [
-                        ["Launder Syndicate 1", "0x9a2f...10ce", "4.2M USD equivalent", "Tor Exit Node 12", "AUDITED"],
-                        ["Darknet Host Vectors", "1BitcoinWallet...", "12.8M USD equivalent", "Spoofed ISP range", "INTERCEPTED"],
-                        ["Adversary P2P Sync", "0x14ea...b931", "840k USD equivalent", "VPN Loop Bangalore", "FLAGGED"]
-                      ],
-                      desc: "Cryptology analysis monitoring decentralised escrow flows, coinjoin mixers, and primary IP origins of state extortion networks."
-                    };
-                  case "Standardized Standing Order: Mobile Intercept Compliance":
-                    return {
-                      headers: ["Compliance Standard", "Audit Requirement", "Enforcement Agency", "Logs Checked", "Index"],
-                      rows: [
-                        ["IMEI Registry Verification", "Automated check on connect", "ISD Network Div", "1.4M records", "99.8%"],
-                        ["Legal Authorization Sign", "Cryptographic Magistrate Check", "DG-IGP Office", "128 keys", "100.0%"],
-                        ["Encrypted Storage Policy", "AES-256 local partitions", "SCRB Audit Unit", "18 nodes", "98.4%"]
-                      ],
-                      desc: "Standardized protocols regulating lawful interception procedures, audit schedules, and cryptography compliance across telecommunication buffers."
-                    };
-                  case "Inter-State Border Patrol Grid Logistics Mapping Data":
-                    return {
-                      headers: ["Border Segment", "Patrol Frequency", "Personnel Count", "Active Vehicles", "UHF Radio Link"],
-                      rows: [
-                        ["North Sector Border KA-MH", "Hourly sweep", "142 officers", "18 interceptors", "SECURE"],
-                        ["East Sector Border KA-AP", "Semi-hourly sweep", "180 officers", "22 interceptors", "SECURE"],
-                        ["South Sector Border KA-TN", "Continuous check", "210 officers", "28 interceptors", "STANDBY"]
-                      ],
-                      desc: "Logistics grid tracking border checkpoint deployments, personnel shifting schedules, and hardware telemetry sync."
-                    };
-                  case "State Intelligence Advisory: High-Profile Convict Escape Risk":
-                  default:
-                    return {
-                      headers: ["Subject Name", "Alias / Case Ref", "Threat Level", "Last Location Alert", "Advisory Actions"],
-                      rows: [
-                        ["Vikram 'Slash' Gowda", "SC-40192", "EXTREMELY HIGH", "Belagavi District Border", "Immediate APB"],
-                        ["Harish 'Net' Murthy", "SC-98214", "HIGH", "Bengaluru City Core", "Surveillance Sweep"],
-                        ["Ananth 'Cipher' Patil", "SC-84192", "MEDIUM", "Mysore Prison Ingress", "Guard Alert"]
-                      ],
-                      desc: "Statewide alert briefing warden details, suspected transit routes, and emergency containment operations for escaped high-profile inmates."
-                    };
-                }
-              };
+              // The ledger records a document's identity, not its contents, so
+              // there is no table to print. A report opens its verification
+              // record rather than a fabricated data sheet.
+              const getReportData = (_title: string) => ({
+                headers: [] as string[],
+                rows: [] as string[][],
+                desc: "",
+              });
 
               const triggerDownload = (report: any) => {
                 const reportData = getReportData(report.title);
@@ -1480,13 +1277,15 @@ const MainContent: React.FC = () => {
                 return matchesSearch && matchesFilter;
               });
 
-              const filteredReports = MOCK_REPORTS.filter(r => {
+              const filteredReports = PUBLISHED_REPORTS.filter(r => {
                 const matchesSearch = r.title.toLowerCase().includes(bulletinSearch.toLowerCase()) || 
                                       r.author.toLowerCase().includes(bulletinSearch.toLowerCase());
                 let matchesFilter = true;
-                if (bulletinFilter === "HIGH URGENCY") matchesFilter = r.classification === "SECRET";
-                else if (bulletinFilter === "INTELLIGENCE ADV") matchesFilter = r.classification === "CONFIDENTIAL";
-                else if (bulletinFilter === "ROUTINE BRIEF") matchesFilter = r.classification === "RESTRICTED";
+                // The ledger has verification statuses, not classifications —
+                // the old SECRET/CONFIDENTIAL/RESTRICTED buckets described
+                // invented rows. Only the revoked filter means anything here.
+                if (bulletinFilter === "HIGH URGENCY") matchesFilter = r.classification === "REVOKED";
+                else if (bulletinFilter !== "ALL") matchesFilter = false;
                 return matchesSearch && matchesFilter;
               });
 
@@ -1665,9 +1464,16 @@ const MainContent: React.FC = () => {
                                   {highlightText(report.title, bulletinSearch)}
                                 </h4>
                                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11, color: ORCA.textMuted, marginTop: 4 }}>
-                                  <span>Publisher: <strong>{highlightText(report.author, bulletinSearch)}</strong></span>
+                                  {/*
+                                    Issuer and crime number — both recorded.
+                                    `report.size` and `report.type` are gone:
+                                    the ledger stores a document's identity, not
+                                    its bytes, and the old list printed an
+                                    invented "2.4 MB / PDF" against every row.
+                                  */}
+                                  <span>Issued by: <strong>{highlightText(report.author, bulletinSearch)}</strong></span>
                                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                                    <span>{report.size}</span>
+                                    {report.crimeNo && <span>Crime No. {report.crimeNo}</span>}
                                     <button
                                       onClick={() => triggerDownload(report)}
                                       style={{
@@ -1680,7 +1486,7 @@ const MainContent: React.FC = () => {
                                         fontSize: 11
                                       }}
                                     >
-                                      [DOWNLOAD {report.type}]
+                                      [OPEN RECORD]
                                     </button>
                                   </div>
                                 </div>
@@ -1690,7 +1496,11 @@ const MainContent: React.FC = () => {
 
                           {filteredReports.length === 0 && (
                             <div style={{ textAlign: "center", padding: "40px 20px", color: ORCA.textMuted, fontSize: 12.5 }}>
-                              No official reports match the search parameters.
+                              {!reportsLoaded
+                                ? "Reading the verification ledger..."
+                                : bulletinSearch || bulletinFilter !== "ALL"
+                                  ? "No official reports match the search parameters."
+                                  : "No documents have been sealed into the ledger yet."}
                             </div>
                           )}
                         </div>
@@ -1702,9 +1512,11 @@ const MainContent: React.FC = () => {
                       <Panel style={{ flex: 1, display: "flex", flexDirection: "column" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
                           <h3 style={{ fontSize: 14, fontWeight: 700, color: ORCA.navy, margin: 0 }}>Official Security Bulletins</h3>
-                          <span style={{ fontSize: 10, color: "#10b981", fontWeight: 700, background: "rgba(16,185,129,0.1)", padding: "2px 8px", borderRadius: 4, fontFamily: "JetBrains Mono, monospace" }}>
-                            ● SECURE CONNECTION
-                          </span>
+                          {/*
+                            The "SAMPLE DATA" chip is gone with the seeded
+                            bulletins it was labelling. Everything in this feed
+                            is now published by an officer through this console.
+                          */}
                         </div>
                         <p style={{ fontSize: 12, color: ORCA.textGray, margin: "0 0 16px 0", lineHeight: 1.5 }}>
                           Live operational alerts and advisory directives published under credential authority. Click items to inspect guidelines.
@@ -1783,7 +1595,11 @@ const MainContent: React.FC = () => {
 
                           {filteredBulletins.length === 0 && (
                             <div style={{ textAlign: "center", padding: "40px 20px", color: ORCA.textMuted, fontSize: 12.5 }}>
-                              No security bulletins match the search parameters.
+                              {!bulletinsLoaded
+                                ? "Reading bulletins..."
+                                : bulletinSearch || bulletinFilter !== "ALL"
+                                  ? "No security bulletins match the search parameters."
+                                  : "No security bulletins have been published yet."}
                             </div>
                           )}
                         </div>
@@ -1901,11 +1717,22 @@ const MainContent: React.FC = () => {
                           </button>
                           <button 
                             type="submit" 
-                            style={{ background: ORCA.navy, color: "white", border: "none", borderRadius: 4, padding: "8px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}
+                            disabled={publishing}
+                            style={{ background: ORCA.navy, color: "white", border: "none", borderRadius: 4, padding: "8px 16px", fontSize: 13, fontWeight: 700, cursor: publishing ? "default" : "pointer", opacity: publishing ? 0.6 : 1 }}
                           >
-                            Publish Alert
+                            {publishing ? "Publishing..." : "Publish Alert"}
                           </button>
                         </div>
+                        {/*
+                          A failed publish has to say so. This wrote straight
+                          into local state, so it always looked like it had
+                          worked — including when nothing was stored anywhere.
+                        */}
+                        {publishError && (
+                          <div style={{ marginTop: 10, background: "rgba(153,0,0,0.06)", border: "1px solid rgba(153,0,0,0.25)", borderRadius: 4, padding: "8px 12px", fontSize: 12, color: ORCA.redDark }}>
+                            {publishError}
+                          </div>
+                        )}
                       </form>
                     </div>
                   )}
@@ -1923,7 +1750,7 @@ const MainContent: React.FC = () => {
               <div style={{ animation: "fadeIn 0.3s ease", flex: 1, display: "flex", flexDirection: "column" }}>
                 <PageHeader
                   title="Officer Audit Profile & Credentials"
-                  subtitle="Manage active identity profiles, view secure terminal access records, and verify cryptographic ingress history."
+                  subtitle="Your officer record, sign-in history, and audit trail of downloads and AI queries."
                 />
                 
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 20, alignItems: "flex-start", marginTop: 4 }}>
@@ -1946,14 +1773,20 @@ const MainContent: React.FC = () => {
                         boxShadow: "0 4px 10px rgba(255, 153, 51, 0.2)",
                         border: "3px solid #002855"
                       }}>
-                        {officerProfile?.name
-                          ? officerProfile.name.split(" ").filter(n => n.length > 0 && /^[a-zA-Z]/.test(n)).map(n => n[0]).join("").substring(0, 3).toUpperCase()
-                          : "RKS"
-                        }
+                        {officerPhoto ? (
+                          <img src={officerPhoto} alt="Officer profile photo" style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "50%" }} />
+                        ) : (() => {
+                          // Initials from the real name only. No stand-in: "RKS"
+                          // looked like a genuine officer's initials.
+                          const nm = catalystProfile?.name || "";
+                          const initials = nm.split(" ").filter((n: string) => n.length > 0 && /^[a-zA-Z]/.test(n))
+                            .map((n: string) => n[0]).join("").substring(0, 3).toUpperCase();
+                          return initials || "—";
+                        })()}
                       </div>
 
                       <h3 style={{ fontSize: 16, fontWeight: 800, color: ORCA.navy, margin: 0 }}>
-                        {officerProfile?.name || "Command Administrator"}
+                        {catalystProfile?.name || (telemetryLoading ? "…" : "Name not on record")}
                       </h3>
                       <div style={{
                         marginTop: 6,
@@ -1967,29 +1800,50 @@ const MainContent: React.FC = () => {
                         textTransform: "uppercase",
                         letterSpacing: "0.02em"
                       }}>
-                        {officerProfile?.rank || "Superintendent of Police"}
+                        {catalystProfile?.rank || catalystProfile?.designation || "Not on record"}
                       </div>
                     </div>
 
                     <div style={{ borderTop: `1px solid ${ORCA.border}`, paddingTop: 16 }}>
                       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                         {[
-                          { label: "Clearance Level", value: officerProfile?.clearanceLevel || "None", code: true },
-                          { label: "State Audit District", value: officerProfile?.district || "Bengaluru Urban" },
-                          { label: "Assigned Unit / Station", value: officerProfile?.station || "Central Command Headquarters" },
-                          { label: "Mobile Ingress Phone", value: officerProfile?.mobile || "+91 94808-01001", code: true },
-                          { label: "Secure Intranet Email", value: officerProfile?.email || "admin@orca.gov" },
-                          { label: "Console Authorization Role", value: officerProfile?.role || "ADMIN", code: true }
+                          // Every value comes from Catalyst (falling back to the
+                          // Firestore profile until migration completes). Unset
+                          // fields read "Not on record" - the old defaults were
+                          // plausible enough to be mistaken for real records.
+                          { label: "KGID", value: profileField("kgid", "badgeId"), code: true },
+                          { label: "Clearance Level", value: profileField("clearanceLevel", "clearanceLevel"), code: true },
+                          { label: "Designation", value: profileField("designation", "designation") },
+                          { label: "State Audit District", value: profileField("district", "district") },
+                          { label: "Assigned Unit / Station", value: profileField("station", "station") },
+                          { label: "Mobile Ingress Phone", value: profileField("mobile", "mobile"), code: true },
+                          { label: "Secure Intranet Email", value: profileField("email", "email") },
+                          // The raw slug ("admin_full") is an internal identifier and means
+                          // nothing to an officer. Show the label RBAC_CONFIG already
+                          // defines, with the slug kept as a tooltip so support can still
+                          // read it, and the access breadth derived from the same config.
+                          {
+                            label: "Console Authorization Role",
+                            value: roleLabel,
+                            hint: roleScope,
+                            title: roleSlug,
+                          }
                         ].map((item, idx) => (
-                          <div key={idx} style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", fontSize: 12.5 }}>
-                            <span style={{ color: ORCA.textMuted, fontWeight: 500 }}>{item.label}</span>
-                            <span style={{
-                              color: ORCA.navy,
-                              fontWeight: 600,
-                              textAlign: "right",
-                              fontFamily: item.code ? "JetBrains Mono, monospace" : "inherit",
-                              fontSize: item.code ? 11.5 : 12.5
-                            }}>{item.value}</span>
+                          <div key={idx} style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", fontSize: 12.5, gap: 12 }}>
+                            <span style={{ color: ORCA.textMuted, fontWeight: 500, flexShrink: 0 }}>{item.label}</span>
+                            <span style={{ textAlign: "right" }} title={(item as any).title || undefined}>
+                              <span style={{
+                                color: ORCA.navy,
+                                fontWeight: 600,
+                                fontFamily: item.code ? "JetBrains Mono, monospace" : "inherit",
+                                fontSize: item.code ? 11.5 : 12.5
+                              }}>{item.value}</span>
+                              {(item as any).hint ? (
+                                <span style={{ display: "block", color: ORCA.textMuted, fontWeight: 500, fontSize: 10.5, marginTop: 2 }}>
+                                  {(item as any).hint}
+                                </span>
+                              ) : null}
+                            </span>
                           </div>
                         ))}
                       </div>
@@ -2006,65 +1860,57 @@ const MainContent: React.FC = () => {
                         <div style={{ background: "rgba(0,31,63,0.04)", padding: 10, borderRadius: 6, border: `1px solid ${ORCA.border}` }}>
                           <span style={{ fontSize: 10, color: ORCA.textMuted, display: "block", fontWeight: 600 }}>ACTIVE SESSION TIME</span>
                           <strong style={{ fontSize: 14, color: "#10b981", fontFamily: "JetBrains Mono, monospace", display: "block", marginTop: 2 }}>
-                            {(() => {
-                              const start = Number(typeof window !== "undefined" ? sessionStorage.getItem("orca_session_start") || Date.now() : Date.now());
-                              const diffSecs = Math.floor((Date.now() - start) / 1000);
-                              const h = Math.floor(diffSecs / 3600);
-                              const m = Math.floor((diffSecs % 3600) / 60);
-                              const s = diffSecs % 60;
-                              return `${String(h).padStart(2,'0')}h ${String(m).padStart(2,'0')}m ${String(s).padStart(2,'0')}s`;
-                            })()}
+                            {/* Measured from the open OfficerSession row's LoginAt, not from a
+                                per-tab sessionStorage timestamp that restarted in a second tab. */}
+                            {activeSession.known ? formatElapsed(activeSession.elapsedSeconds || 0) : "—"}
                           </strong>
-                          <span style={{ fontSize: 9.5, color: "#10b981", fontWeight: 700, marginTop: 2, display: "block" }}>● Live Ingress Active</span>
+                          <span style={{ fontSize: 9.5, color: activeSession.known ? "#10b981" : ORCA.textMuted, fontWeight: 700, marginTop: 2, display: "block" }}>
+                            {activeSession.known ? "Since sign-in" : "No open session recorded"}
+                          </span>
                         </div>
 
                         {(() => {
-                          let localHist: any[] = [];
-                          try {
-                            localHist = typeof window !== "undefined" ? JSON.parse(localStorage.getItem("orca_session_history") || "[]") : [];
-                          } catch (e) {}
-
-                          const totalCount = Math.max(1, localHist.length);
-                          const lastCompleted = localHist.find((s: any) => s.status !== "ACTIVE" && s.duration);
-                          const lastDuration = lastCompleted?.duration || "First Session";
-                          const lastLabel = lastCompleted ? "Logged Session" : "Live Ingress";
-
-                          let totalSeconds = 0;
-                          localHist.forEach((s: any) => {
-                            if (s.duration && typeof s.duration === "string") {
-                              const match = s.duration.match(/(\d+)h\s*(\d+)m/);
-                              if (match) {
-                                totalSeconds += parseInt(match[1]) * 3600 + parseInt(match[2]) * 60;
-                              }
-                            }
-                          });
+                          // Duty figures computed from the Catalyst session table,
+                          // not localStorage - which was per-browser, so an officer
+                          // on a second machine saw a blank history and a "first
+                          // session" that was not their first.
+                          const sessions = telemetry.sessions;
+                          const completed = sessions.filter((x: any) => Number.isFinite(x.durationSeconds));
+                          const totalSeconds = completed.reduce((sum: number, x: any) => sum + Number(x.durationSeconds || 0), 0);
                           const totalHrs = (totalSeconds / 3600).toFixed(1);
-                          const avgShift = totalCount > 0 ? (totalSeconds / 3600 / totalCount).toFixed(1) : "0.0";
+                          const avgShift = completed.length ? (totalSeconds / 3600 / completed.length).toFixed(1) : "0.0";
+                          const last = completed[0];
 
                           return (
                             <>
                               <div style={{ background: "rgba(0,31,63,0.04)", padding: 10, borderRadius: 6, border: `1px solid ${ORCA.border}` }}>
-                                <span style={{ fontSize: 10, color: ORCA.textMuted, display: "block", fontWeight: 600 }}>MONTHLY DUTY LOGGED</span>
+                                <span style={{ fontSize: 10, color: ORCA.textMuted, display: "block", fontWeight: 600 }}>DUTY LOGGED</span>
                                 <strong style={{ fontSize: 14, color: ORCA.navy, fontFamily: "JetBrains Mono, monospace", display: "block", marginTop: 2 }}>
                                   {totalHrs} Hrs
                                 </strong>
-                                <span style={{ fontSize: 9.5, color: ORCA.textMuted, display: "block", marginTop: 2 }}>Avg {avgShift} Hrs / Shift</span>
+                                <span style={{ fontSize: 9.5, color: ORCA.textMuted, display: "block", marginTop: 2 }}>
+                                  {completed.length ? `Avg ${avgShift} Hrs / Shift` : "No completed sessions yet"}
+                                </span>
                               </div>
 
                               <div style={{ background: "rgba(0,31,63,0.04)", padding: 10, borderRadius: 6, border: `1px solid ${ORCA.border}` }}>
                                 <span style={{ fontSize: 10, color: ORCA.textMuted, display: "block", fontWeight: 600 }}>LAST SESSION DURATION</span>
                                 <strong style={{ fontSize: 13, color: ORCA.navy, fontFamily: "JetBrains Mono, monospace", display: "block", marginTop: 2 }}>
-                                  {lastDuration}
+                                  {last ? formatDuration(last.durationSeconds) : "—"}
                                 </strong>
-                                <span style={{ fontSize: 9.5, color: ORCA.textMuted, display: "block", marginTop: 2 }}>{lastLabel}</span>
+                                <span style={{ fontSize: 9.5, color: ORCA.textMuted, display: "block", marginTop: 2 }}>
+                                  {last ? "Logged Session" : "Current session is the first"}
+                                </span>
                               </div>
 
                               <div style={{ background: "rgba(0,31,63,0.04)", padding: 10, borderRadius: 6, border: `1px solid ${ORCA.border}` }}>
                                 <span style={{ fontSize: 10, color: ORCA.textMuted, display: "block", fontWeight: 600 }}>TOTAL LOGIN COUNT</span>
                                 <strong style={{ fontSize: 13, color: ORCA.navy, fontFamily: "JetBrains Mono, monospace", display: "block", marginTop: 2 }}>
-                                  {totalCount} Ingresses
+                                  {sessions.length} {sessions.length === 1 ? "Ingress" : "Ingresses"}
                                 </strong>
-                                <span style={{ fontSize: 9.5, color: ORCA.textMuted, display: "block", marginTop: 2 }}>Zero Auth Violations</span>
+                                <span style={{ fontSize: 9.5, color: ORCA.textMuted, display: "block", marginTop: 2 }}>
+                                  {telemetry.configured ? "Recorded statewide" : "Session log unavailable"}
+                                </span>
                               </div>
                             </>
                           );
@@ -2075,9 +1921,13 @@ const MainContent: React.FC = () => {
                     <div style={{ marginTop: 20, padding: 12, background: "rgba(255,153,51,0.05)", border: "1px dashed rgba(255,153,51,0.2)", borderRadius: 6, display: "flex", alignItems: "flex-start", gap: 10 }}>
                       <Fingerprint style={{ width: 20, height: 20, color: "#FF9933", flexShrink: 0 }} />
                       <div style={{ fontSize: 11, color: "#b45309", lineHeight: 1.5 }}>
-                        <strong>Active Session Cryptographic Key:</strong><br/>
+                        {/* This used to read "Active Session Cryptographic Key" and
+                            display ISD_SHA256_CERT_<uid>_AUDIT. Nothing was signed or
+                            hashed - it was the officer's UID dressed up as a
+                            certificate. Labelled for what it actually is. */}
+                        <strong>Session Identifier:</strong><br/>
                         <span style={{ fontFamily: "JetBrains Mono, monospace", wordBreak: "break-all" }}>
-                          ISD_SHA256_CERT_{officerProfile?.uid?.substring(0, 10).toUpperCase() || "DEMO"}_AUDIT
+                          {officerProfile?.uid || "Not signed in"}
                         </span>
                       </div>
                     </div>
@@ -2118,13 +1968,13 @@ const MainContent: React.FC = () => {
                     {profileTab === "ingress" && (
                       <div style={{ display: "flex", flexDirection: "column", flex: 1, animation: "fadeIn 0.2s ease" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                          <h3 style={{ fontSize: 13.5, fontWeight: 700, color: ORCA.navy, margin: 0 }}>Terminal Ingress Audit Log</h3>
+                          <h3 style={{ fontSize: 13.5, fontWeight: 700, color: ORCA.navy, margin: 0 }}>Sign-in History</h3>
                           <span style={{ fontSize: 10, color: "#10b981", fontWeight: 700, background: "rgba(16,185,129,0.1)", padding: "2px 8px", borderRadius: 4, fontFamily: "JetBrains Mono, monospace" }}>
-                            ● SECURE CONNECTION
+                            {telemetry.configured ? "● CATALYST" : "○ LOG UNAVAILABLE"}
                           </span>
                         </div>
                         <p style={{ fontSize: 12, color: ORCA.textGray, margin: "0 0 16px 0", lineHeight: 1.5 }}>
-                          Recent login ingress timestamps registered under Badge credentials. Audit logs are legally binding and archived for 90 days.
+                          Sign-in history for this officer, recorded server-side at each authentication.
                         </p>
                         <div style={{ overflowX: "auto", flex: 1 }}>
                           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, textAlign: "left" }}>
@@ -2133,185 +1983,66 @@ const MainContent: React.FC = () => {
                                 <th style={{ padding: "8px 12px", fontWeight: 600 }}>Login Time (IST)</th>
                                 <th style={{ padding: "8px 12px", fontWeight: 600 }}>Logout / End Time</th>
                                 <th style={{ padding: "8px 12px", fontWeight: 600 }}>Session Duration</th>
-                                <th style={{ padding: "8px 12px", fontWeight: 600 }}>Terminal Node</th>
-                                <th style={{ padding: "8px 12px", fontWeight: 600 }}>Auth Method</th>
+                                <th style={{ padding: "8px 12px", fontWeight: 600 }}>IP Address</th>
+                                <th style={{ padding: "8px 12px", fontWeight: 600 }}>Browser / Device</th>
                                 <th style={{ padding: "8px 12px", fontWeight: 600, textAlign: "right" }}>Status</th>
                               </tr>
                             </thead>
                             <tbody>
-                              {(() => {
-                                const activeSessionRow = { 
-                                  loginTime: (() => {
-                                    const startStr = typeof window !== "undefined" ? sessionStorage.getItem("orca_login_time") : null;
-                                    const startDate = startStr ? new Date(startStr) : (officerProfile?.lastLogin ? new Date(officerProfile.lastLogin) : new Date());
-                                    return startDate.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' IST';
-                                  })(), 
-                                  logoutTime: "Active Session Now",
-                                  duration: (() => {
-                                    const start = Number(typeof window !== "undefined" ? sessionStorage.getItem("orca_session_start") || Date.now() : Date.now());
-                                    const diffSecs = Math.floor((Date.now() - start) / 1000);
-                                    const h = Math.floor(diffSecs / 3600);
-                                    const m = Math.floor((diffSecs % 3600) / 60);
-                                    const s = diffSecs % 60;
-                                    return `${String(h).padStart(2,'0')}h ${String(m).padStart(2,'0')}m ${String(s).padStart(2,'0')}s`;
-                                  })(),
-                                  ip: "Secure Local Ingress", 
-                                  term: `ISD-NODE-${officerProfile?.uid?.substring(0, 6).toUpperCase() || "LIVE"}`, 
-                                  method: "Encrypted PKI Handshake", 
-                                  active: true 
-                                };
-
-                                // Local browser history entries
-                                let localHistory: any[] = [];
-                                try {
-                                  localHistory = typeof window !== "undefined" ? JSON.parse(localStorage.getItem("orca_session_history") || "[]") : [];
-                                } catch (e) {}
-
-                                const formattedLocalRows = localHistory.slice(1).map((item: any) => {
-                                  const loginDate = new Date(item.loginTime);
-                                  const logoutDate = item.logoutTime && item.logoutTime !== "Active Session Now" ? new Date(item.logoutTime) : null;
-                                  let cleanMethod = item.method || "Biometric Ingress Token";
-                                  if (cleanMethod === "Firebase Token") cleanMethod = "Encrypted PKI Handshake";
-                                  return {
-                                    loginTime: !isNaN(loginDate.getTime()) ? loginDate.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' IST' : "Recorded Ingress",
-                                    logoutTime: logoutDate && !isNaN(logoutDate.getTime()) ? logoutDate.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' IST' : item.logoutTime,
-                                    duration: item.duration || "Recorded",
-                                    term: item.term || `ISD-NODE-${officerProfile?.uid?.substring(0, 6).toUpperCase() || "T402"}`,
-                                    method: cleanMethod,
-                                    status: item.status,
-                                    reason: item.reason,
-                                    active: false
-                                  };
-                                });
-
-                                const historicalRows = liveSessionLogs
-                                  .filter((log: any) => log.status !== "ACTIVE")
-                                  .map((log: any) => {
-                                    const rawLogin = log.loginTime || (log.timestamp && log.timestamp.toDate ? log.timestamp.toDate() : log.timestamp);
-                                    const loginDate = rawLogin ? new Date(rawLogin) : null;
-                                    const formattedLogin = (loginDate && !isNaN(loginDate.getTime())) 
-                                      ? loginDate.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' IST'
-                                      : "Recorded Session";
-
-                                    const rawLogout = log.logoutTime;
-                                    const logoutDate = rawLogout ? new Date(rawLogout) : null;
-                                    const formattedLogout = (logoutDate && !isNaN(logoutDate.getTime()))
-                                      ? logoutDate.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' IST'
-                                      : (log.status || "Session Ended");
-
-                                    const nodeStr = log.uid ? `ISD-NODE-${log.uid.substring(0,6).toUpperCase()}` : (log.targetUid ? `ISD-NODE-${log.targetUid.substring(0,6).toUpperCase()}` : "KSP-ISD-LIVE");
-
-                                    let cleanMethod = "Biometric Ingress Token";
-                                    if (log.action === "USER_LOGIN_SUCCESS" || log.action?.includes("LOGIN")) cleanMethod = "Encrypted PKI Handshake";
-                                    else if (log.action === "USER_LOGOUT") cleanMethod = "Officer Badge Logout";
-                                    else if (log.action === "VPN_FORCED_LOCKDOWN") cleanMethod = "Security Guard Disconnect";
-                                    else if (log.changedBy) cleanMethod = `Officer ${log.changedBy}`;
-
-                                    let statusVal = log.status || log.newRole;
-                                    let reasonVal = log.reason;
-                                    if (log.action === "VPN_FORCED_LOCKDOWN" || log.status === "VPN_FORCED_LOCKDOWN" || log.status === "VPN_LOCKDOWN_FORCED") {
-                                      statusVal = "VPN_LOCKDOWN_FORCED";
-                                      reasonVal = "VPN_LOCKDOWN";
-                                    }
-
-                                    return {
-                                      loginTime: formattedLogin,
-                                      logoutTime: formattedLogout,
-                                      duration: log.duration || "Recorded",
-                                      term: nodeStr,
-                                      method: cleanMethod,
-                                      status: statusVal,
-                                      reason: reasonVal,
-                                      active: false
-                                    };
-                                  });
-
-                                const allRowsRaw = [activeSessionRow, ...formattedLocalRows, ...historicalRows];
-                                const seenMap = new Map<string, any>();
-
-                                allRowsRaw.forEach(row => {
-                                  const key = row.loginTime;
-                                  if (!seenMap.has(key)) {
-                                    seenMap.set(key, row);
-                                  } else {
-                                    const existing = seenMap.get(key);
-                                    if (existing.duration === "Recorded" && row.duration !== "Recorded") {
-                                      seenMap.set(key, row);
-                                    }
-                                  }
-                                });
-
-                                const allRows = Array.from(seenMap.values());
-
-                                return allRows.map((log, idx) => (
-                                  <tr key={idx} style={{ borderBottom: `1px solid ${ORCA.border}`, background: log.active ? "rgba(16,185,129,0.03)" : "transparent" }}>
-                                    <td style={{ padding: "10px 12px", color: ORCA.navy, fontWeight: log.active ? 700 : 500 }}>
-                                      {log.loginTime}
+                              {/* One source: the Catalyst OfficerSession table.
+                                  This previously merged a synthesised "current session"
+                                  row, localStorage history and Firestore audit_logs, and
+                                  labelled every row with invented values - "Encrypted PKI
+                                  Handshake", "Biometric Ingress Token", "ISD-NODE-xxxxxx",
+                                  "Secure Local Ingress". None of those were measured. */}
+                              {telemetry.sessions.length === 0 ? (
+                                <tr>
+                                  <td colSpan={6} style={{ padding: "24px 12px", textAlign: "center", color: ORCA.textMuted, fontSize: 12 }}>
+                                    {telemetryLoading
+                                      ? "Loading login history…"
+                                      : telemetry.configured
+                                        ? "No sessions recorded for this officer yet."
+                                        : "Login history is unavailable — the session log could not be reached."}
+                                  </td>
+                                </tr>
+                              ) : telemetry.sessions.map((sess: any, idx: number) => {
+                                // `abandoned` is derived at read time: the row is
+                                // still ACTIVE because nothing closed it, but it
+                                // is far too old to be a live sign-in.
+                                const isOpen = sess.status === "ACTIVE" && !sess.abandoned;
+                                const forced = sess.status === "VPN_FORCED_LOCKDOWN";
+                                return (
+                                  <tr key={sess.rowId || idx} style={{ borderBottom: `1px solid ${ORCA.border}` }}>
+                                    <td style={{ padding: "10px 12px", color: ORCA.navy, fontWeight: 500 }}>{sess.loginAt || "—"}</td>
+                                    <td style={{ padding: "10px 12px", color: ORCA.textGray }}>{sess.logoutAt || (isOpen ? "Session open" : sess.abandoned ? "No sign-out recorded" : "—")}</td>
+                                    <td style={{ padding: "10px 12px", color: ORCA.textMuted, fontFamily: "JetBrains Mono, monospace", fontSize: 11.5 }}>
+                                      {isOpen ? "—" : formatDuration(sess.durationSeconds)}
                                     </td>
-                                    <td style={{ padding: "10px 12px", color: log.active ? "#10b981" : ORCA.textGray, fontWeight: log.active ? 700 : 400, fontFamily: "JetBrains Mono, monospace", fontSize: 11.5 }}>
-                                      {log.logoutTime}
+                                    <td style={{ padding: "10px 12px", color: ORCA.textMuted, fontFamily: "JetBrains Mono, monospace", fontSize: 11.5 }}>{sess.ipAddress || "—"}</td>
+                                    <td style={{ padding: "10px 12px", color: ORCA.textMuted, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={sess.userAgent}>
+                                      {sess.userAgent || "—"}
                                     </td>
-                                    <td style={{ padding: "10px 12px", fontFamily: "JetBrains Mono, monospace", fontSize: 11.5, color: log.active ? "#10b981" : ORCA.navy, fontWeight: 700 }}>
-                                      {log.duration}
-                                    </td>
-                                    <td style={{ padding: "10px 12px", fontFamily: "JetBrains Mono, monospace", fontSize: 11.5, color: ORCA.textMuted }}>{log.term}</td>
-                                    <td style={{ padding: "10px 12px", color: ORCA.textGray }}>{log.method}</td>
-                                    <td style={{ padding: "10px 12px", textAlign: "right", whiteSpace: "nowrap" }}>
-                                      {(() => {
-                                        if (log.active) {
-                                          return (
-                                            <span style={{ 
-                                              color: "#10b981", 
-                                              fontWeight: 700, 
-                                              fontSize: 10, 
-                                              background: "rgba(16,185,129,0.15)", 
-                                              padding: "4px 8px", 
-                                              borderRadius: 4, 
-                                              fontFamily: "JetBrains Mono, monospace",
-                                              border: "1px solid rgba(16,185,129,0.3)",
-                                              display: "inline-block"
-                                            }}>
-                                              ● ACTIVE NOW
-                                            </span>
-                                          );
-                                        }
-                                        if (log.status === "VPN_LOCKDOWN_FORCED" || log.reason === "VPN_LOCKDOWN" || (log.method && String(log.method).includes("VPN"))) {
-                                          return (
-                                            <span style={{ 
-                                              color: "#dc2626", 
-                                              fontWeight: 800, 
-                                              fontSize: 10, 
-                                              background: "rgba(220,38,38,0.12)", 
-                                              padding: "4px 8px", 
-                                              borderRadius: 4, 
-                                              fontFamily: "JetBrains Mono, monospace",
-                                              border: "1px solid rgba(220,38,38,0.3)",
-                                              display: "inline-block"
-                                            }}>
-                                              🔴 VPN LOCKDOWN FORCED
-                                            </span>
-                                          );
-                                        }
-                                        return (
-                                          <span style={{ 
-                                            color: "#64748b", 
-                                            fontWeight: 700, 
-                                            fontSize: 10, 
-                                            background: "#f1f5f9", 
-                                            padding: "4px 8px", 
-                                            borderRadius: 4, 
-                                            fontFamily: "JetBrains Mono, monospace",
-                                            border: "1px solid #cbd5e1",
-                                            display: "inline-block"
-                                          }}>
-                                            ⚪ NORMAL LOGOUT
-                                          </span>
-                                        );
-                                      })()}
+                                    <td style={{ padding: "10px 12px", textAlign: "right" }}>
+                                      <span style={{
+                                        fontSize: 10.5,
+                                        fontWeight: 700,
+                                        color: forced ? "#ef4444" : isOpen ? "#10b981" : sess.abandoned ? "#f59e0b" : ORCA.textMuted
+                                      }}>
+                                        {forced
+                                          ? "VPN LOCKDOWN"
+                                          : isOpen
+                                          ? "ACTIVE"
+                                          : sess.abandoned
+                                          ? "NOT SIGNED OUT"
+                                          : "CLOSED"}
+                                      </span>
+                                      {sess.endReason ? (
+                                        <div style={{ fontSize: 9.5, color: ORCA.textMuted, marginTop: 2 }}>{sess.endReason}</div>
+                                      ) : null}
                                     </td>
                                   </tr>
-                                ));
-                              })()}
+                                );
+                              })}
                             </tbody>
                           </table>
                         </div>
@@ -2322,7 +2053,7 @@ const MainContent: React.FC = () => {
                     {profileTab === "downloads" && (
                       <div style={{ display: "flex", flexDirection: "column", flex: 1, animation: "fadeIn 0.2s ease" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                          <h3 style={{ fontSize: 13.5, fontWeight: 700, color: ORCA.navy, margin: 0 }}>Cryptographic File Exports</h3>
+                          <h3 style={{ fontSize: 13.5, fontWeight: 700, color: ORCA.navy, margin: 0 }}>Document Downloads</h3>
                           <span style={{ fontSize: 10, color: "#3b82f6", fontWeight: 700, background: "rgba(59,130,246,0.1)", padding: "2px 8px", borderRadius: 4, fontFamily: "JetBrains Mono, monospace" }}>
                             ● ENCRYPTED EXPORTS
                           </span>
@@ -2338,26 +2069,33 @@ const MainContent: React.FC = () => {
                                 <th style={{ padding: "8px 12px", fontWeight: 600 }}>Dossier/File Ref</th>
                                 <th style={{ padding: "8px 12px", fontWeight: 600 }}>Format</th>
                                 <th style={{ padding: "8px 12px", fontWeight: 600 }}>Size</th>
-                                <th style={{ padding: "8px 12px", fontWeight: 600, textAlign: "right" }}>Cryptographic Hash</th>
+                                <th style={{ padding: "8px 12px", fontWeight: 600, textAlign: "right" }}>Detail</th>
                               </tr>
                             </thead>
                             <tbody>
-                              {[
-                                { time: "Today, 22:46:11", name: "ORCA_Briefing_Generate_a_structured_police_intelligence", ext: "PDF", size: "142 KB", hash: "4f8a...92b3" },
-                                { time: "Yesterday, 16:15:30", name: "ISD_Case_Audit_FIR_2026_BLR_104", ext: "PDF", size: "85 KB", hash: "8e1b...f120" },
-                                { time: "02 July, 14:10:45", name: "O.R.C.A_Network_Map_Ingress_Matrix", ext: "PNG", size: "1.4 MB", hash: "2c4d...e32a" },
-                                { time: "30 June, 10:05:12", name: "Criminal_Profile_Dossier_Sandeep_B", ext: "PDF", size: "210 KB", hash: "9f12...b998" }
-                              ].map((file, idx) => (
-                                <tr key={idx} style={{ borderBottom: `1px solid ${ORCA.border}` }}>
-                                  <td style={{ padding: "10px 12px", color: ORCA.navy, fontWeight: 500 }}>{file.time}</td>
-                                  <td style={{ padding: "10px 12px", color: ORCA.textGray, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={file.name}>{file.name}</td>
+                              {telemetry.downloads.length === 0 ? (
+                                <tr>
+                                  <td colSpan={5} style={{ padding: "24px 12px", textAlign: "center", color: ORCA.textMuted, fontSize: 12 }}>
+                                    {telemetryLoading
+                                      ? "Loading download history…"
+                                      : telemetry.configured
+                                        ? "No document downloads recorded for this officer yet."
+                                        : "Download history is unavailable — the activity log could not be reached."}
+                                  </td>
+                                </tr>
+                              ) : telemetry.downloads.map((file: any, idx: number) => (
+                                <tr key={file.activityId ?? idx} style={{ borderBottom: `1px solid ${ORCA.border}` }}>
+                                  <td style={{ padding: "10px 12px", color: ORCA.navy, fontWeight: 500 }}>{file.occurredAt || "—"}</td>
+                                  <td style={{ padding: "10px 12px", color: ORCA.textGray, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={file.title}>{file.title}</td>
                                   <td style={{ padding: "10px 12px" }}>
                                     <span style={{ fontSize: 10, fontWeight: 800, background: "rgba(0,0,0,0.06)", padding: "2px 6px", borderRadius: 4 }}>
-                                      {file.ext}
+                                      {file.category || "—"}
                                     </span>
                                   </td>
-                                  <td style={{ padding: "10px 12px", color: ORCA.textMuted }}>{file.size}</td>
-                                  <td style={{ padding: "10px 12px", textAlign: "right", fontFamily: "JetBrains Mono, monospace", fontSize: 11.5, color: ORCA.orange }}>{file.hash}</td>
+                                  <td style={{ padding: "10px 12px", color: ORCA.textMuted }}>
+                                    {Number.isFinite(file.sizeBytes) && file.sizeBytes !== null ? `${Math.round(file.sizeBytes / 1024)} KB` : "—"}
+                                  </td>
+                                  <td style={{ padding: "10px 12px", textAlign: "right", fontFamily: "JetBrains Mono, monospace", fontSize: 11.5, color: ORCA.orange }}>{file.detail || "—"}</td>
                                 </tr>
                               ))}
                             </tbody>
@@ -2370,7 +2108,7 @@ const MainContent: React.FC = () => {
                     {profileTab === "ai_queries" && (
                       <div style={{ display: "flex", flexDirection: "column", flex: 1, animation: "fadeIn 0.2s ease" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                          <h3 style={{ fontSize: 13.5, fontWeight: 700, color: ORCA.navy, margin: 0 }}>AI Copilot Transaction Ledger</h3>
+                          <h3 style={{ fontSize: 13.5, fontWeight: 700, color: ORCA.navy, margin: 0 }}>AI Query Log</h3>
                           <span style={{ fontSize: 10, color: "#FF9933", fontWeight: 700, background: "rgba(255,153,51,0.1)", padding: "2px 8px", borderRadius: 4, fontFamily: "JetBrains Mono, monospace" }}>
                             ● CONTEXT LOGGED
                           </span>
@@ -2385,23 +2123,28 @@ const MainContent: React.FC = () => {
                                 <th style={{ padding: "8px 12px", fontWeight: 600 }}>Audit Time (IST)</th>
                                 <th style={{ padding: "8px 12px", fontWeight: 600 }}>Audited Category</th>
                                 <th style={{ padding: "8px 12px", fontWeight: 600 }}>Query Telemetry Focus</th>
-                                <th style={{ padding: "8px 12px", fontWeight: 600 }}>Tokens</th>
-                                <th style={{ padding: "8px 12px", fontWeight: 600, textAlign: "right" }}>Audit Node</th>
+                                <th style={{ padding: "8px 12px", fontWeight: 600 }}>Context</th>
+                                <th style={{ padding: "8px 12px", fontWeight: 600, textAlign: "right" }}>Entry #</th>
                               </tr>
                             </thead>
                             <tbody>
-                              {[
-                                { time: "Today, 22:45:00", cat: "Forensic Audit", focus: "FIR/2026/BLR/104 operational facts", tokens: "320 tkn", node: "KSP-ISD-T402" },
-                                { time: "Today, 22:42:15", cat: "Chatbot Inquiry", focus: "Retrieve matching suspects for FIR", tokens: "185 tkn", node: "KSP-ISD-T402" },
-                                { time: "Yesterday, 09:30:10", cat: "Network Mapping", focus: "Cross-reference suspect syndicate ties", tokens: "512 tkn", node: "KSP-ISD-T402" },
-                                { time: "02 July, 14:05:00", cat: "Verification Audit", focus: "Officer Register validation ID 772", tokens: "90 tkn", node: "KSP-CHQ-T801" }
-                              ].map((query, idx) => (
-                                <tr key={idx} style={{ borderBottom: `1px solid ${ORCA.border}` }}>
-                                  <td style={{ padding: "10px 12px", color: ORCA.navy, fontWeight: 500 }}>{query.time}</td>
-                                  <td style={{ padding: "10px 12px", color: ORCA.textGray }}>{query.cat}</td>
-                                  <td style={{ padding: "10px 12px", fontStyle: "italic" }}>"{query.focus}"</td>
-                                  <td style={{ padding: "10px 12px", color: ORCA.textMuted }}>{query.tokens}</td>
-                                  <td style={{ padding: "10px 12px", textAlign: "right", fontFamily: "JetBrains Mono, monospace", fontSize: 11.5 }}>{query.node}</td>
+                              {telemetry.aiQueries.length === 0 ? (
+                                <tr>
+                                  <td colSpan={5} style={{ padding: "24px 12px", textAlign: "center", color: ORCA.textMuted, fontSize: 12 }}>
+                                    {telemetryLoading
+                                      ? "Loading AI audit trail…"
+                                      : telemetry.configured
+                                        ? "No AI queries recorded for this officer yet."
+                                        : "AI audit trail is unavailable — the activity log could not be reached."}
+                                  </td>
+                                </tr>
+                              ) : telemetry.aiQueries.map((q: any, idx: number) => (
+                                <tr key={q.activityId ?? idx} style={{ borderBottom: `1px solid ${ORCA.border}` }}>
+                                  <td style={{ padding: "10px 12px", color: ORCA.navy, fontWeight: 500 }}>{q.occurredAt || "—"}</td>
+                                  <td style={{ padding: "10px 12px", color: ORCA.textGray }}>{q.category || "Chatbot Inquiry"}</td>
+                                  <td style={{ padding: "10px 12px", fontStyle: "italic" }}>&quot;{q.title}&quot;</td>
+                                  <td style={{ padding: "10px 12px", color: ORCA.textMuted }}>{q.detail || "—"}</td>
+                                  <td style={{ padding: "10px 12px", textAlign: "right", fontFamily: "JetBrains Mono, monospace", fontSize: 11.5 }}>{q.activityId ?? "—"}</td>
                                 </tr>
                               ))}
                             </tbody>
@@ -2414,65 +2157,60 @@ const MainContent: React.FC = () => {
                     {profileTab === "devices" && (
                       <div style={{ display: "flex", flexDirection: "column", flex: 1, animation: "fadeIn 0.2s ease" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                          <h3 style={{ fontSize: 13.5, fontWeight: 700, color: ORCA.navy, margin: 0 }}>Device Ingress Oversight</h3>
+                          <h3 style={{ fontSize: 13.5, fontWeight: 700, color: ORCA.navy, margin: 0 }}>Recorded Sessions</h3>
                           <span style={{ fontSize: 10, color: "#10b981", fontWeight: 700, background: "rgba(16,185,129,0.1)", padding: "2px 8px", borderRadius: 4, fontFamily: "JetBrains Mono, monospace" }}>
-                            ● 2 SECURE ENDPOINTS
+                            ● {telemetry.sessions.filter((x: any) => x.status === "ACTIVE" && !x.abandoned).length} OPEN SESSION(S)
                           </span>
                         </div>
                         <p style={{ fontSize: 12, color: ORCA.textGray, margin: "0 0 16px 0", lineHeight: 1.5 }}>
-                          Active web browsers and terminal configurations authenticated under this officer profile. Revoke standby sessions if suspicious.
+                          Sessions opened under this officer profile, newest first, recorded server-side at sign-in.
                         </p>
                         <div style={{ overflowX: "auto", flex: 1 }}>
                           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, textAlign: "left" }}>
                             <thead>
                               <tr style={{ borderBottom: `2px solid ${ORCA.border}`, color: ORCA.textMuted }}>
-                                <th style={{ padding: "8px 12px", fontWeight: 600 }}>Terminal ID</th>
-                                <th style={{ padding: "8px 12px", fontWeight: 600 }}>Connection Scope</th>
-                                <th style={{ padding: "8px 12px", fontWeight: 600 }}>Last Location</th>
-                                <th style={{ padding: "8px 12px", fontWeight: 600 }}>Authentication Scope</th>
-                                <th style={{ padding: "8px 12px", fontWeight: 600, textAlign: "right" }}>Revocation</th>
+                                <th style={{ padding: "8px 12px", fontWeight: 600 }}>Session #</th>
+                                <th style={{ padding: "8px 12px", fontWeight: 600 }}>Signed In</th>
+                                <th style={{ padding: "8px 12px", fontWeight: 600 }}>IP Address</th>
+                                <th style={{ padding: "8px 12px", fontWeight: 600 }}>Browser / Device</th>
+                                <th style={{ padding: "8px 12px", fontWeight: 600, textAlign: "right" }}>Status</th>
                               </tr>
                             </thead>
                             <tbody>
-                              {[
-                                { term: "KSP-ISD-T402", active: true, net: "Intranet Loop", loc: "Central ISD Command", auth: "Biometric Ingress (Current)" },
-                                { term: "KSP-MOB-LINK", active: false, net: "Secure VPN", loc: "Bengaluru Urban Area", auth: "Ingress Standby (RFID/OTP)" }
-                              ].map((device, idx) => (
-                                <tr key={idx} style={{ borderBottom: `1px solid ${ORCA.border}` }}>
-                                  <td style={{ padding: "10px 12px", color: ORCA.navy, fontWeight: 700, fontFamily: "JetBrains Mono" }}>{device.term}</td>
-                                  <td style={{ padding: "10px 12px", color: ORCA.textGray }}>{device.net}</td>
-                                  <td style={{ padding: "10px 12px", color: ORCA.textMuted }}>{device.loc}</td>
-                                  <td style={{ padding: "10px 12px" }}>
-                                    <span style={{ fontSize: 10.5, fontWeight: 600, color: device.active ? "#10b981" : "#f59e0b" }}>
-                                      {device.auth}
-                                    </span>
-                                  </td>
-                                  <td style={{ padding: "10px 12px", textAlign: "right" }}>
-                                    {device.active ? (
-                                      <span style={{ fontSize: 10, color: ORCA.textMuted, fontStyle: "italic" }}>Protected</span>
-                                    ) : (
-                                      <button
-                                        onClick={() => alert(`Standby connection scope revoked for terminal node [${device.term}]. Security signal dispatched.`)}
-                                        style={{
-                                          background: "#ef4444",
-                                          color: "white",
-                                          border: "none",
-                                          borderRadius: 4,
-                                          padding: "4px 8px",
-                                          fontSize: 10,
-                                          fontWeight: 700,
-                                          cursor: "pointer",
-                                          transition: "background 0.2s"
-                                        }}
-                                        onMouseEnter={e => e.currentTarget.style.background = "#dc2626"}
-                                        onMouseLeave={e => e.currentTarget.style.background = "#ef4444"}
-                                      >
-                                        REVOKE
-                                      </button>
-                                    )}
+                              {telemetry.sessions.length === 0 ? (
+                                <tr>
+                                  <td colSpan={5} style={{ padding: "24px 12px", textAlign: "center", color: ORCA.textMuted, fontSize: 12 }}>
+                                    {telemetryLoading
+                                      ? "Loading sessions…"
+                                      : telemetry.configured
+                                        ? "No sessions recorded for this officer yet."
+                                        : "Session history is unavailable — the session log could not be reached."}
                                   </td>
                                 </tr>
-                              ))}
+                              ) : telemetry.sessions.map((sess: any, idx: number) => {
+                                // See the Login History table: a session left
+                                // open by a closed tab is not a live one.
+                                const isOpen = sess.status === "ACTIVE" && !sess.abandoned;
+                                return (
+                                  <tr key={sess.rowId || idx} style={{ borderBottom: `1px solid ${ORCA.border}` }}>
+                                    <td style={{ padding: "10px 12px", color: ORCA.navy, fontWeight: 700, fontFamily: "JetBrains Mono" }}>{sess.sessionId ?? "—"}</td>
+                                    <td style={{ padding: "10px 12px", color: ORCA.textGray }}>{sess.loginAt || "—"}</td>
+                                    <td style={{ padding: "10px 12px", color: ORCA.textMuted, fontFamily: "JetBrains Mono", fontSize: 11.5 }}>{sess.ipAddress || "—"}</td>
+                                    <td style={{ padding: "10px 12px", color: ORCA.textMuted, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={sess.userAgent}>
+                                      {sess.userAgent || "—"}
+                                    </td>
+                                    <td style={{ padding: "10px 12px", textAlign: "right" }}>
+                                      <span style={{ fontSize: 10.5, fontWeight: 600, color: isOpen ? "#10b981" : sess.abandoned ? "#f59e0b" : ORCA.textMuted }}>
+                                        {isOpen
+                                          ? "Open"
+                                          : sess.abandoned
+                                          ? "Not signed out"
+                                          : `Closed · ${formatDuration(sess.durationSeconds)}`}
+                                      </span>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
                             </tbody>
                           </table>
                         </div>
@@ -2489,8 +2227,6 @@ const MainContent: React.FC = () => {
 
           </div>
 
-        {/* Hidden layout trigger */}
-        <span id="fir-tab-trigger" style={{ display: "none" }} onClick={() => setActiveTab("fir")} />
       </main>
     </div>
   );
@@ -2672,7 +2408,6 @@ export default function DashboardPage() {
             }}>
               <div><strong>Status:</strong> <span style={{ color: "#ef4444", fontWeight: 700 }}>LOGGED OUT</span></div>
               <div><strong>Officer Credentials:</strong> <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11.5, color: "#001f3f" }}>{logoutOverlay.username}</span></div>
-              <div><strong>Ingress Node:</strong> <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11.5 }}>KSP-ISD-T402</span></div>
               <div style={{ borderTop: "1px dashed #cbd5e1", paddingTop: 8, marginTop: 4 }}>
                 <strong>Log-out Time:</strong> <span style={{ color: "#001f3f", fontWeight: 600 }}>{logoutOverlay.time}</span>
               </div>

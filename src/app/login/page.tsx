@@ -1,14 +1,15 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import { clearanceForHierarchy, CLEARANCE_LABEL } from "@/lib/clearance";
+import { runLivenessCheck, type LivenessMetrics } from "@/lib/faceLiveness";
 import { useAuth, mapBadgeToEmail } from "@/context/AuthContext";
 import { getRoleConfig } from "@/lib/rbac";
 import { useIntelligence } from "@/context/IntelligenceContext";
 import { useRouter } from "next/navigation";
 import { Loader2, ShieldAlert, CheckCircle2 } from "lucide-react";
 import { createUserWithEmailAndPassword, signOut } from "firebase/auth";
-import { doc, setDoc } from "firebase/firestore";
-import { auth, db } from "@/lib/firebase";
+import { auth } from "@/lib/firebase";
 
 const ORCA = {
   navy: "#001f3f",
@@ -16,27 +17,21 @@ const ORCA = {
   fontSerif: "'Libre Baskerville', Georgia, serif",
 };
 
-const KARNATAKA_DISTRICTS = [
-  "Bagalkote", "Ballari", "Belagavi", "Bengaluru Rural", "Bengaluru Urban", 
-  "Bidar", "Chamarajanagara", "Chikkaballapura", "Chikkamagaluru", "Chitradurga", 
-  "Dakshina Kannada", "Davanagere", "Dharwad", "Gadag", "Hassan", 
-  "Haveri", "Kalaburagi", "Kodagu", "Kolar", "Koppal", 
-  "Mandya", "Mysuru", "Raichur", "Ramanagara", "Shivamogga", 
-  "Tumakuru", "Udupi", "Uttara Kannada", "Vijayanagara", "Vijayapura", "Yadgir"
-];
-
-const RANKS = [
-  "Assistant Sub Inspector (ASI)",
-  "Sub Inspector (SI)",
-  "Inspector",
-  "Deputy Superintendent of Police (DSP)",
-  "Additional Superintendent of Police (ASP)",
-  "Superintendent of Police (SP)",
-  "Deputy Inspector General of Police (DIGP)",
-  "Inspector General of Police (IGP)",
-  "Additional Director General of Police (ADGP)",
-  "Director General of Police (DGP)"
-];
+/**
+ * Districts, stations and ranks are NO LONGER hardcoded here.
+ *
+ * They came from /api/public/reference (the Catalyst reference tables), because
+ * the old free-typed values did not match any real row: of seven registered
+ * officers, two had a district that existed, none had a station that existed,
+ * and ranks arrived as prose like "Deputy Superintendent of Police (DSP)".
+ * That left Employee.DistrictID / UnitID / RankID unfillable.
+ *
+ * The form now submits the reference IDs alongside the names, so an approved
+ * officer maps straight onto the ER diagram's Employee row.
+ */
+interface RefOption { id: number; name: string }
+interface RefUnit extends RefOption { districtId: number | null }
+interface RefRank extends RefOption { hierarchy: number }
 
 const ACCESS_MODULES = [
   "Investigation Dashboard",
@@ -60,10 +55,19 @@ export default function LoginPage() {
   // Register Form States
   const [regFirstName, setRegFirstName] = useState("");
   const [regLastName, setRegLastName] = useState("");
-  const [regBadgeId, setRegBadgeId] = useState("");
+  const [regKgid, setRegKgid] = useState("");
   const [regRank, setRegRank] = useState("");
+  const [regRankId, setRegRankId] = useState<number | null>(null);
   const [regStation, setRegStation] = useState("");
+  const [regUnitId, setRegUnitId] = useState<number | null>(null);
   const [regDistrict, setRegDistrict] = useState("");
+  const [regDistrictId, setRegDistrictId] = useState<number | null>(null);
+
+  // Reference data for the three dropdowns above.
+  const [refDistricts, setRefDistricts] = useState<RefOption[]>([]);
+  const [refUnits, setRefUnits] = useState<RefUnit[]>([]);
+  const [refRanks, setRefRanks] = useState<RefRank[]>([]);
+  const [refLoaded, setRefLoaded] = useState(false);
   const [regEmail, setRegEmail] = useState("");
   const [regMobile, setRegMobile] = useState("");
   const [regPassword, setRegPassword] = useState("");
@@ -78,6 +82,9 @@ export default function LoginPage() {
 
   // Biometric Face Capture States
   const [regPhoto, setRegPhoto] = useState<string | null>(null);
+  // What the liveness check actually measured, and why it failed if it did.
+  const [livenessMetrics, setLivenessMetrics] = useState<LivenessMetrics | null>(null);
+  const [livenessReasons, setLivenessReasons] = useState<string[]>([]);
   const [cameraActive, setCameraActive] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [scanStep, setScanStep] = useState(0);
@@ -109,8 +116,15 @@ export default function LoginPage() {
         videoRef.current.play().catch(e => console.warn("Video play failed:", e));
       }
     } catch (err) {
-      console.warn("Webcam access failed, activating simulated holographic camera feed:", err);
+      // Previously this fell back to a DRAWN cartoon face and accepted it as a
+      // verified biometric. An officer could register with no camera at all.
+      // There is no fallback now: without a camera there is no capture.
+      console.warn("Camera unavailable:", err);
       setHasWebcamStream(false);
+      setCameraActive(false);
+      setLivenessReasons([
+        "Camera unavailable. Allow camera access in your browser and try again — face capture cannot be bypassed."
+      ]);
     }
   };
 
@@ -127,125 +141,73 @@ export default function LoginPage() {
   };
 
 
-  const runBiometricScan = () => {
+  const runBiometricScan = async () => {
     setIsScanning(true);
+    setLivenessReasons([]);
     setScanStep(1);
-    setScanProgress(25);
+    setScanProgress(0);
+    setFaceOverlayStyle({ borderColor: "rgba(0, 240, 255, 0.4)", color: "#00f0ff" });
 
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (canvas && video && video.srcObject) {
-      const ctx = canvas.getContext("2d");
-      if (ctx) {
-        canvas.width = 320;
-        canvas.height = 240;
-        try {
-          ctx.drawImage(video, 0, 0, 320, 240);
-          motionBaselineRef.current = ctx.getImageData(0, 0, 320, 240);
-        } catch (e) {
-          console.warn("Baseline capture warning:", e);
-        }
-      }
+    const result = await runLivenessCheck(videoRef.current, {
+      onPhase: (phase, progress) => {
+        setScanProgress(progress);
+        // The blink prompt is now tied to the window that is actually measured.
+        setBlinkPrompt(phase === "challenge");
+        setScanStep(phase === "settling" ? 1 : phase === "stillness" ? 2 : phase === "challenge" ? 3 : 5);
+        if (phase === "challenge") setFaceOverlayStyle({ borderColor: "#ffffff", color: "#ffffff" });
+      },
+    });
+
+    setBlinkPrompt(false);
+    setLivenessMetrics(result.metrics);
+
+    if (!result.passed) {
+      setFaceOverlayStyle({ borderColor: "#ef4444", color: "#ef4444" });
+      setLivenessReasons(result.reasons);
+      setScanProgress(0);
+      setScanStep(0);
+      setRegPhoto(null);          // a failed check must not leave a usable capture
+      setIsScanning(false);
+      return;
     }
-    
-    setTimeout(() => {
-      setScanStep(2);
-      setScanProgress(60);
-      setFaceOverlayStyle({ borderColor: "#ffffff", color: "#ffffff" });
-      setBlinkPrompt(true);
-      
-      setTimeout(() => {
-        setBlinkPrompt(false);
-        setScanStep(5);
-        setScanProgress(100);
-        setFaceOverlayStyle({ borderColor: "#138808", color: "#138808" });
-        captureSnapshot();
-      }, 700);
-    }, 600);
+
+    setFaceOverlayStyle({ borderColor: "#138808", color: "#138808" });
+    captureSnapshot();
+    setIsScanning(false);
   };
 
   const captureSnapshot = () => {
     const video = videoRef.current;
-    let canvas = canvasRef.current;
-    
-    // If hidden ref is not ready, create an off-screen canvas on the fly
-    if (!canvas && typeof document !== "undefined") {
-      canvas = document.createElement("canvas");
+    const stream = video?.srcObject as MediaStream | null;
+
+    // Only ever a real frame from a live camera. The old version had a second
+    // branch that DREW a face (gradient, circle, ellipse), stamped it
+    // "LIVENESS ID: VERIFIED (GENUINE)" and stored that as the officer's
+    // biometric.
+    if (!video || !stream || !stream.active || !video.videoWidth) {
+      setLivenessReasons(["No live camera frame to capture. Activate the camera and run the check."]);
+      return;
     }
 
-    try {
-      if (canvas && video && video.srcObject && (video.srcObject as MediaStream).active) {
-        const ctx = canvas.getContext("2d");
-        if (ctx) {
-          canvas.width = 320;
-          canvas.height = 240;
-          ctx.drawImage(video, 0, 0, 320, 240);
-          
-          ctx.strokeStyle = "#138808";
-          ctx.lineWidth = 3;
-          ctx.beginPath();
-          ctx.arc(160, 120, 85, 0, 2 * Math.PI);
-          ctx.stroke();
-          
-          ctx.fillStyle = "#138808";
-          ctx.font = "8px monospace";
-          ctx.textAlign = "center";
-          ctx.fillText("BIOMETRIC ACCESS SECURED", 160, 105);
-          ctx.fillText("LIVENESS ID: GENUINE", 160, 120);
-          ctx.fillText(new Date().toLocaleString(), 160, 135);
-          
-          const dataUrl = canvas.toDataURL("image/png");
-          setRegPhoto(dataUrl);
-        }
-      } else if (canvas) {
-        // Fallback or simulated camera drawing when no live webcam is active
-        const ctx = canvas.getContext("2d");
-        if (ctx) {
-          canvas.width = 320;
-          canvas.height = 240;
-          
-          const grad = ctx.createLinearGradient(0, 0, 320, 240);
-          grad.addColorStop(0, "#001f3f");
-          grad.addColorStop(1, "#003366");
-          ctx.fillStyle = grad;
-          ctx.fillRect(0, 0, 320, 240);
-          
-          ctx.fillStyle = "#cbd5e1";
-          ctx.beginPath();
-          ctx.arc(160, 100, 45, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.beginPath();
-          ctx.ellipse(160, 180, 70, 45, 0, 0, Math.PI, true);
-          ctx.fill();
-          
-          ctx.strokeStyle = "#138808";
-          ctx.lineWidth = 3;
-          ctx.beginPath();
-          ctx.arc(160, 120, 85, 0, 2 * Math.PI);
-          ctx.stroke();
-          
-          ctx.fillStyle = "#138808";
-          ctx.font = "8px monospace";
-          ctx.textAlign = "center";
-          ctx.fillText("SIMULATED SECURE CAM INGRESS", 160, 105);
-          ctx.fillText("LIVENESS ID: VERIFIED (GENUINE)", 160, 120);
-          ctx.fillText(`TIMESTAMP: ${new Date().toISOString().substring(0, 19)}`, 160, 135);
-          
-          const dataUrl = canvas.toDataURL("image/png");
-          setRegPhoto(dataUrl);
-        }
-      }
-    } catch (err) {
-      console.warn("Snapshot capture error:", err);
-      // Hard fallback avatar string if canvas access fails entirely
-      setRegPhoto("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200' viewBox='0 0 200 200'><rect width='200' height='200' fill='%23001f3f'/><circle cx='100' cy='80' r='35' fill='%23cbd5e1'/><ellipse cx='100' cy='160' rx='55' ry='35' fill='%23cbd5e1'/><circle cx='100' cy='100' r='75' stroke='%23138808' stroke-width='3' fill='none'/></svg>");
-    } finally {
-      setIsScanning(false);
-      stopCamera();
+    const canvas = canvasRef.current || document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      setLivenessReasons(["This browser cannot capture from the camera."]);
+      return;
     }
+
+    canvas.width = 320;
+    canvas.height = 240;
+    ctx.drawImage(video, 0, 0, 320, 240);
+
+    // Nothing is drawn onto the image. The previous code burned
+    // "BIOMETRIC ACCESS SECURED" and "LIVENESS ID: GENUINE" into the pixels —
+    // a claim rather than a result, and it defaced the only photo of the
+    // officer's face. The measurements live in livenessMetrics instead.
+    // JPEG at 0.8 keeps a 320x240 capture around 20-30 KB rather than the
+    // ~150 KB a PNG data URL cost.
+    setRegPhoto(canvas.toDataURL("image/jpeg", 0.8));
   };
-
-  // Theme support
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [mounted, setMounted] = useState(false);
 
@@ -255,6 +217,50 @@ export default function LoginPage() {
     setTheme(savedTheme);
     document.documentElement.setAttribute("data-theme", savedTheme);
   }, []);
+
+  // Pull the reference lists once. A failure is not fatal: the selects simply
+  // stay empty and the officer can still be registered, with the IDs left null
+  // for an administrator to set at approval.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/public/reference");
+        const data = await res.json();
+        if (cancelled) return;
+        setRefDistricts(Array.isArray(data.districts) ? data.districts : []);
+        setRefUnits(Array.isArray(data.units) ? data.units : []);
+        setRefRanks(Array.isArray(data.ranks) ? data.ranks : []);
+      } catch {
+        /* leave the lists empty */
+      } finally {
+        if (!cancelled) setRefLoaded(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  /**
+   * Clearance is DERIVED, never typed.
+   *
+   * Normally from the selected rank's ER hierarchy. An SCRB posting overrides
+   * it: the State Crime Records Bureau sits on its own CRB track, so the
+   * bureau's clearance follows the POSTING rather than the rank — an inspector
+   * and a superintendent both work the same statewide records.
+   *
+   * This is the applicant's own preview. The binding value is resolved again
+   * server-side from the role the reviewer approves (clearanceForRole), so
+   * nothing here can grant anybody anything.
+   */
+  const derivedClearance = regPostingType === "SCRB"
+    ? "CRB-LEVEL-I" as const
+    : clearanceForHierarchy(refRanks.find((r) => r.id === regRankId)?.hierarchy);
+
+  // Stations belonging to the chosen district. Units with no district are shown
+  // too, so a state-level unit is still reachable.
+  const stationsForDistrict = regDistrictId
+    ? refUnits.filter((u) => u.districtId === regDistrictId || u.districtId === null)
+    : refUnits;
 
   const handleToggleTheme = () => {
     const nextTheme = theme === "light" ? "dark" : "light";
@@ -294,10 +300,13 @@ export default function LoginPage() {
   const resetRegisterForm = () => {
     setRegFirstName("");
     setRegLastName("");
-    setRegBadgeId("");
+    setRegKgid("");
     setRegRank("");
+    setRegRankId(null);
     setRegStation("");
+    setRegUnitId(null);
     setRegDistrict("");
+    setRegDistrictId(null);
     setRegEmail("");
     setRegMobile("");
     setRegPassword("");
@@ -330,102 +339,90 @@ export default function LoginPage() {
     }
 
     setRegLoading(true);
-    const emailToRegister = regEmail ? regEmail.trim().toLowerCase() : mapBadgeToEmail(regBadgeId);
+    const emailToRegister = regEmail ? regEmail.trim().toLowerCase() : mapBadgeToEmail(regKgid);
 
     try {
       const userCredential = await createUserWithEmailAndPassword(auth, emailToRegister, regPassword);
       const newUser = userCredential.user;
 
-      const officerDocRef = doc(db, "officers", newUser.uid);
-      const officerData = {
-        uid: newUser.uid,
-        email: emailToRegister,
-        name: `${regFirstName.trim()} ${regLastName.trim()}`.trim() || regBadgeId || "Officer",
-        rank: regRank || "Inspector of Police",
-        role: "CYBER_CELL",
-        district: regDistrict || "Bengaluru Urban",
-        station: regStation || "Internal Security Division",
-        badgeId: regBadgeId || "",
-        mobile: regMobile || "",
-        requestedAccess: regRequestedAccess || "",
-        clearanceLevel: "None",
-        postingType: regPostingType,
-        lastLogin: new Date().toISOString(),
-        active: false,
-        photoUrl: regPhoto || ""
-      };
+      // Store the face capture in Catalyst before anything else.
+      //
+      // createUserWithEmailAndPassword has just SIGNED THIS USER IN, so an ID
+      // token is available and the upload can be authenticated — which is what
+      // lets the image live in Catalyst without exposing a public upload
+      // endpoint to the internet. The route takes the UID from the token, never
+      // from the body.
+      if (regPhoto) {
+        try {
+          const idToken = await newUser.getIdToken();
+          const res = await fetch("/api/officer/photo", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+            body: JSON.stringify({ dataUrl: regPhoto, livenessMetrics }),
+          });
+          if (!res.ok) {
+            // Not fatal: the application is still valid without the capture, and
+            // an administrator can request it again. But it must not fail silently.
+            console.warn("Face capture was not stored:", await res.text());
+          }
+        } catch (photoErr) {
+          console.warn("Face capture upload failed:", photoErr);
+        }
+      }
 
-      const appDocRef = doc(db, "officer_applications", newUser.uid);
-      const appData = {
-        id: newUser.uid,
-        firstName: regFirstName.trim(),
-        lastName: regLastName.trim(),
-        name: `${regFirstName.trim()} ${regLastName.trim()}`.trim(),
-        email: emailToRegister,
-        badgeId: regBadgeId.trim(),
-        rank: regRank,
-        station: regStation.trim(),
-        district: regDistrict,
-        postingType: regPostingType,
-        mobile: regMobile.trim(),
-        requestedAccess: regRequestedAccess,
-        submittedAt: new Date().toISOString(),
-        status: "pending",
-        priority: "MEDIUM",
-        hasPassword: true,
-        photoUrl: regPhoto || "",
-        timeline: [
-          { status: "applied", date: new Date().toISOString(), remarks: "Application submitted via registration portal." }
-        ],
-        internalRemarks: "",
-        assignedReviewer: "",
-        securityClearance: "None",
-        bgVerification: "pending",
-        deptVerification: "pending",
-        supervisorApproval: "pending"
-      };
+      /**
+       * NO FIRESTORE WRITES.
+       *
+       * Registration used to write three documents before filing anything in
+       * Catalyst: `officers/{uid}`, `officer_applications/{uid}` and
+       * `pendingRegistrations/{uid}`. They carried the applicant's full name,
+       * email, mobile, rank, district, station and their captured face photo.
+       *
+       * Nothing reads them any more. The admin console reads
+       * `OfficerApplication` in Catalyst, the sign-in gate reads
+       * `OfficerAccount`, and AuthContext stopped reading Firestore entirely.
+       * So each registration copied a complete personal record — including
+       * biometric capture — into a store with no reader, no retention rule and
+       * no purge path.
+       *
+       * The Catalyst filing below is, and was, the real one.
+       */
 
-      const pendingDocRef = doc(db, "pendingRegistrations", newUser.uid);
-      const pendingData = {
-        name: `${regFirstName.trim()} ${regLastName.trim()}`.trim() || regBadgeId || "Officer",
-        email: emailToRegister,
-        rank: regRank || "Inspector of Police",
-        posting: `${regPostingType} - ${regStation || regDistrict}`,
-        requestedAccess: regRequestedAccess || "",
-        submittedAt: new Date().toISOString(),
-        status: "pending",
-        badgeId: regBadgeId || "",
-        mobile: regMobile || "",
-        station: regStation || "",
-        district: regDistrict || "",
-        photoUrl: regPhoto || ""
-      };
-
-      if (process.env.NODE_ENV === "development") {
-        console.warn("[DIAGNOSTIC - REGISTRATION WRITE] Writing to pendingRegistrations:", {
-          field: "photoUrl",
-          hasValue: !!regPhoto,
-          length: regPhoto ? regPhoto.length : 0,
-          preview: regPhoto ? regPhoto.substring(0, 50) + "..." : "empty"
+      /**
+       * File the application in Catalyst — this is the copy the admin console
+       * reads. It must happen BEFORE the sign-out below, because the route
+       * takes the applicant's identity from their Firebase ID token rather than
+       * from the request body, and signing out first would leave nothing to
+       * verify.
+       *
+       * The Firestore writes above are kept for now as a fallback while the
+       * older screens are retired; Catalyst is the source of truth.
+       */
+      try {
+        const idToken = await newUser.getIdToken();
+        const res = await fetch("/api/officer/application", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify({
+            fullName: `${regFirstName.trim()} ${regLastName.trim()}`.trim(),
+            // No kgid: the route allocates the provisional APP- serial itself.
+            mobile: regMobile.trim(),
+            rankId: regRankId,
+            districtId: regDistrictId,
+            unitId: regUnitId,
+            postingType: regPostingType,
+            requestedAccess: regRequestedAccess,
+          }),
         });
-      }
-
-      try {
-        await setDoc(pendingDocRef, pendingData, { merge: true });
-      } catch (pendErr) {
-        console.warn("Firestore pendingRegistrations doc write warning:", pendErr);
-      }
-
-      try {
-        await setDoc(officerDocRef, officerData, { merge: true });
-      } catch (docErr) {
-        console.warn("Firestore officer doc write warning:", docErr);
-      }
-
-      try {
-        await setDoc(appDocRef, appData, { merge: true });
-      } catch (appErr) {
-        console.warn("Firestore application doc write warning:", appErr);
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok || !j.success) {
+          console.warn("[registration] Catalyst application not recorded:", j.error || res.status);
+        }
+      } catch (catalystErr) {
+        console.warn("[registration] Catalyst application write failed:", catalystErr);
       }
 
       // Ensure new user is not logged in
@@ -433,22 +430,23 @@ export default function LoginPage() {
         await signOut(auth);
       } catch (signOutErr) {}
 
-      // Local storage sandbox mirroring
+      /**
+       * The localStorage "sandbox" mirror is GONE.
+       *
+       * It copied the applicant's full record — name, mobile, posting, the
+       * whole application — into the browser of whatever machine the form was
+       * filled on, and set `orca_admin_demo_mode`. The admin console then read
+       * that copy whenever a Firestore read failed, so stale local data could
+       * appear as though it were live. Personal data left on a shared terminal
+       * is a retention problem on its own; the console reads Catalyst now.
+       *
+       * Any copy left by an earlier build is cleared below, so upgrading
+       * removes the data rather than merely ceasing to add to it.
+       */
       if (typeof window !== "undefined") {
-        const currentAppsStr = localStorage.getItem("orca_applications");
-        const currentApps = currentAppsStr ? JSON.parse(currentAppsStr) : [];
-        if (!currentApps.some((a: any) => a.id === newUser.uid)) {
-          currentApps.push(appData);
-          localStorage.setItem("orca_applications", JSON.stringify(currentApps));
-        }
-
-        const currentOfficersStr = localStorage.getItem("orca_officers");
-        const currentOfficers = currentOfficersStr ? JSON.parse(currentOfficersStr) : [];
-        if (!currentOfficers.some((o: any) => o.uid === newUser.uid)) {
-          currentOfficers.push(officerData);
-          localStorage.setItem("orca_officers", JSON.stringify(currentOfficers));
-        }
-        localStorage.setItem("orca_admin_demo_mode", "true");
+        ["orca_applications", "orca_officers", "orca_audit_logs",
+         "orca_verifications", "orca_settings", "orca_admin_demo_mode"]
+          .forEach((k) => localStorage.removeItem(k));
       }
 
       setRegLoading(false);
@@ -1170,32 +1168,93 @@ export default function LoginPage() {
                         </div>
                         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                           <div>
-                            <label style={labelStyle}>Badge / Officer ID</label>
-                            <input type="text" required value={regBadgeId} onChange={e => setRegBadgeId(e.target.value)} placeholder="e.g. KA-99824" suppressHydrationWarning style={inputStyle} />
+                            {/*
+                              NOT the KGID any more.
+
+                              The KGID is auto-serial: a provisional APP-00000
+                              is issued the moment this application is filed,
+                              and the officer's permanent KSP-00000 is issued at
+                              approval. Nothing an applicant types here becomes
+                              their KGID — accepting that would let two people
+                              claim the same number.
+
+                              The field survives because it still identifies the
+                              SIGN-IN account: when no email is given,
+                              mapBadgeToEmail() derives one from this value. So
+                              it is labelled for what it actually does.
+                            */}
+                            <label style={labelStyle}>Officer ID for sign-in</label>
+                            <input type="text" value={regKgid} onChange={e => setRegKgid(e.target.value)} placeholder="Used to sign in if you do not give an email" suppressHydrationWarning style={inputStyle} />
+                            <div style={{ fontSize: 11, color: "#64748b", marginTop: 4, lineHeight: 1.45 }}>
+                              Your KGID is issued by the system — a provisional number while your
+                              application is reviewed, and a permanent one on approval.
+                            </div>
                           </div>
                           <div>
-                            <label style={labelStyle}>Rank & Designation</label>
-                            <select required value={regRank} onChange={e => setRegRank(e.target.value)} suppressHydrationWarning style={{ ...inputStyle, cursor: "pointer" }}>
-                              <option value="">Select Rank / Designation...</option>
-                              {RANKS.map(r => <option key={r} value={r}>{r}</option>)}
+                            <label style={labelStyle}>Rank</label>
+                            <select
+                              required
+                              value={regRankId ?? ""}
+                              onChange={e => {
+                                const id = e.target.value ? Number(e.target.value) : null;
+                                setRegRankId(id);
+                                setRegRank(refRanks.find(r => r.id === id)?.name || "");
+                              }}
+                              suppressHydrationWarning
+                              style={{ ...inputStyle, cursor: "pointer" }}
+                            >
+                              <option value="">{refLoaded ? "Select Rank..." : "Loading ranks..."}</option>
+                              {refRanks.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
                             </select>
+                            {derivedClearance && (
+                              <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 6 }}>
+                                {regPostingType === "SCRB" ? "Clearance for an SCRB posting" : "Clearance for this rank"}: <strong style={{ color: colors.gold }}>{derivedClearance}</strong> — {CLEARANCE_LABEL[derivedClearance]}
+                              </div>
+                            )}
                           </div>
                           <div>
-                            <label style={labelStyle}>Police Station / Unit</label>
-                            <input type="text" required value={regStation} onChange={e => setRegStation(e.target.value)} placeholder="e.g. Halasuru PS / Central CEN Unit" suppressHydrationWarning style={inputStyle} />
+                            <label style={labelStyle}>District</label>
+                            <select
+                              required
+                              value={regDistrictId ?? ""}
+                              onChange={e => {
+                                const id = e.target.value ? Number(e.target.value) : null;
+                                setRegDistrictId(id);
+                                setRegDistrict(refDistricts.find(d => d.id === id)?.name || "");
+                                // The chosen station may not belong to the new district.
+                                setRegUnitId(null);
+                                setRegStation("");
+                              }}
+                              suppressHydrationWarning
+                              style={{ ...inputStyle, cursor: "pointer" }}
+                            >
+                              <option value="">{refLoaded ? "Select Karnataka District..." : "Loading districts..."}</option>
+                              {refDistricts.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                            </select>
                           </div>
                           <div>
                             <label style={labelStyle}>Posting Classification</label>
                             <select required value={regPostingType} onChange={e => setRegPostingType(e.target.value)} suppressHydrationWarning style={{ ...inputStyle, cursor: "pointer" }}>
                               <option value="Field">Field Posting (Default)</option>
                               <option value="HQ">Headquarters (HQ) Posting</option>
+                              <option value="SCRB">SCRB — State Crime Records Bureau</option>
                             </select>
                           </div>
                           <div>
-                            <label style={labelStyle}>District</label>
-                            <select required value={regDistrict} onChange={e => setRegDistrict(e.target.value)} suppressHydrationWarning style={{ ...inputStyle, cursor: "pointer" }}>
-                              <option value="">Select Karnataka District...</option>
-                              {KARNATAKA_DISTRICTS.map(d => <option key={d} value={d}>{d}</option>)}
+                            <label style={labelStyle}>Police Station / Unit</label>
+                            <select
+                              required
+                              value={regUnitId ?? ""}
+                              onChange={e => {
+                                const id = e.target.value ? Number(e.target.value) : null;
+                                setRegUnitId(id);
+                                setRegStation(refUnits.find(u => u.id === id)?.name || "");
+                              }}
+                              suppressHydrationWarning
+                              style={{ ...inputStyle, cursor: "pointer" }}
+                            >
+                              <option value="">{refLoaded ? (regDistrictId ? "Select Station / Unit..." : "Select a district first...") : "Loading units..."}</option>
+                              {stationsForDistrict.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
                             </select>
                           </div>
                         </div>
@@ -1260,7 +1319,7 @@ export default function LoginPage() {
                       {/* Biometric Face Verification */}
                       <div style={{ borderBottom: `1px solid ${colors.border}`, paddingBottom: 16 }}>
                         <div style={{ fontSize: 12, fontWeight: 700, color: colors.gold, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>
-                          Biometric Face Verification (Anti-Deepfake)
+                          Live Face Capture
                         </div>
                         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                           {cameraActive ? (
@@ -1274,19 +1333,19 @@ export default function LoginPage() {
                                   style={{ width: "100%", height: "100%", objectFit: "cover" }}
                                 />
                               ) : (
+                                /* The "SIMULATED CAM ACTIVE / ● LIVENESS READY" panel that
+                                   stood here made a missing camera look like a working one.
+                                   startCamera no longer enters this state - it reports the
+                                   failure instead. */
                                 <div style={{
-                                  width: "100%", height: "100%",
-                                  background: "radial-gradient(circle, #003366 0%, #001f3f 70%, #000 100%)",
-                                  display: "flex", flexDirection: "column",
-                                  alignItems: "center", justifyContent: "center", gap: 6,
-                                  color: "#00f0ff", fontFamily: "JetBrains Mono, monospace"
+                                  width: "100%", height: "100%", display: "flex",
+                                  flexDirection: "column", alignItems: "center", justifyContent: "center",
+                                  gap: 6, color: "#ef4444", fontFamily: "JetBrains Mono, monospace",
+                                  background: "#111", padding: 12, textAlign: "center"
                                 }}>
-                                  <div style={{ fontSize: 44, filter: "drop-shadow(0 0 8px #00f0ff)" }}>👤</div>
-                                  <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.08em", textAlign: "center", maxWidth: 160 }}>
-                                    SIMULATED CAM ACTIVE
-                                  </div>
-                                  <div style={{ fontSize: 8, color: "#138808", fontWeight: 700 }}>
-                                    ● LIVENESS READY
+                                  <div style={{ fontSize: 28 }}>⚠</div>
+                                  <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.08em", maxWidth: 160 }}>
+                                    NO CAMERA — CAPTURE UNAVAILABLE
                                   </div>
                                 </div>
                               )}
@@ -1388,8 +1447,39 @@ export default function LoginPage() {
                                   fontSize: 12, fontWeight: 600, cursor: "pointer"
                                 }}
                               >
-                                Activate Biometric Camera
+                                Activate Camera
                               </button>
+                            </div>
+                          )}
+
+                          {livenessReasons.length > 0 && (
+                            <div style={{
+                              background: "rgba(239,68,68,0.08)",
+                              border: "1px solid rgba(239,68,68,0.35)",
+                              borderRadius: 6, padding: "8px 10px",
+                              fontSize: 11, color: "#b91c1c", lineHeight: 1.5
+                            }}>
+                              <strong style={{ display: "block", marginBottom: 4 }}>Liveness check failed</strong>
+                              {livenessReasons.map((r, i) => <div key={i}>• {r}</div>)}
+                            </div>
+                          )}
+
+                          {regPhoto && livenessMetrics && (
+                            /* The numbers behind the pass, so the result is auditable
+                               rather than a badge that always says GENUINE. */
+                            <div style={{
+                              background: "rgba(19,136,8,0.06)",
+                              border: "1px solid rgba(19,136,8,0.3)",
+                              borderRadius: 6, padding: "8px 10px",
+                              fontSize: 10.5, color: "#166534",
+                              fontFamily: "JetBrains Mono, monospace", lineHeight: 1.6
+                            }}>
+                              <strong style={{ fontFamily: "inherit" }}>Liveness signals recorded</strong><br />
+                              movement peak {livenessMetrics.peakDelta} vs still {livenessMetrics.baselineDelta}
+                              {" "}(&times;{livenessMetrics.responseRatio}) · brightness {livenessMetrics.brightness} · contrast {livenessMetrics.contrast}
+                              <div style={{ marginTop: 4, fontFamily: "inherit", color: "#4b5563", fontSize: 10 }}>
+                                Motion liveness only — this does not detect deepfakes or video replay.
+                              </div>
                             </div>
                           )}
 
@@ -1408,19 +1498,10 @@ export default function LoginPage() {
                               >
                                 {isScanning ? "Scanning..." : "Verify & Capture"}
                               </button>
-                              <button
-                                type="button"
-                                onClick={captureSnapshot}
-                                disabled={isScanning}
-                                style={{
-                                  background: "#138808", color: "#fff",
-                                  border: "none", borderRadius: 6, padding: "10px 12px",
-                                  fontSize: 11, fontWeight: 700, cursor: "pointer",
-                                  opacity: isScanning ? 0.6 : 1
-                                }}
-                              >
-                                ⚡ Instant Snap
-                              </button>
+                              {/* The "Instant Snap" button that stood here called
+                                  captureSnapshot() directly, skipping the check
+                                  altogether. A gate with a documented bypass is not
+                                  a gate. */}
                               <button
                                 type="button"
                                 onClick={stopCamera}

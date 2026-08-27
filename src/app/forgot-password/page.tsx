@@ -10,7 +10,7 @@ const ORCA = {
 };
 
 export default function ForgotPasswordPage() {
-  const [officerId, setOfficerId] = useState("");
+  const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [theme, setTheme] = useState<"light" | "dark">("light");
@@ -32,31 +32,77 @@ export default function ForgotPasswordPage() {
 
   const [errorMessage, setErrorMessage] = useState("");
 
+  /**
+   * Send a password reset link.
+   *
+   * EMAIL ONLY. This used to accept a badge number and BUILD an address from
+   * it — `<badge>@karnatakapolice.gov.in`. The accounts on this platform are
+   * not on that domain, so every badge-based attempt was addressed to a
+   * mailbox that does not exist, sent nothing, and still showed "Reset Link
+   * Dispatched". Guessing an address is how a reset silently goes nowhere.
+   *
+   * WHAT IS HIDDEN, AND WHAT IS NOT
+   *
+   * "No such account" is deliberately NOT revealed — telling a stranger which
+   * addresses are registered turns this form into an account directory. The
+   * success screen is therefore shown for an unknown address too, and says
+   * "if an account matches" rather than "sent".
+   *
+   * Everything else IS surfaced. The previous version caught every error and
+   * showed success regardless, so a network failure, an unconfigured Firebase
+   * or a rate limit all looked exactly like a delivered email. An officer
+   * locked out of a live case waiting on mail that was never sent is worse
+   * than being told plainly that it failed.
+   */
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!officerId.trim()) return;
+    const target = email.trim().toLowerCase();
+    if (!target || loading) return;
+
+    // Checked here as well as by the input's type=email, because a pasted
+    // value can reach submit without the browser ever validating it.
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(target)) {
+      setErrorMessage("Enter a valid email address.");
+      return;
+    }
+
     setLoading(true);
     setErrorMessage("");
 
     try {
-      let targetEmail = officerId.trim();
-      if (!targetEmail.includes("@")) {
-        targetEmail = `${targetEmail.toLowerCase().replace(/[^a-z0-9]/g, "")}@karnatakapolice.gov.in`;
+      const { sendPasswordResetEmail } = await import("firebase/auth");
+      const { auth } = await import("@/lib/firebase");
+
+      // Not a silent no-op: if authentication is unavailable, nothing can be
+      // sent and the officer has to know that rather than wait for mail.
+      if (!auth) {
+        setErrorMessage(
+          "Authentication service is unavailable, so no reset link could be sent. Contact your district administrator."
+        );
+        return;
       }
 
-      try {
-        const { sendPasswordResetEmail } = await import("firebase/auth");
-        const { auth } = await import("@/lib/firebase");
-        if (auth) {
-          await sendPasswordResetEmail(auth, targetEmail);
-        }
-      } catch (fbErr: any) {
-        console.info("[ORCA Auth Recovery]:", fbErr?.message || fbErr);
-      }
-
+      await sendPasswordResetEmail(auth, target);
       setSubmitted(true);
     } catch (err: any) {
-      setErrorMessage(err?.message || "Unable to process password reset request. Please verify your officer credentials.");
+      const code = String(err?.code || "");
+
+      // The only errors worth hiding are the ones that would confirm whether
+      // an address is registered.
+      if (code === "auth/user-not-found" || code === "auth/invalid-email") {
+        setSubmitted(true);
+        return;
+      }
+
+      if (code === "auth/too-many-requests") {
+        setErrorMessage("Too many reset attempts from this connection. Wait a few minutes and try again.");
+      } else if (code === "auth/network-request-failed") {
+        setErrorMessage("Could not reach the authentication service. Check your connection and try again.");
+      } else {
+        setErrorMessage(
+          err?.message || "The reset link could not be sent. Try again, or contact your district administrator."
+        );
+      }
     } finally {
       setLoading(false);
     }
@@ -261,7 +307,7 @@ export default function ForgotPasswordPage() {
                 Password Recovery
               </h2>
               <p style={{ color: colors.textSecondary, fontSize: 15, margin: 0 }}>
-                Enter your registered Officer ID or official email address to initiate verification.
+                Enter the official email address your account is registered to. The reset link is sent to that address and nowhere else.
               </p>
             </div>
 
@@ -286,7 +332,7 @@ export default function ForgotPasswordPage() {
                   Reset Link Dispatched
                 </h3>
                 <p style={{ color: colors.textSecondary, fontSize: 14, lineHeight: 1.6, marginBottom: 24 }}>
-                  If an active officer account matches <strong style={{ color: colors.textPrimary }}>{officerId}</strong>, an encrypted reset link has been dispatched to your official department mail.
+                  If an active officer account is registered to <strong style={{ color: colors.textPrimary }}>{email}</strong>, a reset link has been sent to it. The link expires after a short time — request another if it lapses.
                 </p>
                 <a 
                   href="/login"
@@ -306,17 +352,40 @@ export default function ForgotPasswordPage() {
             ) : (
               <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 20 }}>
                 <div>
+                  {/*
+                    Officers sign in with a badge number, so the address their
+                    account is registered to may not be the one they think of
+                    first. Saying where to go beats a form they cannot get past.
+                  */}
+                  <div style={{
+                    background: colors.purpleBg,
+                    border: `1px solid ${colors.purpleBorder}`,
+                    borderRadius: 8,
+                    padding: "11px 14px",
+                    fontSize: 12.5,
+                    lineHeight: 1.55,
+                    color: colors.textSecondary,
+                    marginBottom: 18,
+                  }}>
+                    A reset link can only be sent to the address on your account — a badge number
+                    cannot be used here. If you do not know which address that is, ask your district
+                    administrator or raise a ticket on{" "}
+                    <a href="/support" style={{ color: colors.gold, fontWeight: 600, textDecoration: "none" }}>
+                      Technical Support
+                    </a>.
+                  </div>
+
                   <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: colors.textSecondary, marginBottom: 8 }}>
-                    Officer ID / Official Email
+                    Official Email Address
                   </label>
                   <input
-                    type="text"
+                    type="email"
                     required
                     disabled={loading}
-                    value={officerId}
-                    onChange={(e) => setOfficerId(e.target.value)}
-                    placeholder="e.g. KA-12345 or officer@karnatakapolice.gov.in"
-                    autoComplete="off"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="e.g. officer@orca.gov"
+                    autoComplete="email"
                     suppressHydrationWarning
                     style={{
                       width: "100%",

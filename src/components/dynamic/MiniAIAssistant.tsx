@@ -7,6 +7,7 @@ import {
   Minus, 
   Send, 
   Mic, 
+  MicOff,
   Volume2, 
   VolumeX, 
   Paperclip, 
@@ -23,7 +24,9 @@ import {
 } from "lucide-react";
 import { useIntelligence } from "@/context/IntelligenceContext";
 import { useAuth } from "@/context/AuthContext";
+import { imagePayload, buildPromptWithAttachments, readAttachment, ATTACHMENT_ACCEPT } from "@/lib/imageAttachment";
 import { AttachmentFile, ChatMessage, ChatConversation } from "@/lib/chatService";
+import { useVoice } from "@/lib/useVoice";
 
 const getPageSuggestions = (tab: string) => {
   switch (tab) {
@@ -39,12 +42,6 @@ const getPageSuggestions = (tab: string) => {
         { label: "Hotspot analysis", text: "What regions are projected to increase in crime threat score next month?" },
         { label: "Detect anomalies", text: "Are there any statistical anomalies in the crime analytics graphs?" }
       ];
-    case "fir":
-      return [
-        { label: "Summarize case", text: "Provide a detailed intelligence briefing on the active FIR case dossier." },
-        { label: "List case timeline", text: "Analyze the active FIR timeline and highlight any severe events." },
-        { label: "Identify suspects", text: "List the suspect associates and connection weights linked to this FIR." }
-      ];
     case "heatmap":
       return [
         { label: "Explain district scores", text: "Explain the statewide threat scores and how district risk rankings are compiled." },
@@ -52,7 +49,8 @@ const getPageSuggestions = (tab: string) => {
       ];
     case "networks":
       return [
-        { label: "Analyze Vikram Hegde network", text: "Outline criminal network syndicates linked to target Vikram Hegde." },
+        // Was "Analyze Vikram Hegde network" — a suspect who does not exist.
+        { label: "Explain network analysis", text: "How are criminal network links established between accused persons on a case?" },
         { label: "Explain nodes", text: "What do the different color weights on the network graph indicate?" }
       ];
     case "reports":
@@ -80,9 +78,8 @@ const getHumanReadableTab = (tab: string) => {
   switch (tab) {
     case "dashboard": return "Dashboard";
     case "analytics": return "Analytics";
-    case "fir": return "FIR Vault";
     case "heatmap": return "Heatmap";
-    case "networks": return "Criminal Networks";
+    case "networks": return "Threat Mapping";
     case "copilot": return "Copilot";
     case "reports": return "Reports";
     case "verification-document": return "Verification";
@@ -91,15 +88,6 @@ const getHumanReadableTab = (tab: string) => {
   }
 };
 
-const detectTextLanguage = (text: string): string => {
-  if (/[\u0C80-\u0CFF]/.test(text)) {
-    return "kn-IN";
-  }
-  if (/[\u0900-\u097F]/.test(text)) {
-    return "hi-IN";
-  }
-  return "en-US";
-};
 
 export const MiniAIAssistant: React.FC = () => {
   const {
@@ -133,7 +121,6 @@ export const MiniAIAssistant: React.FC = () => {
   const [editTitle, setEditTitle] = useState("");
 
   // Voice States
-  const [isListening, setIsListening] = useState(false);
   const [speechLanguage, setSpeechLanguage] = useState("en-US");
   const [ttsEnabled, setTtsEnabled] = useState(false);
 
@@ -176,20 +163,6 @@ export const MiniAIAssistant: React.FC = () => {
     }
   }, [messages, isGeneratingChat, isOpen]);
 
-  // Load and cache voices for Web Speech synthesis
-  useEffect(() => {
-    if (typeof window !== "undefined" && window.speechSynthesis) {
-      window.speechSynthesis.getVoices();
-      const handleVoicesChanged = () => {
-        window.speechSynthesis.getVoices();
-      };
-      window.speechSynthesis.addEventListener("voiceschanged", handleVoicesChanged);
-      return () => {
-        window.speechSynthesis.removeEventListener("voiceschanged", handleVoicesChanged);
-      };
-    }
-  }, []);
-
   // Drag handlers
   const handleMouseDown = (e: React.MouseEvent) => {
     if (e.button !== 0) return; // Left click only
@@ -230,77 +203,37 @@ export const MiniAIAssistant: React.FC = () => {
   }, [isDragging]);
 
   // Speech-to-Text Recognition
-  const startListening = () => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      alert("Speech recognition is not supported in this browser. Please use Chrome or Safari.");
-      return;
-    }
+  /*
+   * Shared with the full chatbot. This file used to hold its own copy of the
+   * recognition and synthesis code, including the bug where stopping the
+   * microphone only changed the icon. See src/lib/useVoice.ts.
+   */
+  const submitRef = useRef<(text: string) => void>(() => {});
 
-    const recognition = new SpeechRecognition();
-    recognition.lang = speechLanguage;
-    recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
+  const voice = useVoice({
+    language: speechLanguage,
+    narrate: ttsEnabled,
+    handsFree: false,
+    onTranscript: (text) => setInputText(text),
+    onUtteranceComplete: (text) => { setInputText(""); submitRef.current(text); },
+  });
 
-    setIsListening(true);
-    recognition.start();
+  const { micState, interim, speaking } = voice;
+  const isListening = micState === "listening";
+  const speakText = voice.speak;
+  const stopSpeaking = voice.stopSpeaking;
+  const toggleMicrophone = voice.toggleListening;
 
-    recognition.onresult = (event: any) => {
-      const speechToText = event.results[0][0].transcript;
-      setInputText(prev => prev + (prev ? " " : "") + speechToText);
-    };
-
-    recognition.onerror = (event: any) => {
-      if (event.error === "no-speech") {
-        console.warn("Speech recognition: no speech detected (silent timeout).");
-      } else {
-        console.error("Speech recognition error:", event.error);
-      }
-      setIsListening(false);
-    };
-
-    recognition.onend = () => {
-      setIsListening(false);
-    };
-  };
-
-  const toggleMicrophone = () => {
-    if (isListening) {
-      setIsListening(false);
-    } else {
-      startListening();
-    }
-  };
-
-  // Text-to-Speech Narration
-  const speakText = (text: string) => {
-    if (typeof window === "undefined" || !window.speechSynthesis) return;
-    window.speechSynthesis.cancel();
-    const cleanText = text.replace(/[*#`_\-⚠️]/g, "").trim();
-    const utterance = new SpeechSynthesisUtterance(cleanText);
-    
-    // Dynamically detect language from the actual text block characters
-    const detectedLang = detectTextLanguage(cleanText);
-    utterance.lang = detectedLang;
-    
-    const voices = window.speechSynthesis.getVoices();
-    let voice = voices.find(v => v.lang.toLowerCase() === detectedLang.toLowerCase().replace("_", "-"));
-    if (!voice) {
-      const langPrefix = detectedLang.split("-")[0].toLowerCase();
-      voice = voices.find(v => v.lang.toLowerCase().startsWith(langPrefix));
-    }
-    if (voice) {
-      utterance.voice = voice;
-    }
-    
-    window.speechSynthesis.speak(utterance);
-  };
-
-  const stopSpeaking = () => {
-    if (typeof window !== "undefined" && window.speechSynthesis) {
-      window.speechSynthesis.cancel();
-    }
-  };
+  const micUsable = micState !== "unsupported" && micState !== "disabled" && voice.inputAllowed === true;
+  const micTitle =
+    voice.transcribing ? "Transcribing your dictation..."
+    : micState === "listening" ? (voice.cloudStt ? "Recording — click to stop and transcribe" : "Listening — click to stop")
+    : micState === "unsupported" ? "This browser cannot capture speech. Chrome or Edge can."
+    : micState === "disabled" || voice.inputAllowed === false ? "Voice input is switched off for this department in System Settings"
+    : voice.inputAllowed === null ? "Checking whether voice input is permitted..."
+    : micState === "denied" ? "Microphone access was blocked. Allow it in your browser's site settings."
+    : micState === "error" ? "The microphone could not be started. Try again."
+    : "Dictate a question";
 
   const handleToggleTts = () => {
     const nextVal = !ttsEnabled;
@@ -316,6 +249,9 @@ export const MiniAIAssistant: React.FC = () => {
   };
 
   // Submit Chat Message
+  // Kept current so a dictated utterance reaches the real submit function.
+  useEffect(() => { submitRef.current = (text: string) => { handleSubmit(text); }; });
+
   const handleSubmit = async (customPrompt?: string) => {
     const queryText = customPrompt || inputText;
     if (!queryText.trim() && pendingAttachments.length === 0) return;
@@ -327,6 +263,9 @@ export const MiniAIAssistant: React.FC = () => {
     
     setInputText("");
     setPendingAttachments([]);
+    const imageParts = imagePayload(pendingAttachments);
+    const promptForModel = buildPromptWithAttachments(userPrompt, pendingAttachments);
+
     setIsGeneratingChat(true);
 
     try {
@@ -334,7 +273,9 @@ export const MiniAIAssistant: React.FC = () => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
-          prompt: userPrompt, 
+          prompt: promptForModel,   // attachment text appended, so the model receives it 
+          auditPrompt: userPrompt,   // never promptForModel: it carries attachment text
+          images: imageParts,
           history: messages,
           moduleContext: getHumanReadableTab(activeTab),
           activeCaseId: activeFirId
@@ -351,7 +292,7 @@ export const MiniAIAssistant: React.FC = () => {
       await addMessageToActiveConv(responseText, undefined, undefined, "orca", targetConvId);
 
       if (ttsEnabled) {
-        speakText(responseText);
+        voice.handleReply(responseText);
       }
     } catch (err: any) {
       console.error("[Groq Chat Error]:", err);
@@ -362,15 +303,12 @@ export const MiniAIAssistant: React.FC = () => {
     }
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files) {
-      const filesArray = Array.from(e.target.files).map(file => ({
-        name: file.name,
-        size: file.size,
-        type: file.type || "document"
-      }));
-      setPendingAttachments(prev => [...prev, ...filesArray]);
-    }
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files) return;
+    // Reading, downscaling and the "cannot read this" wording all live in
+    // imageAttachment, so this surface and AIChatbotModule cannot drift apart.
+    const files = await Promise.all(Array.from(e.target.files).map(readAttachment));
+    setPendingAttachments((prev) => [...prev, ...files]);
   };
 
   const handleContinueInChatbot = () => {
@@ -1160,24 +1098,38 @@ export const MiniAIAssistant: React.FC = () => {
             {pendingAttachments.length > 0 && (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                 {pendingAttachments.map((att, idx) => (
-                  <div key={idx} style={{
+                  <div key={idx} title={att.readError || att.name} style={{
                     display: "flex",
                     alignItems: "center",
                     gap: 4,
-                    background: "rgba(255, 255, 255, 0.08)",
-                    border: "1px solid rgba(255,255,255,0.1)",
+                    // A file that cannot be read is marked at attach time, as on
+                    // the main chatbot. Without this the officer has no warning.
+                    background: att.readError ? "rgba(245,158,11,0.22)" : "rgba(255, 255, 255, 0.08)",
+                    border: `1px solid ${att.readError ? "rgba(245,158,11,0.6)" : "rgba(255,255,255,0.1)"}`,
                     borderRadius: "12px",
                     padding: "2px 8px",
                     fontSize: "10.5px",
-                    color: "white"
+                    color: att.readError ? "#fcd34d" : "white"
                   }}>
-                    <FileText style={{ width: 11, height: 11, color: "#FF9933" }} />
+                    {att.dataUrl || att.thumbUrl ? (
+                      /* eslint-disable-next-line @next/next/no-img-element */
+                      <img src={att.dataUrl || att.thumbUrl} alt="" style={{ width: 14, height: 14, borderRadius: 3, objectFit: "cover" }} />
+                    ) : (
+                      <FileText style={{ width: 11, height: 11, color: att.readError ? "#fbbf24" : "#FF9933" }} />
+                    )}
                     <span style={{ maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{att.name}</span>
-                    <button onClick={() => setPendingAttachments([])} style={{ background: "none", border: "none", cursor: "pointer", color: "rgba(255,255,255,0.5)", padding: 0 }}>
+                    {att.readError ? <span style={{ fontSize: 10 }}>· not readable</span> : null}
+                    {/* This cleared EVERY attachment, whichever chip was clicked. */}
+                    <button onClick={() => setPendingAttachments(prev => prev.filter((_, i) => i !== idx))} style={{ background: "none", border: "none", cursor: "pointer", color: "rgba(255,255,255,0.5)", padding: 0 }}>
                       <X style={{ width: 12, height: 12 }} />
                     </button>
                   </div>
                 ))}
+                {pendingAttachments.some((a) => a.readError) && (
+                  <div style={{ width: "100%", fontSize: 10, color: "#fcd34d", paddingTop: 2 }}>
+                    {pendingAttachments.find((a) => a.readError)?.readError}
+                  </div>
+                )}
               </div>
             )}
 
@@ -1266,12 +1218,19 @@ export const MiniAIAssistant: React.FC = () => {
                 {/* Voice Narration toggle */}
                 <button
                   onClick={handleToggleTts}
-                  title={ttsEnabled ? "Disable vocal feedback" : "Enable vocal feedback"}
+                  disabled={voice.narrationVoiceMissing}
+                  title={
+                    voice.narrationVoiceMissing
+                      ? "No voice for the selected language is installed on this computer, so replies cannot be read aloud."
+                      : ttsEnabled ? "Disable vocal feedback" : "Enable vocal feedback"
+                  }
                   style={{
                     background: "none",
                     border: "none",
-                    color: ttsEnabled ? "#10b981" : "rgba(255,255,255,0.5)",
-                    cursor: "pointer",
+                    color: voice.narrationVoiceMissing
+                      ? "rgba(255,255,255,0.25)"
+                      : ttsEnabled ? "#10b981" : "rgba(255,255,255,0.5)",
+                    cursor: voice.narrationVoiceMissing ? "not-allowed" : "pointer",
                     padding: 4,
                     borderRadius: 4,
                     display: "flex",
@@ -1279,7 +1238,9 @@ export const MiniAIAssistant: React.FC = () => {
                     transition: "color 0.2s"
                   }}
                 >
-                  {ttsEnabled ? <Volume2 style={{ width: 14, height: 14 }} /> : <VolumeX style={{ width: 14, height: 14 }} />}
+                  {ttsEnabled && !voice.narrationVoiceMissing
+                    ? <Volume2 style={{ width: 14, height: 14 }} />
+                    : <VolumeX style={{ width: 14, height: 14 }} />}
                 </button>
 
                 {/* Language Select Code */}
@@ -1336,7 +1297,7 @@ export const MiniAIAssistant: React.FC = () => {
               <input
                 type="file"
                 ref={fileInputRef}
-                accept="image/*,.pdf"
+                accept={ATTACHMENT_ACCEPT}
                 onChange={handleFileUpload}
                 onClick={e => { (e.target as HTMLInputElement).value = ""; }}
                 style={{ display: "none" }}
@@ -1353,7 +1314,7 @@ export const MiniAIAssistant: React.FC = () => {
                     handleSubmit();
                   }
                 }}
-                placeholder="Message ORCA Assistant..."
+                placeholder={isListening ? (interim || "Listening...") : "Message ORCA Assistant..."}
                 style={{
                   flex: 1,
                   background: "none",
@@ -1365,10 +1326,13 @@ export const MiniAIAssistant: React.FC = () => {
                 }}
               />
 
-              {/* Speech Micro */}
+              {/* Speech Micro. Disabled reasons are stated on the control —
+                  see the note in useVoice.ts. */}
               <button
                 onClick={toggleMicrophone}
-                title={isListening ? "Listening... click to lock" : "Transcribe speech"}
+                disabled={!micUsable}
+                title={micTitle}
+                aria-label={micTitle}
                 style={{
                   background: isListening ? "rgba(239, 68, 68, 0.2)" : "none",
                   border: isListening ? "1px solid #ef4444" : "none",
@@ -1378,13 +1342,38 @@ export const MiniAIAssistant: React.FC = () => {
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  cursor: "pointer",
+                  cursor: micUsable ? "pointer" : "not-allowed",
+                  opacity: micUsable ? 1 : 0.4,
                   color: isListening ? "#ef4444" : "rgba(255,255,255,0.6)",
                   transition: "background 0.2s"
                 }}
               >
-                <Mic style={{ width: 14, height: 14 }} />
+                {micUsable
+                  ? <Mic style={{ width: 14, height: 14 }} className={isListening ? "animate-pulse" : ""} />
+                  : <MicOff style={{ width: 14, height: 14 }} />}
               </button>
+
+              {speaking && (
+                <button
+                  onClick={stopSpeaking}
+                  title="Stop reading aloud"
+                  aria-label="Stop reading aloud"
+                  style={{
+                    background: "rgba(255,255,255,0.12)",
+                    border: "none",
+                    borderRadius: "50%",
+                    width: "26px",
+                    height: "26px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    cursor: "pointer",
+                    color: "rgba(255,255,255,0.85)"
+                  }}
+                >
+                  <VolumeX style={{ width: 14, height: 14 }} />
+                </button>
+              )}
 
               {/* Submit */}
               <button

@@ -34,6 +34,9 @@ yarn-error.log*
 .env
 .env.local
 .env.*.local
+# Timestamped backups written before an OAuth token swap - these hold the
+# client secret and the Firebase service-account key.
+.env.local.backup-*
 !.env.example
 
 # vercel

@@ -1,14 +1,16 @@
 import React, { useState, useEffect } from "react";
+import { useActiveSession, formatElapsed } from "@/lib/useActiveSession";
 import { useIntelligence } from "@/context/IntelligenceContext";
 import { useAuth } from "@/context/AuthContext";
 import { DASHBOARD_ROLES, PlatformModule } from "@/lib/permissions";
 import { canAccessTab, canAccessMenuSection, canAccessAdminSubSection, getRoleConfig } from "@/lib/rbac";
+import type { AdminSubSection } from "@/lib/rbac";
 import { OrcaBrand } from "./OrcaBrand";
 import { useRouter, usePathname } from "next/navigation";
 import { 
   LayoutDashboard, 
   BarChart3, 
-  FolderLock, 
+  FilePlus2, 
   Map, 
   Network, 
   Cpu, 
@@ -26,8 +28,47 @@ import {
   FileCheck,
   ChevronDown,
   ChevronUp,
-  Tv
-} from "lucide-react";
+  Tv, PackageSearch, LifeBuoy, Boxes, ClipboardList } from "lucide-react";
+
+/**
+ * The admin menu. `group` decides which collapsible section renders the item.
+ *
+ * WHY THE GROUP IS ON THE ITEM
+ *
+ * Each section used to filter by its own hardcoded list of ids, so every
+ * admin tab had to be registered TWICE — here, and again in that section's
+ * list. An id present here and missing there is defined, RBAC-gated, backed
+ * by a full screen, and still unreachable by anyone. That is not a
+ * hypothetical: `admin-warnings` had fallen out of all three lists, so
+ * Unauthorised Access could not be opened from the sidebar at all, and
+ * `admin-support` landed in the same hole the day it was added.
+ *
+ * One registration point removes the class of bug rather than the instance.
+ * The group names are the `AdminSubSection` values from rbac.ts, so the
+ * sidebar and the access rules now use one vocabulary instead of two.
+ */
+const ADMIN_SIDEBAR_ITEMS: {
+  id: string;
+  label: string;
+  icon: typeof Home;
+  group: AdminSubSection;
+}[] = [
+  { id: "admin-dashboard", label: "Dashboard", icon: Home, group: "access_verification" },
+  { id: "admin-pending", label: "Pending Registrations", icon: UserCheck, group: "access_verification" },
+  { id: "admin-applications", label: "Officer Applications", icon: UserCheck, group: "access_verification" },
+  { id: "admin-directory", label: "Officer Directory", icon: Shield, group: "access_verification" },
+  { id: "admin-roles", label: "Roles & Permissions", icon: Award, group: "access_verification" },
+  { id: "admin-verification", label: "Verification Oversight", icon: FileCheck, group: "access_verification" },
+  { id: "admin-analytics", label: "Crime DB Analytics", icon: BarChart3, group: "ai_intelligence" },
+  { id: "admin-ai", label: "AI Monitoring Console", icon: Bot, group: "ai_intelligence" },
+  { id: "admin-model", label: "AI Model Management", icon: Cpu, group: "ai_intelligence" },
+  { id: "admin-audit", label: "Audit Logs", icon: History, group: "audit_infrastructure" },
+  { id: "admin-security", label: "Security Center", icon: AlertTriangle, group: "audit_infrastructure" },
+  { id: "admin-warnings", label: "Unauthorised Access", icon: ShieldAlert, group: "audit_infrastructure" },
+  { id: "admin-support", label: "Support & Incidents", icon: LifeBuoy, group: "audit_infrastructure" },
+  { id: "admin-reports", label: "Reports & Notifications", icon: FileText, group: "audit_infrastructure" },
+  { id: "admin-settings", label: "System Settings", icon: Settings, group: "audit_infrastructure" }
+];
 
 export const Sidebar: React.FC = () => {
   const { activeTab, setActiveTab } = useIntelligence();
@@ -36,45 +77,41 @@ export const Sidebar: React.FC = () => {
   const pathname = usePathname();
   const [liveTime, setLiveTime] = useState("");
   const [sessionTime, setSessionTime] = useState("00:00:00");
+  const activeSession = useActiveSession();
   const [accessExpanded, setAccessExpanded] = useState(true);
   const [aiExpanded, setAiExpanded] = useState(false);
   const [infraExpanded, setInfraExpanded] = useState(false);
 
+  // Wall clock only. Session duration comes from the recorded sign-in via
+  // useActiveSession - the old sessionStorage timestamp was written by whichever
+  // tab rendered first, so a second tab restarted the counter.
   useEffect(() => {
-    // Persistent session start tracker via sessionStorage
-    let sessionStartStr = sessionStorage.getItem("orca_session_start");
-    if (!sessionStartStr) {
-      sessionStartStr = String(Date.now());
-      sessionStorage.setItem("orca_session_start", sessionStartStr);
-    }
-    const sessionStart = Number(sessionStartStr);
-
     const updateClock = () => {
-      const now = new Date();
-      setLiveTime(now.toTimeString().split(' ')[0] + " IST");
-
-      // Calculate elapsed session duration
-      const diffSecs = Math.floor((Date.now() - sessionStart) / 1000);
-      const hours = Math.floor(diffSecs / 3600);
-      const minutes = Math.floor((diffSecs % 3600) / 60);
-      const seconds = diffSecs % 60;
-      
-      const pad = (n: number) => String(n).padStart(2, "0");
-      setSessionTime(`${pad(hours)}:${pad(minutes)}:${pad(seconds)}`);
+      setLiveTime(new Date().toTimeString().split(' ')[0] + " IST");
     };
-
     updateClock();
     const interval = setInterval(updateClock, 1000);
     return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
+    setSessionTime(
+      activeSession.known ? formatElapsed(activeSession.elapsedSeconds || 0, "clock") : "--:--:--"
+    );
+  }, [activeSession.elapsedSeconds, activeSession.known]);
+
+  useEffect(() => {
     if (activeTab && activeTab.startsWith("admin-")) {
       setAccessExpanded(true); // Access & Verification is always open
       
-      const isAiTab = ["admin-analytics", "admin-ai", "admin-model"].includes(activeTab);
-      const isInfraTab = ["admin-audit", "admin-security", "admin-reports", "admin-settings"].includes(activeTab);
-      
+      // Which group to open is read from the item, not from a fourth copy of
+      // the id lists. This effect had its own pair of hardcoded arrays, and
+      // "admin-support" was missing from them — so opening Support & Incidents
+      // left its own section collapsed.
+      const group = ADMIN_SIDEBAR_ITEMS.find((i) => i.id === activeTab)?.group;
+      const isAiTab = group === "ai_intelligence";
+      const isInfraTab = group === "audit_infrastructure";
+
       if (isAiTab) {
         setAiExpanded(true);
         setInfraExpanded(false);
@@ -92,8 +129,11 @@ export const Sidebar: React.FC = () => {
     { id: "dashboard", label: "Command Overview", icon: LayoutDashboard, route: "/dashboard" },
     { id: "chatbot", label: "AI Chatbot", icon: Bot, route: "/dashboard" },
     { id: "analytics", label: "Crime Analytics", icon: BarChart3, route: "/dashboard" },
-    { id: "fir", label: "Forensic Evidence Copilot", icon: FolderLock, route: "/dashboard" },
-    { id: "networks", label: "Criminal Networks", icon: Network, route: "/dashboard" },
+    { id: "case-registration", label: "Case Registration", icon: FilePlus2, route: "/dashboard" },
+    { id: "evidence", label: "Evidence Management", icon: PackageSearch, route: "/dashboard" },
+    { id: "property-register", label: "Lost & Stolen Property", icon: Boxes, route: "/dashboard" },
+    { id: "tasks", label: "Task & Assignment", icon: ClipboardList, route: "/dashboard" },
+    { id: "networks", label: "Threat Mapping", icon: Network, route: "/dashboard" },
     { id: "news", label: "State Live News", icon: Tv, route: "/dashboard" }
   ];
 
@@ -109,21 +149,7 @@ export const Sidebar: React.FC = () => {
     { id: "settings", label: "Profile Settings", icon: UserCheck, route: "/dashboard" }
   ];
 
-  const adminSidebarItems = [
-    { id: "admin-dashboard", label: "Dashboard", icon: Home },
-    { id: "admin-pending", label: "Pending Registrations", icon: UserCheck },
-    { id: "admin-applications", label: "Officer Applications", icon: UserCheck },
-    { id: "admin-directory", label: "Officer Directory", icon: Shield },
-    { id: "admin-roles", label: "Roles & Permissions", icon: Award },
-    { id: "admin-verification", label: "Verification Oversight", icon: FileCheck },
-    { id: "admin-analytics", label: "Crime DB Analytics", icon: BarChart3 },
-    { id: "admin-ai", label: "AI Monitoring Console", icon: Bot },
-    { id: "admin-model", label: "AI Model Management", icon: Cpu },
-    { id: "admin-audit", label: "Audit Logs", icon: History },
-    { id: "admin-security", label: "Security Center", icon: AlertTriangle },
-    { id: "admin-reports", label: "Reports & Notifications", icon: FileText },
-    { id: "admin-settings", label: "System Settings", icon: Settings }
-  ];
+  const adminSidebarItems = ADMIN_SIDEBAR_ITEMS;
 
   const hasAccess = (itemId: string) => {
     if (getRoleConfig(dashboardRole)) {
@@ -136,6 +162,9 @@ export const Sidebar: React.FC = () => {
       chatbot: "ai_chatbot",
       analytics: "heatmaps",
       fir: "ingestion_copilot",
+      "case-registration": "case_registration",
+      "property-register": "case_registration",
+      tasks: "case_registration",
       networks: "criminal_networks",
       "verification-document": "verification_overrides",
       settings: "basic_settings",
@@ -150,17 +179,28 @@ export const Sidebar: React.FC = () => {
       "admin-model": "ai_monitoring",
       "admin-audit": "audit_trails",
       "admin-security": "security_controls",
+      "admin-warnings": "security_controls",
+      "admin-support": "system_telemetry",
       "admin-reports": "system_telemetry",
       "admin-settings": "system_telemetry",
     };
 
     const targetModule = itemToModule[itemId];
-    if (!targetModule) return true; // Default viewable if not gated
+    if (!targetModule) {
+      // An UNGATED item defaults to viewable, which is right for an ordinary
+      // screen and wrong for an admin one: forgetting to map a new admin tab
+      // here silently granted it to every unrecognised role. "admin-support"
+      // was in exactly that state. Admin tabs now fail CLOSED — a missing
+      // mapping hides the tab rather than handing it out.
+      return !itemId.startsWith("admin-");
+    }
 
     // 1. Check strict 3-Layer RBAC DashboardRole modules
     if (dashboardRole && DASHBOARD_ROLES[dashboardRole]) {
       // Special check: admin section items should only show for admin roles
-      if (itemId.startsWith("admin-") && dashboardRole === "investigation") {
+      // Named the single role "investigation" before, so the newer field-officer
+      // levels would have slipped through. Asks the real question instead.
+      if (itemId.startsWith("admin-") && !dashboardRole.startsWith("admin") && !dashboardRole.startsWith("command_admin") && !dashboardRole.startsWith("verification_admin") && dashboardRole !== "it_admin") {
         return false;
       }
       return DASHBOARD_ROLES[dashboardRole].modules.includes(targetModule);
@@ -173,7 +213,7 @@ export const Sidebar: React.FC = () => {
     if (itemId === "dashboard" || itemId === "settings") return true;
 
     if (role === "Investigation Dashboard") {
-      const allowed = ["dashboard", "chatbot", "analytics", "fir", "networks", "verification-document", "settings"];
+      const allowed = ["dashboard", "chatbot", "analytics", "case-registration", "networks", "verification-document", "settings"];
       return allowed.includes(itemId);
     }
 
@@ -192,7 +232,7 @@ export const Sidebar: React.FC = () => {
     if (role === "IT Administration Dashboard") {
       const allowed = [
         "dashboard", "settings", "admin-dashboard",
-        "admin-directory", "admin-audit", "admin-security", "admin-reports", "admin-settings"
+        "admin-directory", "admin-audit", "admin-security", "admin-support", "admin-reports", "admin-settings"
       ];
       return allowed.includes(itemId);
     }
@@ -265,7 +305,7 @@ export const Sidebar: React.FC = () => {
                 {accessExpanded && (
                   <div style={{ display: "flex", flexDirection: "column", marginTop: 4 }}>
                     {allowedAdminSidebarItems.filter(item => 
-                      ["admin-dashboard", "admin-pending", "admin-applications", "admin-directory", "admin-roles", "admin-verification"].includes(item.id)
+                      item.group === "access_verification"
                     ).map(item => {
                       const Icon = item.icon;
                       const isActive = activeTab === item.id;
@@ -340,7 +380,7 @@ export const Sidebar: React.FC = () => {
                 {aiExpanded && (
                   <div style={{ display: "flex", flexDirection: "column", marginTop: 4 }}>
                     {allowedAdminSidebarItems.filter(item => 
-                      ["admin-analytics", "admin-ai", "admin-model"].includes(item.id)
+                      item.group === "ai_intelligence"
                     ).map(item => {
                       const Icon = item.icon;
                       const isActive = activeTab === item.id;
@@ -415,7 +455,7 @@ export const Sidebar: React.FC = () => {
                 {infraExpanded && (
                   <div style={{ display: "flex", flexDirection: "column", marginTop: 4 }}>
                     {allowedAdminSidebarItems.filter(item => 
-                      ["admin-audit", "admin-security", "admin-reports", "admin-settings"].includes(item.id)
+                      item.group === "audit_infrastructure"
                     ).map(item => {
                       const Icon = item.icon;
                       const isActive = activeTab === item.id;

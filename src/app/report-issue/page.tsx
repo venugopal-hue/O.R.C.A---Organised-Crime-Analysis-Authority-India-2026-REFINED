@@ -1,6 +1,8 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import TicketForm from "@/components/support/TicketForm";
+import TicketLookup from "@/components/support/TicketLookup";
 
 const ORCA = {
   navy:      "#001f3f",
@@ -42,6 +44,26 @@ export default function ReportIssuePage() {
       });
     }
   }, []);
+
+  /**
+   * The diagnostics block that travels with the ticket.
+   *
+   * This panel used to be decorative — it told the reporter its contents
+   * "will be bundled with your ticket" while nothing was ever sent anywhere.
+   * It is now composed into a plain-text block and posted with the report, so
+   * the claim on screen is true.
+   *
+   * Only the fields already shown on the page are included. Nothing is
+   * collected that the reporter cannot see listed beside the form.
+   */
+  const diagnosticsPayload = [
+    `Platform:   ${diagnostics.platform}`,
+    `Screen:     ${diagnostics.screenSize}`,
+    `Language:   ${diagnostics.language}`,
+    `Connection: ${diagnostics.connectionStatus}`,
+    `Captured:   ${diagnostics.timestamp}`,
+    `User agent: ${diagnostics.userAgent}`,
+  ].join("\n");
 
   if (!mounted) {
     return (
@@ -120,60 +142,17 @@ export default function ReportIssuePage() {
       <div style={{ flex: 1, overflowY: "auto", padding: "32px" }}>
         <div style={{ maxWidth: 1000, margin: "0 auto" }}>
 
-          {/* Yellow Coming Soon Banner */}
-          <div style={{
-            background: "rgba(255, 153, 51, 0.08)",
-            border: "1px dashed rgba(255, 153, 51, 0.35)",
-            borderRadius: 8,
-            padding: "20px 24px",
-            marginBottom: 24,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            color: "#001f3f"
-          }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-              <div style={{
-                width: 40,
-                height: 40,
-                borderRadius: "50%",
-                background: "rgba(255, 153, 51, 0.15)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontSize: 20,
-                flexShrink: 0
-              }}>
-                ⚡
-              </div>
-              <div>
-                <strong style={{ display: "block", fontSize: 13.5, color: "#001f3f", fontFamily: "JetBrains Mono, monospace" }}>
-                  INCIDENT & GLITCH REPORTING PIPELINE — COMING SOON
-                </strong>
-                <span style={{ fontSize: 12, color: "#475569", marginTop: 2, display: "block" }}>
-                  Statewide direct-to-dev bug reporting & triage pipeline integration is currently under active deployment.
-                </span>
-              </div>
-            </div>
-            <span style={{
-              background: "#FF9933",
-              color: "#001f3f",
-              fontSize: 10,
-              fontWeight: 800,
-              padding: "4px 10px",
-              borderRadius: 12,
-              fontFamily: "JetBrains Mono, monospace",
-              letterSpacing: "0.05em",
-              textTransform: "uppercase",
-              whiteSpace: "nowrap"
-            }}>
-              UNDER DEVELOPMENT
-            </span>
-          </div>
-
           <div style={{ display: "grid", gridTemplateColumns: "11fr 9fr", gap: 32 }}>
-            {/* Left Column: Reporting Form (Blocked & Hover Locked) */}
-            <BlockedReportForm />
+            {/* Left Column: Live incident form + public status lookup */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+              <TicketForm
+                type="INCIDENT"
+                heading="Incident Details"
+                submitLabel="Log Incident"
+                diagnostics={diagnosticsPayload}
+              />
+              <TicketLookup />
+            </div>
 
             {/* Right Column: Diagnostics & Guidelines */}
             <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
@@ -243,183 +222,6 @@ export default function ReportIssuePage() {
           <a href="/rti" style={{ color: "rgba(255,255,255,0.45)", textDecoration: "none" }}>RTI</a>
         </div>
       </footer>
-    </div>
-  );
-}
-
-function BlockedReportForm() {
-  const [isHovered, setIsHovered] = useState(false);
-
-  return (
-    <div 
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-      style={{
-        position: "relative",
-        background: ORCA.white,
-        border: `1px solid ${ORCA.border}`,
-        borderRadius: 8,
-        padding: "24px",
-        boxShadow: ORCA.shadow,
-        cursor: "not-allowed",
-        overflow: "hidden"
-      }}
-    >
-      {/* Blocked Overlay on Hover */}
-      {isHovered && (
-        <div style={{
-          position: "absolute",
-          inset: 0,
-          background: "rgba(255, 255, 255, 0.94)",
-          backdropFilter: "blur(4px)",
-          zIndex: 50,
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          padding: 24,
-          textAlign: "center",
-          animation: "fadeIn 0.2s ease"
-        }}>
-          <div style={{
-            width: 46,
-            height: 46,
-            borderRadius: "50%",
-            background: "rgba(255, 153, 51, 0.15)",
-            border: "1px solid rgba(255, 153, 51, 0.4)",
-            color: "#FF9933",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontSize: 22,
-            marginBottom: 12
-          }}>
-            ⚡
-          </div>
-          <h4 style={{ fontSize: 14, fontWeight: 800, color: ORCA.navy, margin: "0 0 6px 0", fontFamily: "JetBrains Mono, monospace" }}>
-            FORM LOCKED — COMING SOON
-          </h4>
-          <p style={{ fontSize: 12, color: ORCA.textGray, margin: 0, maxWidth: 280, lineHeight: 1.5 }}>
-            Statewide incident & glitch reporting pipeline is locked while direct-to-dev automated triage is under active deployment.
-          </p>
-          <span style={{
-            marginTop: 14,
-            background: "#FF9933",
-            color: ORCA.navy,
-            fontSize: 10,
-            fontWeight: 800,
-            padding: "4px 12px",
-            borderRadius: 12,
-            fontFamily: "JetBrains Mono, monospace",
-            letterSpacing: "0.05em",
-            textTransform: "uppercase"
-          }}>
-            UNDER DEVELOPMENT
-          </span>
-        </div>
-      )}
-
-      <h3 style={{ fontSize: 16, fontWeight: 800, color: ORCA.navy, margin: "0 0 16px 0" }}>
-        Incident Details
-      </h3>
-
-      <form style={{ display: "flex", flexDirection: "column", gap: 14, opacity: isHovered ? 0.35 : 0.65, pointerEvents: "none" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <label style={{ fontSize: 11, fontWeight: 700, color: ORCA.textGray }}>OFFICER NAME *</label>
-            <input
-              type="text"
-              disabled
-              placeholder="e.g. Inspector Ramesh Kumar"
-              style={{
-                padding: "8px 12px", fontSize: 13, borderRadius: 6,
-                border: `1px solid ${ORCA.border}`, outline: "none", cursor: "not-allowed", background: "#f8fafc"
-              }}
-            />
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <label style={{ fontSize: 11, fontWeight: 700, color: ORCA.textGray }}>BADGE ID *</label>
-            <input
-              type="text"
-              disabled
-              placeholder="e.g. KSP-10928"
-              style={{
-                padding: "8px 12px", fontSize: 13, borderRadius: 6,
-                border: `1px solid ${ORCA.border}`, outline: "none", cursor: "not-allowed", background: "#f8fafc"
-              }}
-            />
-          </div>
-        </div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <label style={{ fontSize: 11, fontWeight: 700, color: ORCA.textGray }}>AFFECTED COMPONENT *</label>
-            <select
-              disabled
-              style={{
-                padding: "8px 12px", fontSize: 13, borderRadius: 6,
-                border: `1px solid ${ORCA.border}`, outline: "none",
-                background: "#f8fafc", cursor: "not-allowed"
-              }}
-            >
-              <option>AI Chatbot (ZIA)</option>
-            </select>
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <label style={{ fontSize: 11, fontWeight: 700, color: ORCA.textGray }}>SEVERITY LEVEL *</label>
-            <select
-              disabled
-              style={{
-                padding: "8px 12px", fontSize: 13, borderRadius: 6,
-                border: `1px solid ${ORCA.border}`, outline: "none",
-                background: "#f8fafc", cursor: "not-allowed"
-              }}
-            >
-              <option>Medium (Visual or UI bug)</option>
-            </select>
-          </div>
-        </div>
-
-        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          <label style={{ fontSize: 11, fontWeight: 700, color: ORCA.textGray }}>SUMMARY DESCRIPTION *</label>
-          <input
-            type="text"
-            disabled
-            placeholder="Brief headline of the bug..."
-            style={{
-              padding: "8px 12px", fontSize: 13, borderRadius: 6,
-              border: `1px solid ${ORCA.border}`, outline: "none", cursor: "not-allowed", background: "#f8fafc"
-            }}
-          />
-        </div>
-
-        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          <label style={{ fontSize: 11, fontWeight: 700, color: ORCA.textGray }}>DETAILED STEPS TO REPRODUCE *</label>
-          <textarea
-            disabled
-            rows={4}
-            placeholder="Explain the steps taken..."
-            style={{
-              padding: "8px 12px", fontSize: 13, borderRadius: 6,
-              border: `1px solid ${ORCA.border}`, outline: "none",
-              resize: "none", cursor: "not-allowed", background: "#f8fafc"
-            }}
-          />
-        </div>
-
-        <button
-          disabled
-          type="button"
-          style={{
-            background: ORCA.textMuted, color: ORCA.white, border: "none",
-            borderRadius: 6, padding: "10px 16px", fontSize: 13,
-            fontWeight: 700, cursor: "not-allowed", marginTop: 8,
-            display: "flex", justifyContent: "center", alignItems: "center"
-          }}
-        >
-          Log Incident (Locked)
-        </button>
-      </form>
     </div>
   );
 }

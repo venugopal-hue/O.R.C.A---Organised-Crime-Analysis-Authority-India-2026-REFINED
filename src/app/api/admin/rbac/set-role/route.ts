@@ -1,140 +1,152 @@
 import { NextRequest, NextResponse } from "next/server";
-import { adminAuth, adminDb, checkAdminAuth } from "@/lib/firebaseAdmin";
-import { FieldValue } from "firebase-admin/firestore";
+import { adminAuth, checkAdminAuth } from "@/lib/firebaseAdmin";
+import { getOfficerProfile, upsertOfficerAccount } from "@/lib/officerAccount";
+import { appendAudit } from "@/lib/adminData";
 import { IsdLevel, DashboardRole } from "@/lib/permissions";
+import { clearanceForRole } from "@/lib/rbac";
+import { denyWrite } from "@/lib/writeGuard";
 
 /**
- * POST /api/admin/rbac/set-role
- * Callable endpoint: setOfficerRole(targetUid, isdLevel, dashboardRole)
- * Caller must have admin_full, admin_scrb, admin_l2, or ISD-LEVEL-I clearance.
+ * Set an officer's role and clearance.
+ *
+ * Writes OfficerAccount in Catalyst and the matching Firebase custom claims,
+ * then appends one OfficerAuditLog row. It previously wrote `users`,
+ * `officers` and `roleChangeLog` in Firestore — three documents the rest of the
+ * platform had stopped reading.
+ *
+ * Privilege escalation is still blocked the same way, and one rule is added:
+ * an administrator cannot change their OWN role or clearance here. Self-service
+ * promotion is exactly the hole this check exists to close, and the old version
+ * allowed it as long as the caller already had admin rights.
  */
+
+/**
+ * Roles permitted to GRANT top-level access.
+ *
+ * `admin_scrb` was in this set and has been removed. SCRB is now a role an
+ * applicant can request on the sign-up form, so leaving it able to promote
+ * accounts to full command would mean one approved application was enough to
+ * mint an administrator. The bureau's work needs sight of statewide records,
+ * never the power to hand out access.
+ */
+const EXECUTIVE_ROLES = new Set(["admin_full"]);
+
 export async function POST(req: NextRequest) {
+  const caller = await checkAdminAuth(req, "RoleAssignment");
+  if (!caller) {
+    return NextResponse.json(
+      { success: false, error: "PERMISSION_DENIED: Caller must have administrative clearance." },
+      { status: 403 }
+    );
+  }
+
+  // Read-only and limited-write roles are refused here, not by hiding
+  // controls — see writeGuard.ts.
+  const denied = denyWrite(caller, "config");
+  if (denied) return denied;
+
+  let body: any;
   try {
-    // 1. Verify caller has admin rights
-    const caller = await checkAdminAuth(req, "RoleAssignment");
-    if (!caller) {
-      return NextResponse.json(
-        { success: false, error: "PERMISSION_DENIED: Caller must have administrative clearance." },
-        { status: 403 }
-      );
-    }
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ success: false, error: "Invalid JSON body." }, { status: 400 });
+  }
 
-    // 2. Validate request body
-    const body = await req.json();
-    const { targetUid, isdLevel, dashboardRole } = body as {
-      targetUid: string;
-      isdLevel: IsdLevel;
-      dashboardRole: DashboardRole;
-    };
+  const { targetUid, isdLevel, dashboardRole } = body as {
+    targetUid: string;
+    isdLevel: IsdLevel;
+    dashboardRole: DashboardRole;
+  };
 
-    if (!targetUid || !isdLevel || !dashboardRole) {
-      return NextResponse.json(
-        { success: false, error: "INVALID_ARGUMENT: targetUid, isdLevel, and dashboardRole are required." },
-        { status: 400 }
-      );
-    }
-
-    // 3. Prevent privilege escalation:
-    //    Only executive admins (admin_full / admin_scrb / ISD-LEVEL-I) can grant top roles
-    const isExecutiveCaller =
-      caller.dashboardRole === "admin_full" ||
-      caller.dashboardRole === "admin_scrb" ||
-      caller.isdLevel === "ISD-LEVEL-I";
-
-    const isGrantingExecutiveRole =
-      dashboardRole === "admin_full" ||
-      dashboardRole === "admin_scrb" ||
-      isdLevel === "ISD-LEVEL-I";
-
-    if (isGrantingExecutiveRole && !isExecutiveCaller) {
-      return NextResponse.json(
-        { success: false, error: "PERMISSION_DENIED: Only Executive Command Administrators can grant top-level roles." },
-        { status: 403 }
-      );
-    }
-
-    // 4. Fetch old state from Auth claims & Firestore for audit log
-    let oldIsdLevel: string | null = null;
-    let oldRole: string | null = null;
-
-    try {
-      const targetUser = await adminAuth.getUser(targetUid);
-      oldIsdLevel = (targetUser.customClaims?.isdLevel as string) || null;
-      oldRole = (targetUser.customClaims?.dashboardRole as string) || null;
-    } catch (e) {
-      // User may be Firestore-only in test setup — not critical
-    }
-
-    const userDocRef = adminDb.collection("users").doc(targetUid);
-    const oldDocSnap = await userDocRef.get();
-    if (oldDocSnap.exists) {
-      const oldData = oldDocSnap.data();
-      if (!oldIsdLevel) oldIsdLevel = oldData?.isdLevel || null;
-      if (!oldRole) oldRole = oldData?.dashboardRole || null;
-    }
-
-    // 5. Set Firebase Auth custom claims
-    try {
-      await adminAuth.setCustomUserClaims(targetUid, {
-        isdLevel,
-        dashboardRole,
-      });
-    } catch (e: any) {
-      console.warn("[setOfficerRole] Could not set custom claim (user may be Firestore-only):", e.message);
-    }
-
-    // 6. Mirror fields onto /users/{uid} and /officers/{uid}
-    const nowIso = new Date().toISOString();
-
-    await userDocRef.set(
-      {
-        uid: targetUid,
-        isdLevel,
-        dashboardRole,
-        clearanceLevel: isdLevel,
-        role: dashboardRole,
-        updatedBy: caller.uid,
-        updatedAt: nowIso,
-      },
-      { merge: true }
+  if (!targetUid || !dashboardRole) {
+    return NextResponse.json(
+      { success: false, error: "targetUid and dashboardRole are required." },
+      { status: 400 }
     );
+  }
 
-    await adminDb.collection("officers").doc(targetUid).set(
-      {
-        isdLevel,
-        clearanceLevel: isdLevel,
-        dashboardRole,
-        role: dashboardRole,
-        updatedBy: caller.uid,
-        updatedAt: nowIso,
-      },
-      { merge: true }
+  // Clearance follows the role — see approve-registration for why.
+  const resolvedClearance = clearanceForRole(String(dashboardRole));
+  if (!resolvedClearance) {
+    return NextResponse.json(
+      { success: false, error: `Unknown role "${dashboardRole}".` },
+      { status: 400 }
     );
+  }
+  if (isdLevel && String(isdLevel) !== resolvedClearance) {
+    return NextResponse.json(
+      {
+        success: false,
+        error: `Role ${dashboardRole} carries ${resolvedClearance}, not "${isdLevel}". Clearance follows the role.`,
+      },
+      { status: 400 }
+    );
+  }
 
-    // 7. Write immutable audit entry to roleChangeLog
-    const auditEntry = {
-      targetUid,
-      changedBy: caller.uid,
-      changedByEmail: caller.email,
-      oldRole: oldRole || "NONE",
-      newRole: dashboardRole,
-      oldIsdLevel: oldIsdLevel || "NONE",
-      newIsdLevel: isdLevel,
-      timestamp: FieldValue.serverTimestamp(),
-      isoTimestamp: nowIso,
-    };
+  if (targetUid === caller.uid) {
+    return NextResponse.json(
+      {
+        success: false,
+        error: "You cannot change your own role or clearance. Ask another administrator.",
+      },
+      { status: 403 }
+    );
+  }
 
-    const logRef = await adminDb.collection("roleChangeLog").add(auditEntry);
+  const isExecutiveCaller =
+    EXECUTIVE_ROLES.has(caller.dashboardRole) || caller.isdLevel === "ISD-LEVEL-I";
+  const grantsExecutive =
+    EXECUTIVE_ROLES.has(String(dashboardRole)) || resolvedClearance === "ISD-LEVEL-I";
+
+  if (grantsExecutive && !isExecutiveCaller) {
+    return NextResponse.json(
+      {
+        success: false,
+        error: "PERMISSION_DENIED: Only Executive Command Administrators can grant top-level roles.",
+      },
+      { status: 403 }
+    );
+  }
+
+  try {
+    const before = await getOfficerProfile(targetUid);
+    if (!before) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "No officer account on record for that UID. Approve their registration first.",
+        },
+        { status: 404 }
+      );
+    }
+
+    await upsertOfficerAccount(targetUid, {
+      dashboardRole: String(dashboardRole),
+      clearanceLevel: resolvedClearance,
+    });
+
+    await adminAuth.setCustomUserClaims(targetUid, { dashboardRole, isdLevel: resolvedClearance });
+
+    await appendAudit({
+      firebaseUid: targetUid,
+      changeType: "ROLE_CHANGE",
+      oldValue: `role=${before.dashboardRole}; clearance=${before.clearanceLevel}`,
+      newValue: `role=${dashboardRole}; clearance=${resolvedClearance}`,
+      changedBy: caller.name || caller.email || "Command Administrator",
+      reason: String(body.reason || "Role assigned from the RBAC console."),
+    });
 
     return NextResponse.json({
       success: true,
-      message: `Successfully updated officer ${targetUid} → ${isdLevel} / ${dashboardRole}`,
-      logId: logRef.id,
+      message: `${before.name || targetUid} set to ${dashboardRole} (${resolvedClearance}).`,
+      // The officer's existing session still carries the OLD claims until their
+      // ID token refreshes. Said here rather than left as a surprise.
+      note: "The change takes effect for that officer on their next sign-in or token refresh.",
     });
-  } catch (error: any) {
-    console.error("[setOfficerRole Error]:", error);
+  } catch (err: any) {
+    console.error("[RBAC set-role Error]:", err);
     return NextResponse.json(
-      { success: false, error: error.message || "Internal server error" },
+      { success: false, error: err?.message || "Could not set the role." },
       { status: 500 }
     );
   }

@@ -20,12 +20,18 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="h-full w-full antialiased" suppressHydrationWarning>
+      {/*
+        Leaflet used to be loaded here from unpkg.com for EVERY route — the
+        login screen, /support and /report-issue included, none of which show a
+        map. The only two map screens no longer use it: the district map is now
+        an inline SVG, and MapPicker draws OpenStreetMap raster tiles directly.
+        A CDN script on every page load is a third-party request per visitor for
+        a library nothing imports.
+      */}
       <head>
         <link rel="icon" href="/logo.png" type="image/png" />
         <link rel="shortcut icon" href="/logo.png" type="image/png" />
         <link rel="apple-touch-icon" href="/logo.png" />
-        <link id="leaflet-css-cdn" rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-        <script id="leaflet-js-cdn" src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
       </head>
       {/* O.R.C.A body: #f8fafc off-white background, Inter font, navy text */}
       <body

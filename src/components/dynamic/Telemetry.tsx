@@ -55,8 +55,27 @@ const StatCard: React.FC<{
   </div>
 );
 
+/**
+ * Command Overview counters.
+ *
+ * These four cards used to read "9.4", "1,482", "96.2%" and "99.4%" — invented
+ * figures that drifted by a random delta every six seconds so they looked live.
+ * They are the first thing an officer sees after signing in.
+ *
+ * They now count real rows in CaseMaster. Until the counts have been read the
+ * cards show a dash rather than 0, because "no cases registered" and "could not
+ * read the ledger" must not look identical.
+ */
 export const Telemetry: React.FC = () => {
-  const { threatIndex, activeCells, patrolRate, ocrIntegrity } = useIntelligence();
+  const {
+    heinousCount,
+    underInvestigationCount,
+    chargeSheetedCount,
+    casesRegistered,
+    statsLoaded,
+  } = useIntelligence();
+
+  const show = (n: number) => (statsLoaded ? n.toLocaleString() : "—");
 
   return (
     /* O.R.C.A .overview-grid: 4-column grid with 16px gap */
@@ -68,28 +87,28 @@ export const Telemetry: React.FC = () => {
       flexShrink: 0
     }}>
       <StatCard
-        title="Critical Threat Index"
-        value={String(threatIndex)}
-        subLine1="SOC: ISO-S1"
-        subLine2="Active Network Index Score"
+        title="Heinous Offences"
+        value={show(heinousCount)}
+        subLine1="GRAVITY: HEINOUS"
+        subLine2={statsLoaded ? "Registered cases so classified" : "Reading case ledger..."}
       />
       <StatCard
-        title="Tower Pings Under Audit"
-        value={activeCells.toLocaleString()}
-        subLine1="FREQ: 900 MHz"
-        subLine2="Active Cells Tracked"
+        title="Under Investigation"
+        value={show(underInvestigationCount)}
+        subLine1="STATUS: OPEN"
+        subLine2={statsLoaded ? "Cases not yet disposed" : "Reading case ledger..."}
       />
       <StatCard
-        title="Resolved State Warrants"
-        value={`${patrolRate}%`}
-        subLine1="RATIO YTD"
-        subLine2="Patrol & Force Response Coverage"
+        title="Charge-Sheeted"
+        value={show(chargeSheetedCount)}
+        subLine1="STATUS: FILED"
+        subLine2={statsLoaded ? "Cases sent for prosecution" : "Reading case ledger..."}
       />
       <StatCard
-        title="Extraction Calibration"
-        value={`${ocrIntegrity}%`}
-        subLine1="CERT-IN SCORE"
-        subLine2="OCR Forensic Integrity Index"
+        title="Cases Registered"
+        value={show(casesRegistered)}
+        subLine1="CASE LEDGER"
+        subLine2={statsLoaded ? "Total on record" : "Reading case ledger..."}
       />
     </div>
   );

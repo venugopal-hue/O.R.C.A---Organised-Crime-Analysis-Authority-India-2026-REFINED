@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { AIPresetBrief } from "@/lib/mock";
+import { AIPresetBrief } from "@/lib/intelligenceTypes";
 import { FileCheck } from "lucide-react";
 import { Barcode128 } from "./Barcode128";
 import { registerReportInFirestore } from "@/lib/documentService";
@@ -12,46 +12,79 @@ interface LetterheadProps {
 
 export const Letterhead: React.FC<LetterheadProps> = ({ report, loading }) => {
   const { officerProfile } = useAuth();
-  const [reportRef, setReportRef] = useState("ISD-CR-9000");
+  /**
+   * Everything identifying this document is issued by the SERVER.
+   *
+   * WHAT THIS REPLACES
+   *
+   *   reference   `ISD-CR-` + Math.random() * 8000 + 1000 — so two documents
+   *               could carry the same reference
+   *   case number `FIR/<year>/BLR/<that same random number>` — a citation to a
+   *               case file that may belong to somebody else, or to nobody,
+   *               printed on a barcoded court exhibit
+   *   hash        one of THREE hard-coded SHA-256 strings chosen at random,
+   *               written into the ledger as this document's digest
+   *
+   * The ledger recorded all of it as VERIFIED, so scanning the barcode
+   * "confirmed" a document against a digest of nothing.
+   *
+   * /api/verification/register now allocates the reference as a serial,
+   * computes a real SHA-256 of the exact content being sealed, and returns
+   * both. Until that call succeeds the document is NOT presented as verified.
+   */
+  const [ledger, setLedger] = useState<{
+    reference: string;
+    verificationId: string;
+    documentHash: string;
+    crimeNo: string;
+    issuerClearance: string;
+  } | null>(null);
+  const [sealError, setSealError] = useState("");
   const [dateStr, setDateStr] = useState("");
-  const [secureHash, setSecureHash] = useState("");
 
   useEffect(() => {
-    const newRef = `ISD-CR-${Math.floor(Math.random() * 8000) + 1000}`;
-    const newDate = new Date().toISOString().replace('T', ' ').substring(0, 19);
-    setReportRef(newRef);
-    setDateStr(newDate);
-    
-    // Generate a secure mock SHA-256 chunk for the document validation header
-    const mockHashes = [
-      "c2b8f9e29a8a34b22c8e9f1a0e9d9ef504d6a8f89e24b31a29ff0182bc8e92f",
-      "d16c7a92fb08a34b22c8e9f1a0e9d9ef504d6a8f89e24b31a29ff0182bc8e92f",
-      "a4b5c6d7e8f901a2b3c4d5e6f7a8b9c012345678901234567890abcdef12345"
-    ];
-    const hash = mockHashes[Math.floor(Math.random() * mockHashes.length)];
-    setSecureHash(hash);
-
-    // PART 1 — Automatically register generated report into Firestore `verified_documents`
-    if (report) {
-      const verId = `VER-2026-${newRef}`;
-      const caseNum = `FIR/2026/BLR/${newRef.replace("ISD-CR-", "")}`;
-      registerReportInFirestore({
-        verificationId: verId,
-        caseNumber: caseNum,
-        reportReference: newRef,
-        reportType: report.title || "State Crime Intelligence Briefing",
-        verificationStatus: "VERIFIED",
-        issuingAuthority: "Karnataka State Police • SCRB (ORCA)",
-        officerName: officerProfile?.name ? officerProfile.name.toUpperCase() : "STATE COMMANDING OFFICER",
-        officerRank: officerProfile?.rank || "Superintendent of Police",
-        policeStation: "Internal Security Division (ISD)",
-        district: "Bengaluru City",
-        classification: report.classification || "CONFIDENTIAL",
-        generatedAt: `${newDate} IST`,
-        lastUpdated: `${newDate} IST`,
-        reportHash: hash
-      });
+    if (!report) {
+      setLedger(null);
+      setSealError("");
+      return;
     }
+    let cancelled = false;
+    setLedger(null);
+    setSealError("");
+    setDateStr(new Date().toISOString().replace("T", " ").substring(0, 19));
+
+    (async () => {
+      try {
+        const res = await fetch("/api/verification/register", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            // The hash is computed from exactly this text, server-side.
+            content: `${report.title}
+${report.classification}
+${report.content}`,
+            reportType: report.title,
+          }),
+        });
+        const data = await res.json();
+        if (cancelled) return;
+        if (!res.ok || !data.success) {
+          throw new Error(data.error || `Could not seal the document (${res.status})`);
+        }
+        setLedger({
+          reference: data.reference,
+          verificationId: data.verificationId,
+          documentHash: data.documentHash,
+          crimeNo: data.crimeNo || "",
+          issuerClearance: data.issuerClearance || "",
+        });
+      } catch (err: any) {
+        if (!cancelled) setSealError(err?.message || "Could not seal the document.");
+      }
+    })();
+
+    return () => { cancelled = true; };
   }, [report]);
 
   if (loading) {
@@ -76,10 +109,34 @@ export const Letterhead: React.FC<LetterheadProps> = ({ report, loading }) => {
     );
   }
 
-  const verificationId = `VER-2026-${reportRef}`;
-  const caseNumber = `FIR/2026/BLR/${reportRef.replace("ISD-CR-", "")}`;
-  // Authoritative payload: VER=<Verification ID>|CASE=<Case Number>
-  const barcodePayload = `VER=${verificationId}|CASE=${caseNumber}`;
+  /**
+   * Until the ledger has answered, the document is not sealed and must not
+   * pretend to be. `sealError` means the seal FAILED — the brief is still
+   * readable, but it carries no reference, no barcode and no VERIFIED mark.
+   */
+  const sealed = ledger !== null;
+  const reportRef = ledger?.reference ?? "";
+  const verificationId = ledger?.verificationId ? `VER-${ledger.verificationId}` : "";
+  const secureHash = ledger?.documentHash ?? "";
+  // Blank unless the document is genuinely attached to a case — no composed
+  // FIR number. See the note where the ledger call is made.
+  const caseNumber = ledger?.crimeNo ?? "";
+  /**
+   * Barcode payload: the report reference alone, e.g. "ISD-CR-4271".
+   *
+   * It used to be `VER=<id>|CASE=<case>`, which measured 0% decodable at every
+   * module width tried - the footer scales the barcode into a slot ~260-380px
+   * wide, and a payload that long needs roughly 900px. Widening the bars only
+   * makes the image scale down further, so no setting could rescue it. The
+   * reference is the report's whole identity (everything else on the document
+   * is a fixed template), so carrying it alone is sufficient, and it stays
+   * human-readable to any scanner. The verification ID and case number are
+   * derived from it server-side, exactly as they are composed here.
+   *
+   * moduleWidth 4 was chosen on a sweep over every possible reference, six
+   * footer geometries and both scaling modes: 100% throughout.
+   */
+  const barcodePayload = reportRef;  // issued by the ledger, never composed here
 
   return (
     <div className="bg-white p-6 md:p-8 relative min-h-[500px] flex flex-col justify-between select-text text-black report-frame h-full">
@@ -111,17 +168,49 @@ export const Letterhead: React.FC<LetterheadProps> = ({ report, loading }) => {
           <div className="text-right font-mono text-[9px] text-[#475569] leading-tight">
             <div className="font-extrabold text-[9.5px] text-[#0A192F] uppercase tracking-wide leading-none">Office of the Superintendent of Police</div>
             <div className="mt-0.5">Internal Security Division &nbsp;·&nbsp; Bengaluru, Karnataka</div>
+            {/*
+              REF, clearance and signature all reflect reality now.
+
+              This line printed a fixed `CLR: LEVEL-IV` on every document
+              whatever clearance the issuing officer held, and `✓ VERIFIED`
+              before anything had been verified — on a page designed to be
+              printed and produced in court.
+            */}
             <div className="mt-0.5">
-              REF: {reportRef} &nbsp;·&nbsp; UTC: {dateStr} IST &nbsp;·&nbsp; CLR: LEVEL-IV &nbsp;·&nbsp; SIG: <span className="text-[#0B6A61] font-bold">✓ VERIFIED</span>
+              REF: {sealed ? reportRef : "PENDING"} &nbsp;·&nbsp; UTC: {dateStr} IST
+              {ledger?.issuerClearance ? <> &nbsp;·&nbsp; CLR: {ledger.issuerClearance}</> : null}
+              &nbsp;·&nbsp; SIG:{" "}
+              {sealed
+                ? <span className="text-[#0B6A61] font-bold">✓ VERIFIED</span>
+                : <span className="text-[#B45309] font-bold">UNSEALED</span>}
             </div>
           </div>
         </div>
 
         {/* Cryptographic chain-of-custody stamp */}
+        {/*
+          The stamp states the ACTUAL seal status.
+
+          It read "COURT EXHIBIT STATUS: VERIFIED / ISD DIGITAL SIGNATURE:
+          ACTIVE" unconditionally, beside a hash picked at random from three
+          hard-coded strings. A document that failed to seal looked identical to
+          one that succeeded.
+        */}
         <div className="border border-[#CBD5E1] bg-[#FAF9F6] p-1.5 px-2.5 mb-4 rounded-[1px] font-mono text-[9px] text-[#475569] flex flex-wrap justify-between items-center shrink-0">
-          <div>COURT EXHIBIT STATUS: <strong className="text-[#0B6A61]">VERIFIED</strong></div>
-          <div className="truncate max-w-[280px]">FORENSIC PACKET HASH: <strong>{secureHash}</strong></div>
-          <div>ISD DIGITAL SIGNATURE: <strong className="text-[#0B6A61]">ACTIVE</strong></div>
+          {sealed ? (
+            <>
+              <div>COURT EXHIBIT STATUS: <strong className="text-[#0B6A61]">VERIFIED</strong></div>
+              <div className="truncate max-w-[280px]">SHA-256: <strong>{secureHash}</strong></div>
+              {caseNumber
+                ? <div>CASE: <strong>{caseNumber}</strong></div>
+                : <div>CASE: <strong>NOT CASE-LINKED</strong></div>}
+            </>
+          ) : (
+            <div className="text-[#B45309]">
+              COURT EXHIBIT STATUS: <strong>NOT SEALED</strong>
+              {sealError ? <> &nbsp;·&nbsp; {sealError}</> : <> &nbsp;·&nbsp; sealing…</>}
+            </div>
+          )}
         </div>
 
         {/* Classification and Title */}
@@ -146,19 +235,44 @@ export const Letterhead: React.FC<LetterheadProps> = ({ report, loading }) => {
         <div className="flex justify-between items-end font-mono text-[9.5px] text-[#64748B] border-t border-[#CBD5E1]/40 pt-3 report-footer">
           <div className="text-center">
             <div className="border-t border-[#94A3B8] w-36 mb-1"></div>
-            Audited &amp; Certified By<br/><strong>AI Forensics Core (v2.4)</strong>
+            {/* No "Audited & Certified By AI Forensics Core (v2.4)" — nothing
+                audited or certified anything, and there is no such component. */}
+            Compiled By<br/><strong>O.R.C.A AI — unverified output</strong>
           </div>
 
-          {/* 2. DYNAMIC DOCUMENT VERIFICATION BARCODE */}
+          {/*
+            2. DOCUMENT VERIFICATION BARCODE
+
+            Only printed once the ledger has issued a reference. A barcode over
+            a made-up reference is worse than no barcode: it scans, and it
+            resolves to nothing or to somebody else's record.
+          */}
           <div className="flex flex-col items-center justify-end text-center px-2">
-            <Barcode128 value={barcodePayload} className="mb-1" />
-            <div className="text-[7.5px] font-bold text-[#64748B] uppercase tracking-wider leading-none">DOCUMENT VERIFICATION ID</div>
-            <div className="text-[8.5px] font-bold text-[#0A192F] font-mono mt-0.5">{verificationId}</div>
+            {sealed ? (
+              <>
+                <Barcode128 value={barcodePayload} moduleWidth={4} className="mb-1" />
+                <div className="text-[7.5px] font-bold text-[#64748B] uppercase tracking-wider leading-none">DOCUMENT VERIFICATION ID</div>
+                <div className="text-[8.5px] font-bold text-[#0A192F] font-mono mt-0.5">{verificationId}</div>
+              </>
+            ) : (
+              <div className="text-[8px] text-[#B45309] font-bold uppercase tracking-wider">
+                Not sealed — no verification id
+              </div>
+            )}
           </div>
 
+          {/*
+            Signed by the officer who actually generated it. This read
+            "Superintendent of Police, ISD" on every document regardless of who
+            was signed in — a rank and posting the issuer may not hold.
+          */}
           <div className="text-center">
             <div className="border-t border-[#94A3B8] w-36 mb-1"></div>
-            Approved for Court Filing<br/><strong>Superintendent of Police, ISD</strong>
+            Generated By<br/>
+            <strong>
+              {officerProfile?.name || "—"}
+              {officerProfile?.rank ? `, ${officerProfile.rank}` : ""}
+            </strong>
           </div>
         </div>
 

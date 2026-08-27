@@ -1,29 +1,21 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { useIntelligence } from "@/context/IntelligenceContext";
 import { RoleAssignmentManager } from "@/components/admin/RoleAssignmentManager";
 import { RoleChangeLogTable } from "@/components/admin/RoleChangeLogTable";
-import { 
-  seedAdminDatabase, 
-  fetchOfficerApplications, 
-  fetchOfficers, 
-  fetchAuditLogs, 
-  fetchVerificationOversight, 
-  fetchSystemSettings, 
-  saveSystemSettings,
-  OfficerApplication,
-  SystemSettings,
-  getLocalData,
-  setLocalData,
-  PERMISSION_TEMPLATES,
-  MOCK_OFFICER_APPLICATIONS,
-  MOCK_OFFICERS,
-  MOCK_AUDIT_LOGS,
-  MOCK_VERIFICATIONS,
-  MOCK_SETTINGS
-} from "@/lib/adminService";
+import { PERMISSION_TEMPLATES, OfficerApplication } from "@/lib/adminService";
+import { RBAC_CONFIG, clearanceForRole, DEPRECATED_ROLES } from "@/lib/rbac";
+import { CLEARANCE_LABEL } from "@/lib/clearance";
+import { ORCA_TOKENS } from "@/lib/theme";
+import SupportTicketQueue from "@/components/admin/SupportTicketQueue";
+import {
+  useAdminOverview,
+  type AdminApplicationRow,
+  type AdminOfficerRow,
+  type AdminAuditRow,
+} from "@/lib/useAdminOverview";
 import { 
   UserCheck, 
   Settings, 
@@ -65,26 +57,93 @@ import {
   Bell,
   Zap,
   TrendingUp,
-  BarChart3
+  BarChart3,
+  Cpu
 } from "lucide-react";
-import { doc, setDoc, addDoc, collection, onSnapshot, query, where } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+// No Firestore import. Every read and write in this console now goes through
+// /api/admin/* to Catalyst; the nine collections this file used to touch are
+// no longer the source of truth for anything it displays.
 
 // O.R.C.A Admin Style Tokens
+/**
+ * The dashboard's tokens, under the name this file already uses ~400 times.
+ *
+ * These were a SECOND copy with identical values — the same navy, the same
+ * saffron, written out again. Two lists of the same colours drift the moment
+ * one is edited. Aliased rather than renamed throughout, because a mass rename
+ * would touch every line of this file for no visual change.
+ */
 const ADMIN_THEME = {
-  bg: "#f8fafc",
-  cardBg: "#ffffff",
-  border: "#cbd5e1",
-  accentGold: "#FF9933",
+  bg: ORCA_TOKENS.offWhite,
+  cardBg: ORCA_TOKENS.white,
+  border: ORCA_TOKENS.border,
+  accentGold: ORCA_TOKENS.gold,
   accentGoldLight: "#ffb05c",
-  green: "#10b981",
-  red: "#ef4444",
-  blue: "#001f3f",
-  textPrimary: "#001f3f",
-  textSecondary: "#475569",
-  textMuted: "#94a3b8",
+  green: ORCA_TOKENS.green,
+  red: ORCA_TOKENS.red,
+  blue: ORCA_TOKENS.navy,
+  textPrimary: ORCA_TOKENS.navy,
+  textSecondary: ORCA_TOKENS.textGray,
+  textMuted: ORCA_TOKENS.textMuted,
   shadow: "0 1px 3px rgba(0,0,0,0.05)",
-  shadowMd: "0 4px 6px -1px rgba(0,0,0,0.08)"
+  shadowMd: "0 4px 6px -1px rgba(0,0,0,0.08)",
+};
+
+/**
+ * OfficerAuditLog stores machine change types (REGISTRATION_APPROVED). This
+ * turns one into a sentence for display without storing a second, prettier
+ * copy in the database that could drift from the real one.
+ */
+/** Whole days an application has been waiting. Counted, not stored. */
+const daysWaiting = (submittedAt: string) => {
+  const t = Date.parse((submittedAt || "").replace(" ", "T"));
+  if (!t || Number.isNaN(t)) return 0;
+  return Math.max(0, Math.floor((Date.now() - t) / 86400000));
+};
+
+const prettyChangeType = (t: string) =>
+  ({
+    REGISTRATION_APPROVED: "Registration approved",
+    REGISTRATION_REJECTED: "Registration rejected",
+    APPLICATION_EDIT: "Application edited",
+    APPLICATION_STATUS: "Application status changed",
+    OFFICER_PROFILE: "Officer profile updated",
+    ACCOUNT_STATUS: "Account status changed",
+    SYSTEM_SETTING: "System setting changed",
+    ROLE_CHANGE: "Role changed",
+  } as Record<string, string>)[t] || (t || "Change").replace(/_/g, " ").toLowerCase();
+
+/**
+ * Display names for the tab ids RBAC_CONFIG gates on. A tab missing from here
+ * falls back to its id with the dashes removed, so a newly added section shows
+ * up in the matrix immediately rather than disappearing until someone
+ * remembers to label it.
+ */
+const TAB_LABELS: Record<string, string> = {
+  dashboard: "Command Center",
+  chatbot: "AI Chatbot",
+  "case-registration": "Case Registration",
+  evidence: "Evidence Management",
+  analytics: "Crime Analytics",
+  networks: "Threat Mapping",
+  news: "Live News",
+  reports: "Reports & Bulletins",
+  "verification-document": "Document Verification",
+  settings: "Profile Settings",
+  "admin-dashboard": "Admin Dashboard",
+  "admin-pending": "Pending Registrations",
+  "admin-applications": "Officer Applications",
+  "admin-directory": "Officer Directory",
+  "admin-roles": "Roles & Permissions",
+  "admin-verification": "Verification Oversight",
+  "admin-analytics": "Platform Analytics",
+  "admin-ai": "AI Monitoring",
+  "admin-model": "AI Model Management",
+  "admin-audit": "Audit Logs",
+  "admin-security": "Security Center",
+  "admin-support": "Support & Incidents",
+  "admin-reports": "Reports & Notifications",
+  "admin-settings": "System Settings",
 };
 
 const getCleanInitials = (fullName: string) => {
@@ -145,39 +204,33 @@ const KARNATAKA_DISTRICTS = [
   "Yadgir"
 ];
 
+/**
+ * The roles an administrator may assign, straight out of RBAC_CONFIG.
+ *
+ * Every role dropdown in this console used to be a hand-typed <option> list.
+ * They drifted: one listed five roles out of seventeen, with labels that no
+ * longer matched the config ("Field Operational Officer" for what RBAC_CONFIG
+ * calls "Level I Operational Officer"), and none of them knew about the O.R.C.A
+ * or SCRB roles at all. A role added to the config simply did not appear.
+ *
+ * Deprecated roles are filtered out — they must still resolve for the accounts
+ * holding them, but must never be handed to somebody new.
+ */
+const ASSIGNABLE_ROLES = (Object.keys(RBAC_CONFIG) as Array<keyof typeof RBAC_CONFIG>)
+  .filter((key) => !DEPRECATED_ROLES.has(key))
+  .map((key) => ({ value: key as string, label: RBAC_CONFIG[key].label }))
+  .sort((a, b) => a.label.localeCompare(b.label));
+
 const ACCESS_MODULES = [
   "Investigation Dashboard",
   "Administrative Dashboard",
   "IT Administration Dashboard"
 ];
 
-const PERMISSION_CATEGORIES = [
-  {
-    id: "user-admin",
-    name: "User & Officer Administration",
-    icon: UserCheck,
-    permissions: ["Manage Officers", "Approve Officers", "Delete Officers"]
-  },
-  {
-    id: "core-ops",
-    name: "Core Police Operations",
-    icon: Home,
-    permissions: ["Manage Cases", "Generate Reports", "Document Verification"]
-  },
-  {
-    id: "analytics-ai",
-    name: "Analytics & AI Clearance",
-    icon: Sparkles,
-    permissions: ["AI Access", "Dashboard Access", "Analytics"]
-  },
-  {
-    id: "system-security",
-    name: "System Security & Configuration",
-    icon: Shield,
-    permissions: ["Audit Logs", "System Settings", "Verification Management"]
-  }
-];
-
+// PERMISSION_CATEGORIES is gone. It described a 12-permission vocabulary
+// ("Manage Officers", "AI Access", ...) that appeared nowhere in the enforcing
+// config, while omitting three modules that really do gate access. The Roles
+// tab now renders RBAC_CONFIG itself.
 
 interface CommandAdminCenterProps {
   adminTab: string;
@@ -187,16 +240,29 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
   const { officerProfile } = useAuth();
   const { activeFirId } = useIntelligence();
 
-  // Firestore retrieved state arrays
-  const [applications, setApplications] = useState<OfficerApplication[]>([]);
-  const [officers, setOfficers] = useState<any[]>([]);
-  const [auditLogs, setAuditLogs] = useState<any[]>([]);
-  const [verifications, setVerifications] = useState<any[]>([]);
-  const [systemSettings, setSystemSettings] = useState<SystemSettings | null>(null);
+  /**
+   * Everything below comes from Catalyst in ONE request. It used to be five
+   * Firestore reads re-run on every tab change; see useAdminOverview.
+   */
+  const { data: admin, loading, error: adminError, reload: loadAdminData } = useAdminOverview();
+  const applications = admin.applications;
+  const officers = admin.officers;
+  const auditLogs = admin.audit;
+  const verifications = admin.verifications;
+  const reference = admin.reference;
+
+  /**
+   * One notice strip for the whole console.
+   *
+   * Replaces ~20 `alert()` calls. An alert cannot be read alongside the screen
+   * it describes, and — worse — the old code showed a success alert from inside
+   * the localStorage fallback, so a failed write and a successful one looked
+   * identical to the administrator.
+   */
+  const [adminNotice, setAdminNotice] = useState<{ kind: "success" | "error"; text: string } | null>(null);
 
   // UI state managers
-  const [loading, setLoading] = useState(true);
-  const [selectedApp, setSelectedApp] = useState<OfficerApplication | null>(null);
+  const [selectedApp, setSelectedApp] = useState<AdminApplicationRow | null>(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   
 
@@ -208,172 +274,124 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
   const [auditSearch, setAuditSearch] = useState("");
 
   // AI Monitoring Console state variables
-  const [conversations, setConversations] = useState([
-    {
-      id: "conv_1",
-      officer: "Inspector Ananth Murthy",
-      badgeNo: "INSP_ANANTH_12",
-      query: "What are the key suspects in FIR 442 smuggling ring?",
-      module: "FIR Analytics",
-      confidence: 92,
-      rating: 4,
-      status: "COMPLETED",
-      time: "06/07/2026, 21:42:35",
-      response: "Based on FIR 442, the principal suspects identified are: 1. Rajesh Hegde (alias Chotu), 2. Vikram Naik, 3. Amit Rao. Financial transactions connect Hegde directly to the logistics hub in Mangaluru.",
-      tokens: { prompt: 450, completion: 280, total: 730 },
-      latency: "0.45s",
-      ip: "10.14.22.18"
-    },
-    {
-      id: "conv_2",
-      officer: "Officer Shruthi Rao",
-      badgeNo: "OFF_SHRUTHI_04",
-      query: "Generate trend analysis for cybercrime cases in Bengaluru Rural.",
-      module: "Crime Analytics",
-      confidence: 88,
-      rating: 5,
-      status: "COMPLETED",
-      time: "06/07/2026, 18:42:35",
-      response: "Cyber fraud instances showed a 14% month-over-month increase in the rural districts, primarily driven by part-time job deposit scams. Hotspot centers identified: Nelamangala and Devanahalli.",
-      tokens: { prompt: 620, completion: 410, total: 1030 },
-      latency: "0.58s",
-      ip: "10.14.28.94"
-    },
-    {
-      id: "conv_3",
-      officer: "DSP R. K. Shastry, IPS",
-      badgeNo: "DSP_RKS_IPS_2028",
-      query: "Cross-reference criminal networks between suspect Kumar and local gangs.",
-      module: "Criminal Networks",
-      confidence: 71,
-      rating: 3,
-      status: "FLAGGED",
-      time: "06/07/2026, 15:42:35",
-      response: "Flagged Node: Association path from Kumar to 'Rowdy Shekar' (Leader of South Gang) passes through two sub-level intermediaries (driver Mahesh and dealer Peter). Warning: High network centrality detected on node Shekar.",
-      tokens: { prompt: 810, completion: 520, total: 1330 },
-      latency: "0.82s",
-      ip: "10.12.1.25"
-    },
-    {
-      id: "conv_4",
-      officer: "Inspector Rajesh Kumar",
-      badgeNo: "INSP_RAJESH_89",
-      query: "Predict areas with high probability of narcotics movement.",
-      module: "Predictive Analytics",
-      confidence: 45,
-      rating: null,
-      status: "ESCALATED",
-      time: "06/07/2026, 11:42:35",
-      response: "Low confidence response. High entropy warning. Prediction model suggests potential activity zones along National Highway 48, but current source indicators are below required threshold.",
-      tokens: { prompt: 540, completion: 150, total: 690 },
-      latency: "1.12s",
-      ip: "10.14.44.112"
-    },
-    {
-      id: "conv_5",
-      officer: "Sub-Inspector Kavitha Patil",
-      badgeNo: "SI_KAVITHA_91",
-      query: "Summarize oil adulteration case files from Dharwad region.",
-      module: "Case Management",
-      confidence: 95,
-      rating: 5,
-      status: "COMPLETED",
-      time: "05/07/2026, 23:42:35",
-      response: "Dharwad region oil adulteration cases (2025-2026): A total of 4 files registered. principal accused: Shivalingappa. Seizure size: 14,000 liters. All cases currently pending charge sheet compilation.",
-      tokens: { prompt: 390, completion: 210, total: 600 },
-      latency: "0.38s",
-      ip: "10.16.89.201"
-    }
-  ]);
+  // The five hardcoded conversations that used to live here (with invented
+  // confidence scores and star ratings) are gone. Real queries arrive on
+  // `admin.aiQueries`, derived from OfficerActivity — see buildAiQueries().
+
   const [aiSearch, setAiSearch] = useState("");
-  const [aiStatusFilter, setAiStatusFilter] = useState("All Status");
+  const [aiStatusFilter, setAiStatusFilter] = useState("ALL");
+  const [aiOfficerFilter, setAiOfficerFilter] = useState("ALL");
+  const [aiOpenId, setAiOpenId] = useState<string | null>(null);
   const [isFilterDropdownOpen, setIsFilterDropdownOpen] = useState(false);
   const [selectedConv, setSelectedConv] = useState<any | null>(null);
   const [isExportOpen, setIsExportOpen] = useState(false);
 
   // AI Model Management state variables
-  const [modelTemp, setModelTemp] = useState(0.3);
-  const [modelMaxTokens, setModelMaxTokens] = useState(4098);
-  const [systemPrompt, setSystemPrompt] = useState(
-    "You are O.R.C.A, an AI intelligence copilot for the Karnataka State Police. Provide precise, factual, and actionable intelligence analysis based on available case data."
-  );
-  const [previousVersions, setPreviousVersions] = useState([
-    { version: "v3.1.8b-2026.05", deployed: "07/06/2026", accuracy: "92.8%", status: "RETIRED" },
-    { version: "v3.0.8b-2026.04", deployed: "08/05/2026", accuracy: "89.4%", status: "ARCHIVED" },
-    { version: "v3.0.8b-2026.02", deployed: "09/03/2026", accuracy: "86.1%", status: "ARCHIVED" }
-  ]);
-  const [modelStatusMsg, setModelStatusMsg] = useState("");
-  const [isModelActionLoading, setIsModelActionLoading] = useState("");
+  /**
+   * AI Model Management.
+   *
+   * The temperature, max-tokens and system-prompt values that used to live here
+   * as loose useState are now settings in the SystemSetting table, edited
+   * through `settingsDraft` and read by /api/chat on every request. The
+   * hardcoded version history and the Rollback / Retrain / Restart handlers are
+   * gone — see the tab body for why they could not be made to work.
+   */
+  /**
+   * Unauthorised access warnings. Loaded on demand — the section is checked
+   * occasionally, not on every visit to the console.
+   */
+  const [warnData, setWarnData] = useState<any | null>(null);
+  const [warnLoading, setWarnLoading] = useState(false);
+  const [warnError, setWarnError] = useState("");
+  const [warnFilter, setWarnFilter] = useState("ALL");
 
-  // Security Center states
-  const [securitySearch, setSecuritySearch] = useState("");
-  const [securityEvents, setSecurityEvents] = useState([
-    {
-      id: 1,
-      title: "3 consecutive failed login attempts",
-      severity: "HIGH",
-      status: "ACTIVE",
-      ip: "203.94.12.44",
-      officer: "Unknown",
-      browser: "Chrome 126",
-      device: "Windows 11",
-      timestamp: "06/07/2026, 21:42:35"
-    },
-    {
-      id: 2,
-      title: "IP blocked after brute force detection",
-      severity: "CRITICAL",
-      status: "RESOLVED",
-      ip: "185.234.12.99",
-      officer: "Unknown",
-      browser: "Unknown",
-      device: "Unknown",
-      timestamp: "06/07/2026, 19:42:35"
-    },
-    {
-      id: 3,
-      title: "Session from unusual geographic location",
-      severity: "MEDIUM",
-      status: "INVESTIGATING",
-      ip: "103.21.58.120",
-      officer: "Inspector Ananth Murthy",
-      browser: "Firefox 130",
-      device: "macOS",
-      timestamp: "06/07/2026, 15:42:35"
+  const loadWarnings = useCallback(async () => {
+    setWarnLoading(true);
+    setWarnError("");
+    try {
+      const res = await fetch("/api/admin/security-alerts");
+      const j = await res.json();
+      if (!res.ok || !j.success) throw new Error(j.error || `Request failed (${res.status})`);
+      setWarnData(j);
+    } catch (e: any) {
+      setWarnError(e?.message || "Could not read the security alerts.");
+    } finally {
+      setWarnLoading(false);
     }
-  ]);
+  }, []);
 
-  // Reports & Notifications states
+  useEffect(() => {
+    if (adminTab === "admin-warnings" && !warnData) void loadWarnings();
+  }, [adminTab, warnData, loadWarnings]);
+
+  const acknowledgeWarning = async (rowId: string) => {
+    try {
+      const res = await fetch("/api/admin/security-alerts", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rowId }),
+      });
+      const j = await res.json();
+      if (!res.ok || !j.success) throw new Error(j.error || "Could not update the alert.");
+      setAdminNotice({ kind: "success", text: j.message });
+      // Re-read rather than patching locally: the server stamps who and when.
+      setWarnData(null);
+    } catch (e: any) {
+      setAdminNotice({ kind: "error", text: e?.message || "Could not update the alert." });
+    }
+  };
+
+  const warnVisible = (warnData?.alerts || []).filter((a: any) => {
+    if (warnFilter === "UNREVIEWED") return !a.acknowledgedAt;
+    if (warnFilter === "LOCKED_OUT") return a.outcome === "LOCKED_OUT";
+    if (warnFilter === "WARNED") return a.outcome === "WARNED";
+    return true;
+  });
+
+  const [modelInfo, setModelInfo] = useState<any | null>(null);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState("");
+
+  /**
+   * `probe` costs a real API call per configured model, so connectivity is
+   * tested only when asked. The rest — configuration and usage counts — is free
+   * and loads with the tab.
+   */
+  const loadModels = useCallback(async (probe = false) => {
+    setModelsLoading(true);
+    setModelsError("");
+    try {
+      const res = await fetch(`/api/admin/ai-models${probe ? "?probe=1" : ""}`);
+      const j = await res.json();
+      if (!res.ok || !j.success) throw new Error(j.error || `Request failed (${res.status})`);
+      setModelInfo(j);
+    } catch (e: any) {
+      setModelsError(e?.message || "Could not read the AI model configuration.");
+    } finally {
+      setModelsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (adminTab === "admin-model" && !modelInfo) void loadModels(false);
+  }, [adminTab, modelInfo, loadModels]);
+
+  // Security Center — events are derived server-side from OfficerSession and
+  // arrive on `admin.security`. The three hardcoded incidents that used to live
+  // here (failed logins, brute force, unusual geography) described things this
+  // platform cannot observe; see SECURITY_BLIND_SPOTS in adminInsights.ts.
+  const [securitySearch, setSecuritySearch] = useState("");
+
+  // Reports & Notifications. Notifications are derived, not stored — see
+  // buildNotifications(). The report format switch is gone: every export is a
+  // CSV of real rows, and the old PDF/Excel options produced neither.
   const [reportsSubTab, setReportsSubTab] = useState<"reports" | "notifications">("reports");
-  const [reportsFormat, setReportsFormat] = useState<"PDF" | "CSV" | "Excel">("PDF");
-  const [openDropdownIdx, setOpenDropdownIdx] = useState<number | null>(null);
-  const [reportsLoaderMsg, setReportsLoaderMsg] = useState("");
   const [reportsSuccessMsg, setReportsSuccessMsg] = useState("");
-  const [notificationsList, setNotificationsList] = useState([
-    { id: 1, title: "New officer application pending review", desc: "Officer: Sub-Inspector Kavitha Patil. Verification required.", type: "CRITICAL", time: "10 mins ago", read: false },
-    { id: 2, title: "Database backup snapshot created successfully", desc: "Backup block snapshot #82910 written to statewide secure vault.", type: "INFO", time: "1 hour ago", read: false },
-    { id: 3, title: "MFA Enforced globally for all administration accounts", desc: "Multi-Factor Authentication policy validated and deployed.", type: "SECURITY", time: "3 hours ago", read: false },
-    { id: 4, title: "AI latency threshold alert: average response time exceeded 2.0s", desc: "Average request time hit 2.14s on NVIDIA NIM API endpoint.", type: "WARNING", time: "5 hours ago", read: false },
-    { id: 5, title: "Statewide FIR synchronization completed", desc: "Synced 1,028 new files index with central SCRB servers.", type: "SUCCESS", time: "1 day ago", read: false }
-  ]);
 
-  // System Settings state variables
-  const [setAppName, setSetAppName] = useState("O.R.C.A");
-  const [setMaintMode, setSetMaintMode] = useState(false);
-  const [setDebugMode, setSetDebugMode] = useState(false);
-  const [setEnforceHttps, setSetEnforceHttps] = useState(true);
-  const [setRateLimiting, setSetRateLimiting] = useState(true);
-  const [setIpWhitelist, setSetIpWhitelist] = useState(false);
-  const [setMfaEnabled, setSetMfaEnabled] = useState(true);
-  const [setSessionTimeout, setSetSessionTimeout] = useState(30);
-  const [setPassExpiry, setSetPassExpiry] = useState(90);
-  const [setMaxAttempts, setSetMaxAttempts] = useState(5);
-  const [setEmailNotif, setSetEmailNotif] = useState(true);
-  const [setPushNotif, setSetPushNotif] = useState(false);
-  const [setAutoBackup, setSetAutoBackup] = useState(true);
-  const [setBackupRetention, setSetBackupRetention] = useState(30);
-  const [setAuditLogRetention, setSetAuditLogRetention] = useState(365);
-  const [dbAnalyticsSearch, setDbAnalyticsSearch] = useState("");
+  // System settings live in `settingsDraft`, seeded from the SystemSetting
+  // table. The fifteen loose useState values that used to sit here were never
+  // persisted anywhere — that was the whole bug.
+
 
   const [auditModuleFilter, setAuditModuleFilter] = useState("ALL");
   const [verSearch, setVerSearch] = useState("");
@@ -386,6 +404,18 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
   const [modRank, setModRank] = useState("");
   const [modStation, setModStation] = useState("");
   const [modDistrict, setModDistrict] = useState("");
+  /**
+   * Posting as FOREIGN KEYS, which is what Employee actually stores.
+   *
+   * The four fields above are the old free-typed strings. They are kept only to
+   * display what the applicant originally wrote; the ids below are what gets
+   * saved, because `Employee.DistrictID / UnitID / RankID` cannot hold a
+   * hand-typed station name — the previous approval path simply dropped them.
+   */
+  const [modRankId, setModRankId] = useState("");
+  const [modDesignationId, setModDesignationId] = useState("");
+  const [modDistrictId, setModDistrictId] = useState("");
+  const [modUnitId, setModUnitId] = useState("");
   const [modMobile, setModMobile] = useState("");
   const [modEmail, setModEmail] = useState("");
   const [modRequestedAccess, setModRequestedAccess] = useState("");
@@ -424,70 +454,41 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
   const [actionLoading, setActionLoading] = useState(false);
   const [internalRemarks, setInternalRemarks] = useState("");
   const [settingsSuccess, setSettingsSuccess] = useState(false);
-  const [seedSuccess, setSeedSuccess] = useState(false);
+  /** Working copy of system settings; committed by handleSaveSettings. */
+  const [settingsDraft, setSettingsDraft] = useState<Record<string, any>>({});
+  /** Seed the draft once the stored values arrive, and after every save. */
+  useEffect(() => {
+    setSettingsDraft({ ...admin.settings });
+  }, [admin.settings]);
+  /**
+   * The AI runtime parameters, split out of the settings catalogue.
+   *
+   * They are marked `hiddenFromSettings` so they do not appear on the System
+   * Settings screen — they belong beside the models they configure, not in a
+   * list of security policies. Both screens edit the same `settingsDraft` and
+   * save through the same route.
+   */
+  const aiSpecs = admin.settingSpecs.filter((sp: any) => sp.group === "AI Runtime");
+  const aiSpecDefaults = Object.fromEntries(aiSpecs.map((sp: any) => [sp.key, sp.fallback]));
+  const aiSettingsDirty = aiSpecs.some(
+    (sp: any) => String(settingsDraft[sp.key]) !== String(admin.settings[sp.key])
+  );
+
+  const settingsDirty = admin.settingSpecs.some(
+    (sp: any) =>
+      !sp.hiddenFromSettings &&
+      String(settingsDraft[sp.key]) !== String(admin.settings[sp.key])
+  );
 
   // RBAC Configurable permissions configuration
-  const [rbacPermissions, setRbacPermissions] = useState<Record<string, string[]>>({
-    "Super Administrator": ["Manage Officers", "Approve Officers", "Delete Officers", "Manage Cases", "Generate Reports", "Document Verification", "AI Access", "Dashboard Access", "Audit Logs", "System Settings", "Verification Management", "Analytics"],
-    "Administrator": ["Manage Officers", "Approve Officers", "Manage Cases", "Generate Reports", "Document Verification", "AI Access", "Dashboard Access", "Audit Logs", "System Settings", "Verification Management", "Analytics"],
-    "DSP": ["Manage Cases", "Generate Reports", "Document Verification", "AI Access", "Dashboard Access", "Analytics"],
-    "SP": ["Manage Cases", "Generate Reports", "Document Verification", "AI Access", "Dashboard Access", "Analytics"],
-    "Inspector": ["Manage Cases", "Generate Reports", "Document Verification", "AI Access", "Dashboard Access"],
-    "Sub Inspector": ["Manage Cases", "Generate Reports", "Document Verification", "AI Access"],
-    "Constable": ["Generate Reports", "AI Access"],
-    "Analyst": ["AI Access", "Dashboard Access", "Analytics"],
-    "Operator": ["Document Verification", "AI Access"]
-  });
-
-  const availablePermissions = [
-    "Manage Officers",
-    "Approve Officers",
-    "Delete Officers",
-    "Manage Cases",
-    "Generate Reports",
-    "Document Verification",
-    "AI Access",
-    "Dashboard Access",
-    "Audit Logs",
-    "System Settings",
-    "Verification Management",
-    "Analytics"
-  ];
-
-  // Reload admin data from firestore
-  const loadAdminData = async () => {
-    setLoading(true);
-    try {
-      const appsList = await fetchOfficerApplications();
-      const officersList = await fetchOfficers();
-      const logsList = await fetchAuditLogs();
-      const verList = await fetchVerificationOversight();
-      const settingsObj = await fetchSystemSettings();
-      
-      setApplications(appsList);
-      setOfficers(officersList);
-      setAuditLogs(logsList);
-      setVerifications(verList);
-      setSystemSettings(settingsObj);
-    } catch (err) {
-      console.error("[O.R.C.A Admin Fetch Error]:", err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    loadAdminData();
-  }, [adminTab]);
-
-  useEffect(() => {
-    const handleOutsideClick = () => setOpenDropdownIdx(null);
-    window.addEventListener("click", handleOutsideClick);
-    return () => window.removeEventListener("click", handleOutsideClick);
-  }, []);
+  // The editable RBAC matrix that used to live here held nine roles that did
+  // not exist in RBAC_CONFIG, and ticking a box mutated local state and nothing
+  // else. Removed along with handlePermissionToggle.
 
   // Pending Registrations Real-Time Workflow State
   const [pendingRegistrations, setPendingRegistrations] = useState<any[]>([]);
+  // Firebase UID -> data URL of the applicant's stored capture.
+  const [applicantPhotos, setApplicantPhotos] = useState<Record<string, string>>({});
   const [selectedPendingReg, setSelectedPendingReg] = useState<any | null>(null);
   const [approveModalOpen, setApproveModalOpen] = useState(false);
   const [rejectModalOpen, setRejectModalOpen] = useState(false);
@@ -501,6 +502,9 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const [editProfileName, setEditProfileName] = useState("");
   const [editProfileRank, setEditProfileRank] = useState("");
+  const [editProfileRankId, setEditProfileRankId] = useState("");
+  const [editProfileDistrictId, setEditProfileDistrictId] = useState("");
+  const [editProfileUnitId, setEditProfileUnitId] = useState("");
   const [editProfileClearance, setEditProfileClearance] = useState("");
   const [editProfileEmail, setEditProfileEmail] = useState("");
   const [editProfileDistrict, setEditProfileDistrict] = useState("");
@@ -511,78 +515,107 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
   const openOfficerEditModal = (off: any) => {
     setActiveOfficerProfile(off);
     setEditProfileName(off.name || "");
-    setEditProfileRank(off.rank || "Officer");
-    setEditProfileClearance(off.clearanceLevel || off.isdLevel || "ISD-LEVEL-IV");
+    setEditProfileRank(off.rank || "");
+    // No default clearance — a blank record shows blank, not Field Officer.
+    setEditProfileClearance(off.clearanceLevel || "");
     setEditProfileEmail(off.email || "");
-    setEditProfileDistrict(off.district || "Bengaluru Urban");
-    setEditProfileStation(off.station || off.policeStation || "Central Command");
-    setEditProfileMobile(off.mobile || off.phone || "");
+    // No invented defaults. These used to fall back to "Bengaluru Urban" and
+    // "Central Command", so an officer with no posting on record appeared to
+    // have one — and saving the form then made that guess permanent.
+    setEditProfileDistrict(off.district || "");
+    setEditProfileStation(off.station || "");
+    setEditProfileMobile(off.mobile || "");
     setEditProfileActive(off.active !== false);
+    // The ids are resolved by name from the reference tables, because the
+    // officer list carries joined names rather than the ids themselves.
+    setEditProfileRankId(String(reference.ranks.find((r) => r.name === off.rank)?.id || ""));
+    setEditProfileDistrictId(String(reference.districts.find((d) => d.name === off.district)?.id || ""));
+    setEditProfileUnitId(String(reference.units.find((u) => u.name === off.station)?.id || ""));
     setIsEditingProfile(true);
   };
 
 
+  /**
+   * Pending registrations now come from the same Catalyst read as everything
+   * else, filtered to the ones awaiting review.
+   *
+   * This replaced a Firestore `onSnapshot` listener on `pendingRegistrations`.
+   * The live listener looked like an advantage, but it was watching a
+   * collection that registration had stopped being the source of truth for, and
+   * its error handler fell back to a localStorage copy — so a permissions
+   * failure silently showed stale applicants from this browser's cache as
+   * though they were live.
+   */
   useEffect(() => {
+    setPendingRegistrations(applications.filter((a) => a.status === "pending"));
+  }, [applications]);
+
+  useEffect(() => {
+    if (pendingRegistrations.length) void loadApplicantPhotos(pendingRegistrations);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingRegistrations]);
+
+  /**
+   * Applicant face captures, fetched from Catalyst in ONE request for the whole
+   * list. They used to arrive as base64 blobs embedded in each Firestore
+   * document; the image now lives once in OfficerPhoto, keyed by Firebase UID.
+   *
+   * The endpoint requires administrator rights to read anyone else's capture —
+   * it is biometric data, so an officer-level session cannot enumerate faces.
+   */
+  const loadApplicantPhotos = async (list: any[]) => {
+    const uids = list.map((r) => r.uid || r.id).filter(Boolean);
+    if (!uids.length) return;
     try {
-      const q = query(collection(db, "pendingRegistrations"), where("status", "==", "pending"));
-      const unsubscribe = onSnapshot(q, (snapshot) => {
-        const list: any[] = [];
-        snapshot.forEach((docSnap) => {
-          const data = docSnap.data();
-          list.push({ id: docSnap.id, ...data });
-          
-          if (process.env.NODE_ENV === "development") {
-            console.warn(`[DIAGNOSTIC - ADMIN READ] pendingRegistrations doc: ${docSnap.id}`, {
-              field: "photoUrl",
-              valueExists: "photoUrl" in data,
-              type: typeof data.photoUrl,
-              length: data.photoUrl ? data.photoUrl.length : 0,
-              preview: data.photoUrl && typeof data.photoUrl === "string" ? data.photoUrl.substring(0, 50) + "..." : "empty"
-            });
-          }
-        });
-        setPendingRegistrations(list);
-      }, (err) => {
-        console.warn("[Pending Registrations onSnapshot Error, using sandbox fallback]:", err.message);
-        const localApps = getLocalData<any[]>("orca_applications", []);
-        setPendingRegistrations(localApps.filter(a => a.status === "pending"));
+      const res = await fetch(`/api/officer/photo?uids=${encodeURIComponent(uids.join(","))}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const map: Record<string, string> = {};
+      Object.entries(data.photos || {}).forEach(([uid, photo]: [string, any]) => {
+        if (photo?.dataUrl) map[uid] = photo.dataUrl;
       });
-      return () => unsubscribe();
-    } catch (e) {
-      console.warn("Could not attach pendingRegistrations listener:", e);
+      setApplicantPhotos((prev) => ({ ...prev, ...map }));
+    } catch {
+      // The list still renders with initials.
     }
-  }, []);
+  };
 
   const handleConfirmApproveRegistration = async () => {
     if (!selectedPendingReg) return;
     setPendingActionLoading(true);
+    setAdminNotice(null);
     try {
       const res = await fetch("/api/admin/approve-registration", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          uid: selectedPendingReg.id || selectedPendingReg.uid,
-          name: selectedPendingReg.name,
-          email: selectedPendingReg.email,
-          rank: selectedPendingReg.rank,
-          posting: selectedPendingReg.posting || `${selectedPendingReg.postingType || "Field"} - ${selectedPendingReg.station || selectedPendingReg.district || ""}`,
+          uid: selectedPendingReg.id,
           dashboardRole: pendingRoleSelection,
           isdLevel: pendingIsdSelection,
-          photoUrl: selectedPendingReg.photoUrl || "",
-          adminName: officerProfile?.name || "Command Administrator"
-        })
+          // Posting comes from the application itself. Nothing is passed here,
+          // so the route falls back to what the applicant submitted rather than
+          // to a hardcoded district — the old route defaulted every approved
+          // officer to "Bengaluru Urban" regardless of where they applied from.
+          adminName: officerProfile?.name || "Command Administrator",
+        }),
       });
       const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || "Failed to approve registration");
-      }
-      alert(data.message || "Officer registration approved.");
+      if (!res.ok || !data.success) throw new Error(data.error || "Failed to approve registration.");
+      setAdminNotice({
+        kind: "success",
+        text:
+          data.message +
+          // The KGID is auto-serial, so there is nothing to warn about — the
+          // useful thing to say is which provisional id it replaced, so an
+          // administrator can connect the approval to the application they
+          // were reviewing a moment ago.
+          (data.previousKgid ? ` (was ${data.previousKgid} while under review)` : ""),
+      });
       setApproveModalOpen(false);
       setSelectedPendingReg(null);
       await loadAdminData();
     } catch (err: any) {
-      console.error("Approval API error:", err);
-      alert("Error approving registration: " + err.message);
+      setAdminNotice({ kind: "error", text: err?.message || "Approval failed." });
     } finally {
       setPendingActionLoading(false);
     }
@@ -590,30 +623,34 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
 
   const handleConfirmRejectRegistration = async () => {
     if (!selectedPendingReg) return;
+    // The route now requires a stated reason. Every rejection used to fall back
+    // to the same boilerplate sentence, so the record showed nothing useful
+    // about why any particular applicant was turned down.
+    if (!rejectReasonInput.trim()) {
+      setAdminNotice({ kind: "error", text: "A rejection reason is required." });
+      return;
+    }
     setPendingActionLoading(true);
+    setAdminNotice(null);
     try {
       const res = await fetch("/api/admin/reject-registration", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          uid: selectedPendingReg.id || selectedPendingReg.uid,
-          name: selectedPendingReg.name,
-          email: selectedPendingReg.email,
-          reason: rejectReasonInput || "Did not pass administrative review check.",
-          adminName: officerProfile?.name || "Command Administrator"
-        })
+          uid: selectedPendingReg.id,
+          reason: rejectReasonInput.trim(),
+          adminName: officerProfile?.name || "Command Administrator",
+        }),
       });
       const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || "Failed to reject registration");
-      }
-      alert(data.message || "Registration rejected.");
+      if (!res.ok || !data.success) throw new Error(data.error || "Failed to reject registration.");
+      setAdminNotice({ kind: "success", text: data.message });
       setRejectModalOpen(false);
       setSelectedPendingReg(null);
+      setRejectReasonInput("");
       await loadAdminData();
     } catch (err: any) {
-      console.error("Rejection API error:", err);
-      alert("Error rejecting registration: " + err.message);
+      setAdminNotice({ kind: "error", text: err?.message || "Rejection failed." });
     } finally {
       setPendingActionLoading(false);
     }
@@ -621,301 +658,149 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
 
   useEffect(() => {
     if (selectedApp) {
-      setModFirstName(selectedApp.firstName || selectedApp.name.split(" ")[0] || "");
-      setModLastName(selectedApp.lastName || selectedApp.name.split(" ").slice(1).join(" ") || "");
+      const parts = (selectedApp.name || "").trim().split(/\s+/);
+      setModFirstName(parts[0] || "");
+      setModLastName(parts.slice(1).join(" "));
+      // Names for display, ids for saving. See the modRankId comment above.
       setModRank(selectedApp.rank || "");
       setModStation(selectedApp.station || "");
       setModDistrict(selectedApp.district || "");
+      setModRankId(selectedApp.rankId ? String(selectedApp.rankId) : "");
+      setModDesignationId(selectedApp.designationId ? String(selectedApp.designationId) : "");
+      setModDistrictId(selectedApp.districtId ? String(selectedApp.districtId) : "");
+      setModUnitId(selectedApp.unitId ? String(selectedApp.unitId) : "");
       setModMobile(selectedApp.mobile || "");
       setModEmail(selectedApp.email || "");
       setModRequestedAccess(selectedApp.requestedAccess || "");
-      setModInternalRemarks(selectedApp.internalRemarks || selectedApp.remarks || "");
-      setModPriority(selectedApp.priority || "MEDIUM");
-      setModAssignedReviewer(selectedApp.assignedReviewer || "");
-      const isL1Admin = officerProfile?.role === "Administrative Dashboard - Level 1";
-      setModSecurityClearance(isL1Admin ? "ISD-LEVEL-IV" : (selectedApp.securityClearance || selectedApp.clearanceLevel || "ISD-LEVEL-IV"));
-      setModBgVerification(selectedApp.bgVerification || "pending");
-      setModDeptVerification(selectedApp.deptVerification || "pending");
-      setModSupervisorApproval(selectedApp.supervisorApproval || "pending");
-      setModReportingOfficer(selectedApp.reportingOfficer || "");
-      setModSupervisor(selectedApp.supervisor || "");
-      setModDepartmentHead(selectedApp.departmentHead || "");
-      setModCommandingOfficer(selectedApp.commandingOfficer || "");
-      setModPermissions(selectedApp.permissions || {});
-      setModRole(isL1Admin ? "Investigation Dashboard" : (selectedApp.assignedRole || "Investigation Dashboard"));
-      setModDivision(selectedApp.division || "");
-      setModStateUnit(selectedApp.stateUnit || "");
-      setModDepartment(selectedApp.department || "Cyber Crime");
+      setModInternalRemarks(selectedApp.remarks || "");
+      /**
+       * An SCRB applicant opens on the SCRB role, matching the Pending
+       * Registrations modal. Clearance is derived from whichever role that is,
+       * never defaulted independently — the two must agree or the approval is
+       * rejected.
+       */
+      const defaultRole =
+        String(selectedApp.postingType || "") === "SCRB" ? "scrb_officer" : "investigation_l1";
+      setModRole(defaultRole);
+      setModSecurityClearance(clearanceForRole(defaultRole) || "");
       setIsConfirmingApproval(false);
       setModStatus(selectedApp.status || "pending");
     }
-  }, [selectedApp]);
+  }, [selectedApp, reference]);
 
-  // Seeding trigger
-  const handleSeedDatabase = async () => {
-    setActionLoading(true);
-    try {
-      await seedAdminDatabase();
-      setSeedSuccess(true);
-      setTimeout(() => setSeedSuccess(false), 3000);
-      await loadAdminData();
-    } catch (err) {
-      console.warn("Firestore seeding failed due to permissions. Initializing in-memory browser sandbox.", err);
-      // Seed locally in localStorage
-      setLocalData("orca_applications", MOCK_OFFICER_APPLICATIONS);
-      setLocalData("orca_officers", MOCK_OFFICERS);
-      setLocalData("orca_audit_logs", MOCK_AUDIT_LOGS);
-      setLocalData("orca_verifications", MOCK_VERIFICATIONS);
-      setLocalData("orca_settings", MOCK_SETTINGS);
-      setSeedSuccess(true);
-      setTimeout(() => setSeedSuccess(false), 3000);
-      await loadAdminData();
-    } finally {
-      setActionLoading(false);
-    }
-  };
+  // The "Seed Security Data" button and its handler are gone. It wrote the
+  // MOCK_* arrays into Firestore and localStorage; those arrays were emptied
+  // when the demo records were purged, so by the end it seeded nothing while
+  // still looking like a working control.
 
   const applyPermissionTemplate = (templateName: string) => {
     const template = PERMISSION_TEMPLATES[templateName];
     if (template) {
       setModPermissions({ ...template.permissions });
-      setModRole(template.role);
+      /**
+       * `template.role` is NOT set here any more.
+       *
+       * It holds display prose ("Investigation Officer"), and this used to
+       * overwrite `modRole` with it — which the drawer then posted as
+       * `dashboardRole`, guaranteeing an "Unknown role" rejection. Applying a
+       * template fills the module grid it is for; the role stays whatever the
+       * reviewer chose in the role dropdown.
+       */
     }
   };
 
   // Approval flow handler
-  const handleApproveApp = async (app: OfficerApplication) => {
+  const handleApproveApp = async (app: AdminApplicationRow) => {
     setIsConfirmingApproval(true);
   };
 
-  const executeApproveApp = async (app: OfficerApplication) => {
-    const approvedName = `${modFirstName} ${modLastName}`.trim() || app.name;
+  /**
+   * Approve an application.
+   *
+   * One route now does the whole job — /api/admin/approve-registration creates
+   * the Employee row, allocates the KGID, binds the OfficerAccount, sets the
+   * Firebase claims and appends the audit entry. The version this replaced
+   * called an API and then wrote three Firestore documents from the browser to
+   * patch up what the API had not done, with a localStorage "sandbox" fallback
+   * underneath that silently pretended the approval had worked when it had not.
+   *
+   * Posting details are sent as FK ids. `Employee` stores DistrictID / UnitID /
+   * RankID, so a free-typed station name could not be saved and used to be
+   * dropped on the floor.
+   */
+  const executeApproveApp = async (app: AdminApplicationRow) => {
     setActionLoading(true);
+    setAdminNotice(null);
     try {
-      const res = await fetch("/api/admin/approve-officer", {
+      const res = await fetch("/api/admin/approve-registration", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          applicationId: app.id,
-          email: modEmail.trim() || app.email,
-          name: approvedName,
-          rank: modRank || app.rank,
-          district: modDistrict || app.district,
-          station: modStation || app.station,
-          badgeId: app.badgeId,
-          mobile: modMobile || app.mobile,
-          requestedAccess: app.requestedAccess,
+          uid: app.id,
+          dashboardRole: modRole,
+          isdLevel: modSecurityClearance,
+          rankId: modRankId ? Number(modRankId) : null,
+          designationId: modDesignationId ? Number(modDesignationId) : null,
+          districtId: modDistrictId ? Number(modDistrictId) : null,
+          unitId: modUnitId ? Number(modUnitId) : null,
+          reason: modInternalRemarks || undefined,
           adminName: officerProfile?.name || "Command Administrator",
-          
-          assignedRole: modRole,
-          permissions: modPermissions,
-          division: modDivision,
-          stateUnit: modStateUnit,
-          department: modDepartment,
-          reportingOfficer: modReportingOfficer,
-          supervisor: modSupervisor,
-          departmentHead: modDepartmentHead,
-          commandingOfficer: modCommandingOfficer,
-          status: modStatus === "pending" ? "active" : modStatus
-        })
+        }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Approval API returned error");
+      if (!res.ok || !data.success) throw new Error(data.error || `Approval failed (${res.status})`);
 
-      // Also update application status in Firestore
-      const appDocRef = doc(db, "officer_applications", app.id);
-      await setDoc(appDocRef, {
-        status: modStatus === "pending" ? "active" : modStatus,
-        approvedAt: new Date().toISOString(),
-        firstName: modFirstName,
-        lastName: modLastName,
-        name: approvedName,
-        rank: modRank,
-        district: modDistrict,
-        station: modStation,
-        mobile: modMobile,
-        email: modEmail,
-        
-        assignedRole: modRole,
-        permissions: modPermissions,
-        division: modDivision,
-        stateUnit: modStateUnit,
-        department: modDepartment,
-        reportingOfficer: modReportingOfficer,
-        supervisor: modSupervisor,
-        departmentHead: modDepartmentHead,
-        commandingOfficer: modCommandingOfficer,
-        securityClearance: modSecurityClearance,
-        timeline: [
-          ...(app.timeline || []),
-          { status: modStatus === "pending" ? "active" : modStatus, date: new Date().toISOString(), remarks: `Application approved by ${officerProfile?.name || "Command Administrator"}.` }
-        ]
-      }, { merge: true });
-
-      // Add to officer collection
-      const officerDocRef = doc(db, "officers", app.id);
-      await setDoc(officerDocRef, {
-        uid: app.id,
-        name: approvedName,
-        badgeId: app.badgeId,
-        email: modEmail || app.email,
-        rank: modRank || app.rank,
-        role: modRole,
-        district: modDistrict || app.district,
-        station: modStation || app.station,
-        clearanceLevel: modSecurityClearance || "ISD-LEVEL-IV",
-        active: modStatus === "suspended" || modStatus === "inactive" || modStatus === "rejected" ? false : true,
-        lastLogin: new Date().toISOString(),
-        mobile: modMobile || app.mobile,
-        approvedAt: new Date().toISOString(),
-        photoUrl: app.photoUrl || "",
-        
-        division: modDivision,
-        stateUnit: modStateUnit,
-        department: modDepartment,
-        reportingOfficer: modReportingOfficer,
-        supervisor: modSupervisor,
-        departmentHead: modDepartmentHead,
-        commandingOfficer: modCommandingOfficer,
-        permissions: modPermissions,
-        status: modStatus === "pending" ? "active" : modStatus
-      }, { merge: true });
-
-      alert(data.message || "Officer approved and credentials registered.");
+      setAdminNotice({
+        kind: "success",
+        text:
+          data.message +
+          // The KGID is auto-serial, so there is nothing to warn about — the
+          // useful thing to say is which provisional id it replaced, so an
+          // administrator can connect the approval to the application they
+          // were reviewing a moment ago.
+          (data.previousKgid ? ` (was ${data.previousKgid} while under review)` : ""),
+      });
       setIsDrawerOpen(false);
+      setIsConfirmingApproval(false);
       await loadAdminData();
     } catch (err: any) {
-      console.warn("Approval API failed. Applying to local sandbox instead.", err);
-      
-      const currentApps = getLocalData<OfficerApplication[]>("orca_applications", MOCK_OFFICER_APPLICATIONS);
-      const updatedApps = currentApps.map(a => a.id === app.id ? { 
-        ...a, 
-        status: (modStatus === "pending" ? "active" : modStatus) as any, 
-        firstName: modFirstName,
-        lastName: modLastName,
-        name: approvedName,
-        rank: modRank,
-        district: modDistrict,
-        station: modStation,
-        mobile: modMobile,
-        email: modEmail,
-        requestedAccess: modRequestedAccess,
-        securityClearance: modSecurityClearance,
-        assignedRole: modRole,
-        permissions: modPermissions,
-        division: modDivision,
-        stateUnit: modStateUnit,
-        department: modDepartment,
-        reportingOfficer: modReportingOfficer,
-        supervisor: modSupervisor,
-        departmentHead: modDepartmentHead,
-        commandingOfficer: modCommandingOfficer,
-        timeline: [
-          ...(a.timeline || []),
-          { status: modStatus === "pending" ? "active" : modStatus, date: new Date().toISOString(), remarks: `Application approved by ${officerProfile?.name || "Command Administrator"} (Sandbox).` }
-        ]
-      } : a);
-      setLocalData("orca_applications", updatedApps);
-      
-      const currentOfficers = getLocalData<any[]>("orca_officers", MOCK_OFFICERS);
-      const existingIndex = currentOfficers.findIndex(o => o.uid === app.id);
-      const newOfficer = {
-        uid: app.id,
-        name: approvedName,
-        badgeId: app.badgeId,
-        email: modEmail || app.email,
-        rank: modRank || app.rank,
-        role: modRole,
-        district: modDistrict || app.district,
-        station: modStation || app.station,
-        clearanceLevel: modSecurityClearance || "ISD-LEVEL-IV",
-        active: modStatus === "suspended" || modStatus === "inactive" || modStatus === "rejected" ? false : true,
-        lastLogin: new Date().toISOString(),
-        mobile: modMobile || app.mobile,
-        approvedAt: new Date().toISOString(),
-        photoUrl: app.photoUrl || "",
-        
-        division: modDivision,
-        stateUnit: modStateUnit,
-        department: modDepartment,
-        reportingOfficer: modReportingOfficer,
-        supervisor: modSupervisor,
-        departmentHead: modDepartmentHead,
-        commandingOfficer: modCommandingOfficer,
-        permissions: modPermissions,
-        status: modStatus === "pending" ? "active" : modStatus
-      };
-      
-      if (existingIndex > -1) {
-        currentOfficers[existingIndex] = newOfficer;
-      } else {
-        currentOfficers.push(newOfficer);
-      }
-      setLocalData("orca_officers", currentOfficers);
-      
-      const currentLogs = getLocalData<any[]>("orca_audit_logs", MOCK_AUDIT_LOGS);
-      currentLogs.unshift({
-        timestamp: new Date().toISOString(),
-        officer: officerProfile?.name || "Command Administrator",
-        action: `[Sandbox] Approved and registered officer: ${approvedName} (${app.badgeId}) under Role: ${modRole}`,
-        module: "Officer Applications",
-        ipAddress: "127.0.0.1 (Local)",
-        status: "Success"
-      });
-      setLocalData("orca_audit_logs", currentLogs);
-      
-      alert(`Officer ${approvedName} successfully approved and provisioned in local sandbox mode.`);
-      setIsDrawerOpen(false);
-      await loadAdminData();
+      // No sandbox fallback. If the approval did not reach the database, the
+      // administrator has to know that — the previous code showed a success
+      // alert either way.
+      setAdminNotice({ kind: "error", text: err?.message || "Approval failed." });
     } finally {
       setActionLoading(false);
     }
   };
 
   // Rejection flow handler
-  const handleRejectApp = async (app: OfficerApplication) => {
-    const reason = prompt(`Enter rejection reason for ${app.name}:`, "Incomplete police station verification record.");
-    if (reason === null) return; // cancel
+  const handleRejectApp = async (app: AdminApplicationRow) => {
+    const reason = prompt(`Enter rejection reason for ${app.name}:`, "");
+    if (reason === null) return;
+    if (!reason.trim()) {
+      setAdminNotice({ kind: "error", text: "A rejection reason is required." });
+      return;
+    }
     setActionLoading(true);
+    setAdminNotice(null);
     try {
-      const res = await fetch("/api/admin/reject-officer", {
+      const res = await fetch("/api/admin/reject-registration", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          applicationId: app.id,
-          email: app.email,
-          name: app.name,
-          reason: reason,
-          adminName: officerProfile?.name || "Command Administrator"
-        })
+          uid: app.id,
+          reason: reason.trim(),
+          adminName: officerProfile?.name || "Command Administrator",
+        }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Rejection API returned error");
+      if (!res.ok || !data.success) throw new Error(data.error || `Rejection failed (${res.status})`);
 
-      alert(data.message || "Officer application status marked as rejected.");
+      setAdminNotice({ kind: "success", text: data.message });
       setIsDrawerOpen(false);
       await loadAdminData();
     } catch (err: any) {
-      console.warn("Rejection API failed. Applying to local sandbox instead.", err);
-      
-      const currentApps = getLocalData<OfficerApplication[]>("orca_applications", MOCK_OFFICER_APPLICATIONS);
-      const updatedApps = currentApps.map(a => a.id === app.id ? { ...a, status: "rejected" as const, remarks: reason } : a);
-      setLocalData("orca_applications", updatedApps);
-      
-      const currentLogs = getLocalData<any[]>("orca_audit_logs", MOCK_AUDIT_LOGS);
-      currentLogs.unshift({
-        timestamp: new Date().toISOString(),
-        officer: officerProfile?.name || "Command Administrator",
-        action: `[Sandbox] Rejected officer application: ${app.name} (${app.badgeId}). Reason: ${reason}`,
-        module: "Officer Applications",
-        ipAddress: "127.0.0.1 (Local)",
-        status: "Success"
-      });
-      setLocalData("orca_audit_logs", currentLogs);
-      
-      alert(`Officer application status marked as rejected in local sandbox mode.`);
-      setIsDrawerOpen(false);
-      await loadAdminData();
+      setAdminNotice({ kind: "error", text: err?.message || "Rejection failed." });
     } finally {
       setActionLoading(false);
     }
@@ -925,135 +810,81 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
   const handleSaveReview = async () => {
     if (!selectedApp) return;
     setActionLoading(true);
-    
-    // Construct updated application object with modified fields
-    const updatedApp = {
-      ...selectedApp,
-      firstName: modFirstName,
-      lastName: modLastName,
-      name: `${modFirstName} ${modLastName}`.trim(),
-      rank: modRank,
-      station: modStation,
-      district: modDistrict,
-      mobile: modMobile,
-      email: modEmail,
-      requestedAccess: modRequestedAccess,
-      internalRemarks: modInternalRemarks,
-      remarks: modInternalRemarks, // keep compatible
-      priority: modPriority,
-      assignedReviewer: modAssignedReviewer,
-      securityClearance: modSecurityClearance,
-      clearanceLevel: modSecurityClearance, // keep compatible
-      bgVerification: modBgVerification,
-      deptVerification: modDeptVerification,
-      supervisorApproval: modSupervisorApproval,
-      status: modStatus as any,
-      timeline: [
-        ...(selectedApp.timeline || []),
-        { status: modStatus, date: new Date().toISOString(), remarks: `Review checkpoints updated by ${officerProfile?.name || "Command Administrator"}.` }
-      ]
-    };
-
+    setAdminNotice(null);
     try {
-      // Try Firestore write
-      const appDocRef = doc(db, "officer_applications", selectedApp.id);
-      await setDoc(appDocRef, updatedApp, { merge: true });
-      
-      // Also update the officers table status if status changed in save
-      const officerDocRef = doc(db, "officers", selectedApp.id);
-      await setDoc(officerDocRef, {
-        name: `${modFirstName} ${modLastName}`.trim(),
-        rank: modRank,
-        station: modStation,
-        district: modDistrict,
-        mobile: modMobile,
-        email: modEmail,
-        requestedAccess: modRequestedAccess,
-        clearanceLevel: modSecurityClearance,
-        active: modStatus === "approved"
-      }, { merge: true });
-
-      await addDoc(collection(db, "audit_logs"), {
-        timestamp: new Date().toISOString(),
-        officer: officerProfile?.name || "Command Administrator",
-        action: `Saved review parameters for applicant: ${selectedApp.name}`,
-        module: "Officer Applications",
-        ipAddress: "10.0.12.94",
-        status: "Success"
+      const res = await fetch("/api/admin/application", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          uid: selectedApp.id,
+          fullName: `${modFirstName} ${modLastName}`.trim(),
+          mobile: modMobile,
+          rankId: modRankId ? Number(modRankId) : null,
+          designationId: modDesignationId ? Number(modDesignationId) : null,
+          districtId: modDistrictId ? Number(modDistrictId) : null,
+          unitId: modUnitId ? Number(modUnitId) : null,
+          requestedAccess: modRequestedAccess,
+          remarks: modInternalRemarks,
+          reason: "Review parameters saved from the admin console.",
+        }),
       });
-
-      alert("Application review progress saved successfully.");
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || `Save failed (${res.status})`);
+      setAdminNotice({ kind: "success", text: "Review progress saved." });
       await loadAdminData();
     } catch (err: any) {
-      console.warn("Firestore save review failed. Saving locally.", err);
-      // Fallback local storage update
-      const currentApps = getLocalData<OfficerApplication[]>("orca_applications", MOCK_OFFICER_APPLICATIONS);
-      const updatedApps = currentApps.map(a => a.id === selectedApp.id ? updatedApp : a);
-      setLocalData("orca_applications", updatedApps);
-
-      const currentOfficers = getLocalData<any[]>("orca_officers", MOCK_OFFICERS);
-      const updatedOfficers = currentOfficers.map(o => o.uid === selectedApp.id ? {
-        ...o,
-        name: `${modFirstName} ${modLastName}`.trim(),
-        rank: modRank,
-        station: modStation,
-        district: modDistrict,
-        mobile: modMobile,
-        email: modEmail,
-        requestedAccess: modRequestedAccess,
-        clearanceLevel: modSecurityClearance,
-        active: modStatus === "approved"
-      } : o);
-      setLocalData("orca_officers", updatedOfficers);
-      
-      alert("Application review progress saved successfully in local browser sandbox.");
-      await loadAdminData();
+      setAdminNotice({ kind: "error", text: err?.message || "Could not save the review." });
     } finally {
       setActionLoading(false);
     }
   };
 
-  // Request additional verification document information
+  /**
+   * Ask the applicant for more documents.
+   *
+   * The status moves to `awaiting` and the request is appended to the reviewer
+   * remarks. NOTE: nothing notifies the applicant — the old code showed
+   * "applicant notified", and no message was ever sent. The status change is
+   * real; the notification is not, so it is no longer claimed.
+   */
   const handleRequestInfo = async () => {
     if (!selectedApp) return;
-    const reqRemarks = prompt("Enter description of documents or information requested from the officer:", "Require certified service book extract or command verification note.");
+    const reqRemarks = prompt(
+      "Describe the documents or information required from the officer:",
+      ""
+    );
     if (reqRemarks === null) return;
+    if (!reqRemarks.trim()) {
+      setAdminNotice({ kind: "error", text: "Describe what is being requested." });
+      return;
+    }
     setActionLoading(true);
-
-    const updatedApp = {
-      ...selectedApp,
-      status: "awaiting" as const,
-      internalRemarks: modInternalRemarks + `\n[Info Request]: ${reqRemarks}`,
-      timeline: [
-        ...(selectedApp.timeline || []),
-        { status: "awaiting", date: new Date().toISOString(), remarks: `Additional Info Requested: ${reqRemarks}` }
-      ]
-    };
-
+    setAdminNotice(null);
     try {
-      const appDocRef = doc(db, "officer_applications", selectedApp.id);
-      await setDoc(appDocRef, updatedApp, { merge: true });
-
-      await addDoc(collection(db, "audit_logs"), {
-        timestamp: new Date().toISOString(),
-        officer: officerProfile?.name || "Command Administrator",
-        action: `Requested additional info for applicant: ${selectedApp.name}`,
-        module: "Officer Applications",
-        ipAddress: "10.0.12.94",
-        status: "Success"
+      const combined = [modInternalRemarks, `[Info requested] ${reqRemarks.trim()}`]
+        .filter(Boolean)
+        .join("\n");
+      const res = await fetch("/api/admin/application", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          uid: selectedApp.id,
+          status: "awaiting",
+          remarks: combined,
+          reason: `Additional information requested: ${reqRemarks.trim()}`,
+        }),
       });
-      alert("Application marked as 'Awaiting Documents' and applicant notified.");
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || `Request failed (${res.status})`);
+      setModInternalRemarks(combined);
+      setAdminNotice({
+        kind: "success",
+        text: "Marked as awaiting documents. The applicant is not notified automatically — contact them separately.",
+      });
       setIsDrawerOpen(false);
       await loadAdminData();
-    } catch (err) {
-      console.warn("Firestore request info failed. Saving locally.", err);
-      const currentApps = getLocalData<OfficerApplication[]>("orca_applications", MOCK_OFFICER_APPLICATIONS);
-      const updatedApps = currentApps.map(a => a.id === selectedApp.id ? updatedApp : a);
-      setLocalData("orca_applications", updatedApps);
-
-      alert("Application marked as 'Awaiting Documents' in local sandbox.");
-      setIsDrawerOpen(false);
-      await loadAdminData();
+    } catch (err: any) {
+      setAdminNotice({ kind: "error", text: err?.message || "Could not update the application." });
     } finally {
       setActionLoading(false);
     }
@@ -1170,7 +1001,7 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
   };
 
   // Generate official approval/rejection printable letter window
-  const generateDossierLetter = (app: OfficerApplication, type: "approval" | "rejection") => {
+  const generateDossierLetter = (app: AdminApplicationRow, type: "approval" | "rejection") => {
     const printWindow = window.open("", "_blank");
     if (!printWindow) return;
     
@@ -1239,7 +1070,8 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
     setEditProfileEmail(off.email || "");
     setEditProfileDistrict(off.district || "");
     setEditProfileStation(off.station || "");
-    setEditProfileClearance(off.clearanceLevel || "ISD-LEVEL-IV");
+    // No default clearance — a blank record shows blank, not Field Officer.
+    setEditProfileClearance(off.clearanceLevel || "");
     setEditProfileMobile(off.mobile || off.phone || "");
     setEditProfileActive(off.active ?? true);
     setIsEditingProfile(true);
@@ -1247,136 +1079,109 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
 
   const handleSaveProfileEdit = async () => {
     if (!activeOfficerProfile) return;
+    const targetId = activeOfficerProfile.uid;
+    if (!targetId) {
+      setAdminNotice({ kind: "error", text: "Officer UID not found — cannot save." });
+      return;
+    }
     setActionLoading(true);
+    setAdminNotice(null);
     try {
-      const targetId = activeOfficerProfile.uid || activeOfficerProfile.id;
-      if (!targetId) throw new Error("Officer ID not found — cannot save.");
-
-      const updateData = {
-        name: editProfileName,
-        rank: editProfileRank,
-        email: editProfileEmail,
-        district: editProfileDistrict,
-        station: editProfileStation,
-        policeStation: editProfileStation,
-        clearanceLevel: editProfileClearance,
-        isdLevel: editProfileClearance,
-        mobile: editProfileMobile,
-        phone: editProfileMobile,
-        active: editProfileActive,
-        updatedAt: new Date().toISOString()
-      };
-
-      // Update Firestore /officers
-      await setDoc(doc(db, "officers", targetId), updateData, { merge: true });
-      // Also update /users so login data stays in sync
-      try {
-        await setDoc(doc(db, "users", targetId), updateData, { merge: true });
-      } catch (usrErr) {
-        console.warn("[users sync skipped]:", usrErr);
-      }
-
-      // Update local state instantly
-      setOfficers((prev: any[]) =>
-        prev.map(o => (o.uid || o.id) === targetId ? { ...o, ...updateData } : o)
-      );
-      setActiveOfficerProfile((prev: any) => prev ? { ...prev, ...updateData } : null);
-
-      // Audit log
-      try {
-        await addDoc(collection(db, "audit_logs"), {
-          timestamp: new Date().toISOString(),
-          officer: officerProfile?.name || "Command Administrator",
-          action: `Edited profile for Officer: ${editProfileName} (Badge: ${activeOfficerProfile.badgeId || targetId})`,
-          module: "Officer Directory",
-          status: "success",
-          ip: "10.10.42.1"
-        });
-      } catch (logErr) {
-        console.warn("[audit log skipped]:", logErr);
-      }
+      const res = await fetch("/api/admin/officer", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          uid: targetId,
+          name: editProfileName,
+          email: editProfileEmail,
+          mobile: editProfileMobile,
+          // clearanceLevel is NOT sent: it follows the role, and posting it
+          // alone is refused by the route. This drawer edits identity and
+          // posting details; role changes belong in Roles & Permissions.
+          rankId: editProfileRankId ? Number(editProfileRankId) : null,
+          districtId: editProfileDistrictId ? Number(editProfileDistrictId) : null,
+          unitId: editProfileUnitId ? Number(editProfileUnitId) : null,
+          active: editProfileActive,
+          reason: "Officer profile edited from the directory.",
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || `Save failed (${res.status})`);
 
       setIsEditingProfile(false);
-      alert(`✅ Profile for "${editProfileName}" saved successfully!`);
+      setActiveOfficerProfile(null);
+      setAdminNotice({ kind: "success", text: `Profile saved for ${editProfileName}.` });
+      // Re-read rather than patching local state: the server joins the posting
+      // names back out of the reference tables, and guessing them here is how
+      // the card and the record drift apart.
+      await loadAdminData();
     } catch (err: any) {
-      console.error("[Save Profile Error]:", err);
-      alert("❌ Error saving profile: " + (err.message || "Unknown error"));
+      setAdminNotice({ kind: "error", text: err?.message || "Could not save the profile." });
     } finally {
       setActionLoading(false);
     }
   };
 
-  // Toggle Toggle-Status for Officer Directory Entries
+  // Suspend / reactivate an officer. Never deletes: cases and custody rows name
+  // the Employee record, and the chain of custody has to stay attributable.
   const handleToggleOfficerStatus = async (off: any) => {
     const nextActiveState = !off.active;
-    if (!confirm(`Are you sure you want to ${nextActiveState ? "Activate" : "Suspend"} Officer ${off.name}?`)) return;
+    if (!confirm(`${nextActiveState ? "Reactivate" : "Suspend"} ${off.name}?`)) return;
     setActionLoading(true);
+    setAdminNotice(null);
     try {
-      await setDoc(doc(db, "officers", off.uid), { active: nextActiveState }, { merge: true });
-      await addDoc(collection(db, "audit_logs"), {
-        timestamp: new Date().toISOString(),
-        officer: officerProfile?.name || "Command Administrator",
-        action: `${nextActiveState ? "Activated" : "Suspended"} account: ${off.name} (${off.badgeId})`,
-        module: "Officer Directory",
-        ipAddress: "10.0.12.94",
-        status: "Success"
+      const res = await fetch("/api/admin/officer", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          uid: off.uid,
+          active: nextActiveState,
+          reason: `${nextActiveState ? "Reactivated" : "Suspended"} from the officer directory.`,
+        }),
       });
-      alert(`Officer ${off.name} successfully ${nextActiveState ? "activated" : "suspended"}.`);
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || `Update failed (${res.status})`);
+      setAdminNotice({
+        kind: "success",
+        text: `${off.name} ${nextActiveState ? "reactivated" : "suspended"}.`,
+      });
       await loadAdminData();
     } catch (err: any) {
-      alert("Failed to adjust officer status: " + err.message);
+      setAdminNotice({ kind: "error", text: err?.message || "Could not change the account status." });
     } finally {
       setActionLoading(false);
     }
   };
 
   // RBAC Permission change toggling
-  const handlePermissionToggle = (role: string, permission: string) => {
-    setRbacPermissions(prev => {
-      const activePerms = prev[role] || [];
-      const updatedPerms = activePerms.includes(permission)
-        ? activePerms.filter(p => p !== permission)
-        : [...activePerms, permission];
-      return { ...prev, [role]: updatedPerms };
-    });
-  };
-
-  // Save Settings handler
-  const handleSaveSettings = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!systemSettings) return;
+  /**
+   * Save system settings.
+   *
+   * This used to be `setTimeout(1200)` followed by "System settings saved
+   * successfully." Nothing was written; reloading reverted everything. It now
+   * PUTs to /api/admin/settings, which persists to the SystemSetting table and
+   * writes one audit row per changed value.
+   */
+  const handleSaveSettings = async (e?: React.FormEvent) => {
+    e?.preventDefault();
     setActionLoading(true);
+    setAdminNotice(null);
     try {
-      await saveSystemSettings(systemSettings);
-      setSettingsSuccess(true);
-      setTimeout(() => setSettingsSuccess(false), 3000);
-      
-      // Log Settings Change
-      await addDoc(collection(db, "audit_logs"), {
-        timestamp: new Date().toISOString(),
-        officer: officerProfile?.name || "Command Administrator",
-        action: "Updated O.R.C.A Admin System Settings",
-        module: "Settings",
-        ipAddress: "10.0.12.94",
-        status: "Success"
+      const res = await fetch("/api/admin/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ settings: settingsDraft }),
       });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || `Save failed (${res.status})`);
+      setSettingsDraft(data.settings || settingsDraft);
+      setModelInfo(null);   // its `runtime` block is now stale
+      setSettingsSuccess(true);
+      setTimeout(() => setSettingsSuccess(false), 4000);
+      setAdminNotice({ kind: "success", text: data.message });
+      await loadAdminData();
     } catch (err: any) {
-      console.warn("Firestore save settings failed due to permissions. Saving to sandbox.", err);
-      setLocalData("orca_settings", systemSettings);
-      
-      const currentLogs = getLocalData<any[]>("orca_audit_logs", MOCK_AUDIT_LOGS);
-      currentLogs.unshift({
-        timestamp: new Date().toISOString(),
-        officer: officerProfile?.name || "Command Administrator",
-        action: "[Sandbox] Updated O.R.C.A Admin System Settings",
-        module: "Settings",
-        ipAddress: "127.0.0.1 (Local)",
-        status: "Success"
-      });
-      setLocalData("orca_audit_logs", currentLogs);
-      
-      setSettingsSuccess(true);
-      setTimeout(() => setSettingsSuccess(false), 3000);
+      setAdminNotice({ kind: "error", text: err?.message || "Could not save system settings." });
     } finally {
       setActionLoading(false);
     }
@@ -1390,7 +1195,6 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
     const rankToUse = app.rank || "";
     const districtToUse = app.district || "";
     const stationToUse = app.station || "";
-    const reviewerToUse = app.assignedReviewer || "";
     const accessToUse = app.requestedAccess || "";
     const statusToUse = app.status || "";
 
@@ -1410,9 +1214,10 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
     const matchesStation = appStationFilter === "ALL" || stationToUse.toLowerCase().includes(stationFilterStr);
     const matchesStatus = appStatusFilter === "ALL" || statusToUse === appStatusFilter;
     const matchesAccess = appAccessFilter === "ALL" || accessToUse === appAccessFilter;
-    const matchesReviewer = appReviewerFilter === "ALL" || reviewerToUse.toLowerCase().includes(reviewerFilterStr);
-
-    return matchesSearch && matchesRank && matchesDistrict && matchesStation && matchesStatus && matchesAccess && matchesReviewer;
+    // Reviewer filter dropped: OfficerApplication records who REVIEWED an
+    // application (ReviewedBy), not who it is assigned to. There is no
+    // assignment concept, so filtering by assignee filtered by nothing.
+    return matchesSearch && matchesRank && matchesDistrict && matchesStation && matchesStatus && matchesAccess;
   });
 
   // Sort application arrays
@@ -1426,11 +1231,13 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
     if (appSortBy === "name") {
       return (a.name || "").localeCompare(b.name || "");
     }
-    if (appSortBy === "priority") {
-      const priorityWeight = { HIGH: 3, MEDIUM: 2, LOW: 1 };
-      const wA = priorityWeight[a.priority as "HIGH" | "MEDIUM" | "LOW"] || 0;
-      const wB = priorityWeight[b.priority as "HIGH" | "MEDIUM" | "LOW"] || 0;
-      return wB - wA;
+    if (appSortBy === "waiting") {
+      // Longest-waiting first. This replaced a "priority" sort: the field it
+      // read was never written by registration, so every application carried
+      // the same MEDIUM and the sort did nothing.
+      const pending = (x: AdminApplicationRow) => (x.status === "pending" ? 1 : 0);
+      if (pending(a) !== pending(b)) return pending(b) - pending(a);
+      return new Date(a.submittedAt || 0).getTime() - new Date(b.submittedAt || 0).getTime();
     }
     return 0;
   });
@@ -1458,268 +1265,230 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
 
   // Filter Audit Logs
   const filteredAuditLogs = auditLogs.filter(log => {
-    const officerStr = (log.officer || "").toLowerCase();
-    const actionStr = (log.action || "").toLowerCase();
     const query = (auditSearch || "").toLowerCase();
-
-    const matchesSearch = officerStr.includes(query) || actionStr.includes(query);
-    const matchesModule = auditModuleFilter === "ALL" || log.module === auditModuleFilter;
-    return matchesSearch && matchesModule;
+    const haystack = [
+      log.changedBy, log.changeType, log.reason, log.oldValue, log.newValue,
+      prettyChangeType(log.changeType),
+    ].join(" ").toLowerCase();
+    // `module` was a Firestore field; OfficerAuditLog groups by ChangeType,
+    // which is the thing that actually varies between entries.
+    const matchesModule = auditModuleFilter === "ALL" || log.changeType === auditModuleFilter;
+    return haystack.includes(query) && matchesModule;
   });
 
   // Filter Verifications
-  const filteredVerifications = verifications.filter(v => {
-    const docNameStr = (v.documentName || "").toLowerCase();
-    const verIdStr = (v.verificationId || "").toLowerCase();
-    const verByStr = (v.verifiedBy || "").toLowerCase();
+  const filteredVerifications = verifications.filter((v: any) => {
     const query = (verSearch || "").toLowerCase();
+    const haystack = [v.verificationId, v.crimeNo, v.issuedBy, v.documentHash]
+      .join(" ").toLowerCase();
+    const matchesStatus =
+      verStatusFilter === "ALL" ||
+      (verStatusFilter === "scanned" ? v.scanCount > 0 : v.scanCount === 0);
+    return haystack.includes(query) && matchesStatus;
+  });
 
-    const matchesSearch = docNameStr.includes(query) ||
-                          verIdStr.includes(query) ||
-                          verByStr.includes(query);
-    const matchesStatus = verStatusFilter === "ALL" || v.status === verStatusFilter;
-    return matchesSearch && matchesStatus;
+  /**
+   * AI queries after search and filters.
+   *
+   * The search covers the ANSWER as well as the question: a monitoring console
+   * whose search cannot reach what the model said would miss the thing most
+   * worth finding.
+   */
+  const aiVisible = admin.aiQueries.filter((c: any) => {
+    const q = aiSearch.trim().toLowerCase();
+    if (q && ![c.officer, c.badge, c.query, c.response, c.module].join(" ").toLowerCase().includes(q)) {
+      return false;
+    }
+    if (aiOfficerFilter !== "ALL" && c.officer !== aiOfficerFilter) return false;
+    if (aiStatusFilter === "FLAGGED" && c.flags.length === 0) return false;
+    if (aiStatusFilter === "FAILED" && c.outcome !== "ERROR") return false;
+    if (aiStatusFilter === "ATTACHMENT" && !c.hadAttachment) return false;
+    return true;
   });
 
   // Unique lists for dropdowns
   const uniqueDistricts = Array.from(new Set(officers.map(o => o.district).filter(Boolean)));
-  const uniqueModules = Array.from(new Set(auditLogs.map(l => l.module).filter(Boolean)));
+  const uniqueModules = Array.from(new Set(auditLogs.map(l => l.changeType).filter(Boolean)));
 
-  // Show Loading Skeleton
-  if (loading) {
+  // The first read only. Subsequent refreshes leave the screen in place and
+  // let the individual panels say they are reloading — the old code returned
+  // this spinner INSTEAD of the console on every tab change, because the fetch
+  // was keyed on the active tab.
+  if (loading && !admin.officers.length && !admin.applications.length) {
     return (
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "400px", color: ADMIN_THEME.textSecondary }}>
         <Loader2 style={{ width: 40, height: 40, animation: "spin 1s linear infinite", color: ADMIN_THEME.accentGold, marginBottom: 12 }} />
-        <span style={{ fontSize: 13, fontFamily: "JetBrains Mono, monospace" }}>SYNCHRONIZING WITH IS SECURE LEDGER NODE...</span>
+        <span style={{ fontSize: 13, fontFamily: "JetBrains Mono, monospace" }}>READING THE CATALYST LEDGER...</span>
       </div>
     );
   }
 
   return (
     <div style={{ color: ADMIN_THEME.textPrimary, animation: "fadeIn 0.3s ease" }}>
+
+      {/* Catalyst unreachable, or the officer tables absent. Said plainly
+          rather than rendering an empty directory that looks like a department
+          with no officers in it. */}
+      {(!admin.configured || adminError || admin.officersUnavailable) && (
+        <div style={{
+          background: "rgba(239,68,68,0.06)", border: `1px solid ${ADMIN_THEME.red}55`,
+          borderRadius: 8, padding: "12px 16px", marginBottom: 18,
+          display: "flex", gap: 10, alignItems: "flex-start",
+        }}>
+          <AlertTriangle style={{ width: 16, height: 16, color: ADMIN_THEME.red, flexShrink: 0, marginTop: 2 }} />
+          <div style={{ fontSize: 12, color: ADMIN_THEME.textPrimary, lineHeight: 1.5 }}>
+            <strong>Administrative data could not be read in full.</strong>{" "}
+            {adminError || admin.officersUnavailable || "Catalyst is not connected."}{" "}
+            Figures on this screen may be incomplete — they are not zero.
+          </div>
+        </div>
+      )}
+
+      {/* One notice strip for the whole console, replacing ~20 alert() calls. */}
+      {adminNotice && (
+        <div style={{
+          background: adminNotice.kind === "success" ? "#ecfdf5" : "rgba(239,68,68,0.06)",
+          border: `1px solid ${adminNotice.kind === "success" ? ADMIN_THEME.green : ADMIN_THEME.red}`,
+          color: adminNotice.kind === "success" ? "#065f46" : "#991b1b",
+          borderRadius: 8, padding: "12px 16px", marginBottom: 18,
+          display: "flex", gap: 10, alignItems: "flex-start", fontSize: 12.5, lineHeight: 1.5,
+        }}>
+          {adminNotice.kind === "success"
+            ? <Check style={{ width: 16, height: 16, flexShrink: 0, marginTop: 1 }} />
+            : <AlertTriangle style={{ width: 16, height: 16, flexShrink: 0, marginTop: 1 }} />}
+          <div style={{ flex: 1 }}>{adminNotice.text}</div>
+          <button
+            onClick={() => setAdminNotice(null)}
+            style={{ background: "none", border: "none", cursor: "pointer", color: "inherit", padding: 0, lineHeight: 1 }}
+            aria-label="Dismiss"
+          >
+            <X style={{ width: 15, height: 15 }} />
+          </button>
+        </div>
+      )}
       
       {/* 1. ADMIN DASHBOARD */}
       {adminTab === "admin-dashboard" && (
         <div>
           {/* Header */}
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24, gap: 16, flexWrap: "wrap" }}>
             <div>
-              <h1 style={{ fontSize: 24, fontWeight: 800, color: ADMIN_THEME.textPrimary, letterSpacing: "-0.02em" }}>Command Operations Console</h1>
-              <p style={{ fontSize: 13, color: ADMIN_THEME.textSecondary }}>Administrative Security Core & Directory Management Panel</p>
+              <h1 style={{ fontSize: 22, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>Command Operations Console</h1>
+              <p style={{ fontSize: 13, color: ADMIN_THEME.textSecondary }}>Administrative security core and directory management</p>
             </div>
             <button
-              onClick={handleSeedDatabase}
-              disabled={actionLoading}
+              onClick={() => loadAdminData()}
+              disabled={loading}
               style={{
-                background: ADMIN_THEME.blue,
-                color: "white",
-                padding: "6px 14px",
-                borderRadius: 4,
-                fontWeight: 600,
-                fontSize: 12,
-                cursor: "pointer",
-                border: "none",
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                boxShadow: ADMIN_THEME.shadow
+                background: "#fff", color: ADMIN_THEME.textPrimary,
+                padding: "7px 14px", borderRadius: 6, fontWeight: 600, fontSize: 12,
+                cursor: loading ? "default" : "pointer", border: `1px solid ${ADMIN_THEME.border}`,
+                display: "flex", alignItems: "center", gap: 8,
               }}
             >
-              <Database style={{ width: 14, height: 14 }} />
-              {seedSuccess ? "Database Initialized!" : "Seed Security Data"}
+              <History style={{ width: 14, height: 14 }} />
+              {loading ? "Reading…" : "Refresh"}
             </button>
           </div>
 
-          {/* KPI CARDS GRID */}
+          {/*
+            KPI CARDS — every figure below is counted from a Catalyst table.
+            Four of the old cards were removed rather than rewired, because
+            nothing in the platform measures them:
+              · "System Health 99.9%"   — a literal, no health check exists
+              · "API Status ONLINE"     — a literal, nothing was polled
+              · "Storage Usage"         — officers×0.12 + apps×0.25 + …, invented
+              · "Online Officers"       — Math.round(activeOfficers × 0.4)
+            The last one is replaced by a real count of open sessions.
+          */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: 16, marginBottom: 24 }}>
-            
-            {/* Row 1 */}
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", color: ADMIN_THEME.textSecondary, fontSize: 11, fontWeight: 700, textTransform: "uppercase", marginBottom: 8 }}>
-                <span>Pending Applications</span>
-                <UserCheck style={{ width: 14, height: 14, color: ADMIN_THEME.accentGold }} />
+            {([
+              ["Pending Applications", admin.summary.pendingApplications, ADMIN_THEME.accentGold, UserCheck, "Awaiting administrative review"],
+              ["Active Officers", admin.summary.activeOfficers, ADMIN_THEME.textPrimary, Shield, `of ${admin.summary.totalOfficers ?? 0} accounts on record`],
+              ["Open Sessions", admin.summary.openSessions, ADMIN_THEME.green, Activity, "Signed in and not yet signed out"],
+              ["Sign-ins Today", admin.summary.signInsToday, ADMIN_THEME.textPrimary, Clock, "Recorded in OfficerSession"],
+              ["Rejected Applications", admin.summary.rejectedApplications, ADMIN_THEME.textPrimary, X, "Review denied"],
+              ["Documents Sealed", admin.summary.documentsSealed, ADMIN_THEME.textPrimary, FileText, "Entries in the verification ledger"],
+              ["Verification Scans", admin.summary.scansRun, ADMIN_THEME.textPrimary, FileCheck, "Barcode scans performed"],
+              ["Failed Scans", admin.summary.failedScans, admin.summary.failedScans ? ADMIN_THEME.red : ADMIN_THEME.textPrimary, AlertTriangle, "Scans that did not verify"],
+              ["Audit Entries", admin.summary.auditEntries, ADMIN_THEME.textPrimary, History, "Append-only change record"],
+              ["Missing Personnel Records", admin.summary.officersWithoutEmployeeRow, admin.summary.officersWithoutEmployeeRow ? ADMIN_THEME.red : ADMIN_THEME.green, User, "Accounts with no Employee row"],
+            ] as const).map(([label, value, colour, Icon, hint]) => (
+              <div key={label} style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", color: ADMIN_THEME.textSecondary, fontSize: 11, fontWeight: 700, textTransform: "uppercase", marginBottom: 8 }}>
+                  <span>{label}</span>
+                  <Icon style={{ width: 14, height: 14, color: colour as string }} />
+                </div>
+                <div style={{ fontSize: 28, fontWeight: 800, color: colour as string }}>
+                  {loading ? "—" : (value ?? 0)}
+                </div>
+                <div style={{ fontSize: 10, color: ADMIN_THEME.textSecondary, marginTop: 4 }}>{hint}</div>
               </div>
-              <div style={{ fontSize: 28, fontWeight: 800, color: ADMIN_THEME.accentGold }}>
-                {applications.filter(a => a.status === "pending").length}
-              </div>
-              <div style={{ fontSize: 10, color: ADMIN_THEME.textSecondary, marginTop: 4 }}>Awaiting Administrative Review</div>
-            </div>
-
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", color: ADMIN_THEME.textSecondary, fontSize: 11, fontWeight: 700, textTransform: "uppercase", marginBottom: 8 }}>
-                <span>Approved Officers</span>
-                <Shield style={{ width: 14, height: 14, color: ADMIN_THEME.green }} />
-              </div>
-              <div style={{ fontSize: 28, fontWeight: 800, color: ADMIN_THEME.textPrimary }}>
-                {officers.filter(o => o.active).length}
-              </div>
-              <div style={{ fontSize: 10, color: ADMIN_THEME.textSecondary, marginTop: 4 }}>Active Database Credentials</div>
-            </div>
-
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", color: ADMIN_THEME.textSecondary, fontSize: 11, fontWeight: 700, textTransform: "uppercase", marginBottom: 8 }}>
-                <span>Rejected Applications</span>
-                <X style={{ width: 14, height: 14, color: ADMIN_THEME.red }} />
-              </div>
-              <div style={{ fontSize: 28, fontWeight: 800, color: ADMIN_THEME.textPrimary }}>
-                {applications.filter(a => a.status === "rejected").length}
-              </div>
-              <div style={{ fontSize: 10, color: ADMIN_THEME.textSecondary, marginTop: 4 }}>Security Review Denied Cases</div>
-            </div>
-
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", color: ADMIN_THEME.textSecondary, fontSize: 11, fontWeight: 700, textTransform: "uppercase", marginBottom: 8 }}>
-                <span>Online Officers</span>
-                <Activity style={{ width: 14, height: 14, color: ADMIN_THEME.green }} />
-              </div>
-              <div style={{ fontSize: 28, fontWeight: 800, color: ADMIN_THEME.green }}>
-                {officers.filter(o => o.active).length > 0 ? Math.max(1, Math.round(officers.filter(o => o.active).length * 0.4)) : 0}
-              </div>
-              <div style={{ fontSize: 10, color: ADMIN_THEME.textSecondary, marginTop: 4 }}>Active Session Tokens</div>
-            </div>
-
-            {/* Row 2 */}
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", color: ADMIN_THEME.textSecondary, fontSize: 11, fontWeight: 700, textTransform: "uppercase", marginBottom: 8 }}>
-                <span>Today's Logins</span>
-                <Clock style={{ width: 14, height: 14, color: ADMIN_THEME.blue }} />
-              </div>
-              <div style={{ fontSize: 28, fontWeight: 800, color: ADMIN_THEME.textPrimary }}>
-                {auditLogs.filter(l => (l.action && l.action.toLowerCase().includes("login")) || l.status === "ACTIVE").length || auditLogs.length}
-              </div>
-              <div style={{ fontSize: 10, color: ADMIN_THEME.textSecondary, marginTop: 4 }}>Secure terminal sessions</div>
-            </div>
-
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", color: ADMIN_THEME.textSecondary, fontSize: 11, fontWeight: 700, textTransform: "uppercase", marginBottom: 8 }}>
-                <span>Reports Generated Today</span>
-                <FileText style={{ width: 14, height: 14, color: ADMIN_THEME.accentGold }} />
-              </div>
-              <div style={{ fontSize: 28, fontWeight: 800, color: ADMIN_THEME.textPrimary }}>
-                {verifications.length}
-              </div>
-              <div style={{ fontSize: 10, color: ADMIN_THEME.textSecondary, marginTop: 4 }}>A4 sealed PDF briefs printed</div>
-            </div>
-
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", color: ADMIN_THEME.textSecondary, fontSize: 11, fontWeight: 700, textTransform: "uppercase", marginBottom: 8 }}>
-                <span>AI Conversations Today</span>
-                <Bot style={{ width: 14, height: 14, color: ADMIN_THEME.accentGold }} />
-              </div>
-              <div style={{ fontSize: 28, fontWeight: 800, color: ADMIN_THEME.textPrimary }}>
-                {auditLogs.filter(l => l.module === "AI Assistant" || (l.action && l.action.toLowerCase().includes("ai"))).length || (typeof window !== "undefined" ? JSON.parse(localStorage.getItem("orca_chat_conversations") || "[]").length : 0)}
-              </div>
-              <div style={{ fontSize: 10, color: ADMIN_THEME.textSecondary, marginTop: 4 }}>NVIDIA NIM model API invocations</div>
-            </div>
-
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", color: ADMIN_THEME.textSecondary, fontSize: 11, fontWeight: 700, textTransform: "uppercase", marginBottom: 8 }}>
-                <span>Verification Requests</span>
-                <FileCheck style={{ width: 14, height: 14, color: ADMIN_THEME.green }} />
-              </div>
-              <div style={{ fontSize: 28, fontWeight: 800, color: ADMIN_THEME.textPrimary }}>
-                {verifications.length}
-              </div>
-              <div style={{ fontSize: 10, color: ADMIN_THEME.textSecondary, marginTop: 4 }}>Cryptographic document checks</div>
-            </div>
-
-            {/* Row 3 */}
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", color: ADMIN_THEME.textSecondary, fontSize: 11, fontWeight: 700, textTransform: "uppercase", marginBottom: 8 }}>
-                <span>Security Flagged Logins</span>
-                <AlertTriangle style={{ width: 14, height: 14, color: ADMIN_THEME.red }} />
-              </div>
-              <div style={{ fontSize: 28, fontWeight: 800, color: ADMIN_THEME.red }}>
-                {auditLogs.filter(l => l.action && (l.action.includes("VPN") || l.action.includes("FAIL") || l.action.includes("FLAGGED"))).length}
-              </div>
-              <div style={{ fontSize: 10, color: ADMIN_THEME.textSecondary, marginTop: 4 }}>Alert blocks under security watch</div>
-            </div>
-
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", color: ADMIN_THEME.textSecondary, fontSize: 11, fontWeight: 700, textTransform: "uppercase", marginBottom: 8 }}>
-                <span>System Health</span>
-                <Server style={{ width: 14, height: 14, color: ADMIN_THEME.green }} />
-              </div>
-              <div style={{ fontSize: 28, fontWeight: 800, color: ADMIN_THEME.green }}>99.9%</div>
-              <div style={{ fontSize: 10, color: ADMIN_THEME.textSecondary, marginTop: 4 }}>Server cluster online index</div>
-            </div>
-
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", color: ADMIN_THEME.textSecondary, fontSize: 11, fontWeight: 700, textTransform: "uppercase", marginBottom: 8 }}>
-                <span>Storage Usage</span>
-                <Database style={{ width: 14, height: 14, color: ADMIN_THEME.blue }} />
-              </div>
-              <div style={{ fontSize: 28, fontWeight: 800, color: ADMIN_THEME.textPrimary }}>
-                {((officers.length * 0.12) + (applications.length * 0.25) + (verifications.length * 0.45) + 0.8).toFixed(1)} MB
-              </div>
-              <div style={{ fontSize: 10, color: ADMIN_THEME.textSecondary, marginTop: 4 }}>Firestore document weights</div>
-            </div>
-
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", color: ADMIN_THEME.textSecondary, fontSize: 11, fontWeight: 700, textTransform: "uppercase", marginBottom: 8 }}>
-                <span>API Status</span>
-                <CloudLightning style={{ width: 14, height: 14, color: ADMIN_THEME.green }} />
-              </div>
-              <div style={{ fontSize: 28, fontWeight: 800, color: ADMIN_THEME.green }}>ONLINE</div>
-              <div style={{ fontSize: 10, color: ADMIN_THEME.textSecondary, marginTop: 4 }}>NVIDIA NIM language gateway sync</div>
-            </div>
-
+            ))}
           </div>
 
-          {/* LOWER FEEDS SUMMARY */}
+          {/* LOWER FEEDS */}
           <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr", gap: 16 }}>
-            {/* Audit Logs */}
+            {/* Audit trail — OfficerAuditLog, newest first. */}
             <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16 }}>
               <div style={{ display: "flex", justifyContent: "space-between", borderBottom: `1px solid ${ADMIN_THEME.border}`, paddingBottom: 10, marginBottom: 12 }}>
-                <span style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "JetBrains Mono" }}>Recent Security Audit Trail</span>
+                <span style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "JetBrains Mono" }}>Recent Changes</span>
                 <History style={{ width: 14, height: 14, color: ADMIN_THEME.textSecondary }} />
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                {auditLogs.slice(0, 5).map((log, idx) => (
-                  <div key={idx} style={{ display: "flex", justifyContent: "space-between", borderBottom: idx !== 4 ? `1px solid ${ADMIN_THEME.border}` : "none", paddingBottom: 8 }}>
-                    <div>
-                      <div style={{ fontSize: 12, fontWeight: 600 }}>{log.action}</div>
-                      <div style={{ fontSize: 10, color: ADMIN_THEME.textSecondary }}>{log.officer} • {log.module}</div>
+              {auditLogs.length === 0 ? (
+                <div style={{ fontSize: 12, color: ADMIN_THEME.textSecondary, padding: "12px 0" }}>
+                  {loading ? "Reading the audit trail…" : "No changes recorded yet."}
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {auditLogs.slice(0, 6).map((log, idx) => (
+                    <div key={log.logId ?? idx} style={{ display: "flex", justifyContent: "space-between", gap: 12, borderBottom: idx !== Math.min(5, auditLogs.length - 1) ? `1px solid ${ADMIN_THEME.border}` : "none", paddingBottom: 8 }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600 }}>{prettyChangeType(log.changeType)}</div>
+                        <div style={{ fontSize: 10, color: ADMIN_THEME.textSecondary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {log.changedBy}{log.reason ? ` — ${log.reason}` : ""}
+                        </div>
+                      </div>
+                      <div style={{ fontSize: 10, color: ADMIN_THEME.textMuted, whiteSpace: "nowrap" }}>
+                        {log.changedAt ? new Date(log.changedAt.replace(" ", "T")).toLocaleString() : "—"}
+                      </div>
                     </div>
-                    <div style={{ textAlign: "right" }}>
-                      <div style={{ fontSize: 10, color: ADMIN_THEME.textMuted }}>{new Date(log.timestamp).toLocaleTimeString()}</div>
-                      <span style={{ fontSize: 9, background: "rgba(16,185,129,0.1)", color: ADMIN_THEME.green, padding: "1px 4px", borderRadius: 3, fontWeight: 600 }}>SUCCESS</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </div>
 
-            {/* Platform Health alerts */}
+            {/*
+              Things needing attention. This replaced a "State Server Cluster
+              Status" panel whose four green dots and latency figures
+              ("Connected (12ms)", "Online (244ms)") were literals — nothing
+              was ever polled. These are conditions actually read from the data.
+            */}
             <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16 }}>
               <div style={{ display: "flex", justifyContent: "space-between", borderBottom: `1px solid ${ADMIN_THEME.border}`, paddingBottom: 10, marginBottom: 12 }}>
-                <span style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "JetBrains Mono" }}>State Server Cluster Status</span>
-                <Server style={{ width: 14, height: 14, color: ADMIN_THEME.green }} />
+                <span style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "JetBrains Mono" }}>Needs Attention</span>
+                <Bell style={{ width: 14, height: 14, color: ADMIN_THEME.accentGold }} />
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 12, fontSize: 12 }}>
-                <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ color: ADMIN_THEME.textSecondary }}>Firebase DB Node</span>
-                  <span style={{ color: ADMIN_THEME.green, fontWeight: 600 }}>● Connected (12ms)</span>
+              {admin.notifications.length === 0 ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: ADMIN_THEME.green, padding: "8px 0" }}>
+                  <Check style={{ width: 15, height: 15 }} /> Nothing outstanding.
                 </div>
-                <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ color: ADMIN_THEME.textSecondary }}>NVIDIA NIM AI API Node</span>
-                  <span style={{ color: ADMIN_THEME.green, fontWeight: 600 }}>● Online (244ms)</span>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {admin.notifications.slice(0, 6).map((n: any) => (
+                    <div key={n.id} style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                      <span style={{
+                        marginTop: 5, width: 7, height: 7, borderRadius: 4, flexShrink: 0,
+                        background: n.kind === "CRITICAL" ? ADMIN_THEME.red : n.kind === "SECURITY" ? "#f97316" : n.kind === "WARNING" ? ADMIN_THEME.accentGold : ADMIN_THEME.textMuted,
+                      }} />
+                      <div>
+                        <div style={{ fontSize: 12, fontWeight: 600, lineHeight: 1.35 }}>{n.title}</div>
+                        <div style={{ fontSize: 10.5, color: ADMIN_THEME.textSecondary, lineHeight: 1.4 }}>{n.detail}</div>
+                      </div>
+                    </div>
+                  ))}
                 </div>
-                <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ color: ADMIN_THEME.textSecondary }}>Sealed Document Ledger</span>
-                  <span style={{ color: ADMIN_THEME.green, fontWeight: 600 }}>● Locked & Audited</span>
-                </div>
-                <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ color: ADMIN_THEME.textSecondary }}>Proxy Security Firewall</span>
-                  <span style={{ color: ADMIN_THEME.green, fontWeight: 600 }}>● active</span>
-                </div>
-                <div style={{ background: "rgba(255,153,51,0.06)", border: "1px solid rgba(255,153,51,0.2)", borderRadius: 6, padding: 10, marginTop: 12, display: "flex", gap: 8, color: ADMIN_THEME.accentGold }}>
-                  <Info style={{ width: 16, height: 16, flexShrink: 0, marginTop: 2 }} />
-                  <p style={{ fontSize: 10.5, lineHeight: 1.4 }}>
-                    <strong>Notice:</strong> MFA configuration active for all administration accounts. Sessions automatically terminate after 30 minutes of terminal inactivity.
-                  </p>
-                </div>
-              </div>
+              )}
             </div>
           </div>
         </div>
@@ -1731,7 +1500,7 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
             <div>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <h1 style={{ fontSize: 22, fontWeight: 800, color: ADMIN_THEME.textPrimary }}>Pending Registrations</h1>
+                <h1 style={{ fontSize: 22, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>Pending Registrations</h1>
                 <span style={{
                   background: ADMIN_THEME.accentGold,
                   color: "#ffffff",
@@ -1789,9 +1558,9 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
                   {pendingRegistrations.map((reg, index) => (
                     <tr key={reg.id || reg.uid || index} style={{ borderBottom: `1px solid ${ADMIN_THEME.border}` }}>
                       <td style={{ padding: "12px 16px", display: "flex", alignItems: "center", gap: 12 }}>
-                        {reg.photoUrl ? (
+                        {applicantPhotos[reg.uid || reg.id] ? (
                           <div style={{ width: 40, height: 40, borderRadius: "50%", overflow: "hidden", border: `2px solid ${ADMIN_THEME.blue}` }}>
-                            <img src={reg.photoUrl} alt="Officer Avatar" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                            <img src={applicantPhotos[reg.uid || reg.id]} alt={`Face capture of ${reg.name || "applicant"}`} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                           </div>
                         ) : (
                           <div style={{ width: 40, height: 40, borderRadius: "50%", background: "rgba(0,31,63,0.1)", border: `1px solid ${ADMIN_THEME.border}`, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, color: ADMIN_THEME.textSecondary }}>
@@ -1826,8 +1595,20 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
                             type="button"
                             onClick={() => {
                               setSelectedPendingReg(reg);
-                              setPendingRoleSelection("investigation_l1");
-                              setPendingIsdSelection("ISD-LEVEL-IV");
+                              /**
+                               * An SCRB applicant opens on the SCRB role.
+                               *
+                               * The posting is what they declared at sign-up, so
+                               * defaulting to the field-officer role would make
+                               * the reviewer re-derive it from the posting column
+                               * every time — and approving on the default would
+                               * silently put a records-bureau applicant on the
+                               * wrong clearance track. Still a default: the
+                               * reviewer can change it before approving.
+                               */
+                              const isScrb = String(reg.postingType || "") === "SCRB";
+                              setPendingRoleSelection(isScrb ? "scrb_officer" : "investigation_l1");
+                              setPendingIsdSelection(isScrb ? "CRB-LEVEL-I" : "ISD-LEVEL-IV");
                               setApproveModalOpen(true);
                             }}
                             style={{
@@ -1919,7 +1700,12 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
                   </label>
                   <select
                     value={pendingRoleSelection}
-                    onChange={(e) => setPendingRoleSelection(e.target.value)}
+                    onChange={(e) => {
+                      const role = e.target.value;
+                      setPendingRoleSelection(role);
+                      // Clearance follows the role — see below.
+                      setPendingIsdSelection(clearanceForRole(role) || "");
+                    }}
                     style={{
                       width: "100%",
                       padding: "10px 12px",
@@ -1929,35 +1715,48 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
                       color: ADMIN_THEME.textPrimary
                     }}
                   >
-                    <option value="investigation_l1">Field Operational Officer</option>
-                    <option value="investigation_l2">Senior Investigation Officer</option>
-                    <option value="admin_verification">Verification Administration Officer</option>
-                    <option value="admin_scrb">SCRB Executive Administrator</option>
-                    <option value="admin_full">Full Command Administrator</option>
+                    {ASSIGNABLE_ROLES.map((r) => (
+                      <option key={r.value} value={r.value}>{r.label}</option>
+                    ))}
                   </select>
                 </div>
 
                 <div style={{ marginBottom: 20 }}>
                   <label style={{ display: "block", fontSize: 12, fontWeight: 700, marginBottom: 6, color: ADMIN_THEME.textPrimary }}>
-                    Security Clearance (ISD Level)
+                    Security Clearance
                   </label>
-                  <select
-                    value={pendingIsdSelection}
-                    onChange={(e) => setPendingIsdSelection(e.target.value)}
+                  {/*
+                    Shown, not chosen.
+
+                    Clearance follows the role, and the approval route REJECTS a
+                    clearance that disagrees with it. While this was a free
+                    select, any pairing the reviewer did not happen to match by
+                    hand came back a 400 — and picking SCRB, which carries
+                    CRB-LEVEL-I, could not be matched here at all because the
+                    list only held ISD levels.
+
+                    It is also no longer labelled "ISD Level": with the ORCA and
+                    CRB tracks that is not always what it is.
+                  */}
+                  <div
                     style={{
                       width: "100%",
                       padding: "10px 12px",
                       borderRadius: 6,
                       border: `1px solid ${ADMIN_THEME.border}`,
+                      background: "#f8fafc",
                       fontSize: 13,
                       color: ADMIN_THEME.textPrimary
                     }}
                   >
-                    <option value="ISD-LEVEL-IV">ISD-LEVEL-IV (Field Officer Clearance)</option>
-                    <option value="ISD-LEVEL-III">ISD-LEVEL-III (Senior Inspector Clearance)</option>
-                    <option value="ISD-LEVEL-II">ISD-LEVEL-II (Superintendent Clearance)</option>
-                    <option value="ISD-LEVEL-I">ISD-LEVEL-I (Director General / Command Clearance)</option>
-                  </select>
+                    <strong>{pendingIsdSelection || "—"}</strong>
+                    {pendingIsdSelection && CLEARANCE_LABEL[pendingIsdSelection as keyof typeof CLEARANCE_LABEL]
+                      ? ` — ${CLEARANCE_LABEL[pendingIsdSelection as keyof typeof CLEARANCE_LABEL]}`
+                      : ""}
+                  </div>
+                  <div style={{ fontSize: 11, color: ADMIN_THEME.textSecondary, marginTop: 4 }}>
+                    Determined by the selected role.
+                  </div>
                 </div>
 
                 <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
@@ -2092,7 +1891,7 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
         <div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
             <div>
-              <h1 style={{ fontSize: 22, fontWeight: 800 }}>Officer Ingress Applications</h1>
+              <h1 style={{ fontSize: 22, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>Officer Applications</h1>
               <p style={{ fontSize: 12, color: ADMIN_THEME.textSecondary }}>Approve or reject credentials and station clearances for applying police officers</p>
             </div>
             <div style={{ position: "relative" }}>
@@ -2194,7 +1993,7 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
             <div style={{ textAlign: "center", padding: "60px 20px", color: ADMIN_THEME.textSecondary, background: ADMIN_THEME.cardBg, borderRadius: 8, border: `1px solid ${ADMIN_THEME.border}` }}>
               <UserCheck style={{ width: 48, height: 48, margin: "0 auto 12px", opacity: 0.3 }} />
               <div style={{ fontSize: 14, fontWeight: 700 }}>No applications registered matching filters</div>
-              <div style={{ fontSize: 12, marginTop: 4 }}>Awaiting new officer registrations or dev seeding.</div>
+              <div style={{ fontSize: 12, marginTop: 4 }}>Awaiting new officer registrations.</div>
             </div>
           ) : (
             <div>
@@ -2204,7 +2003,7 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
                     key={app.id}
                     style={{
                       background: ADMIN_THEME.cardBg,
-                      border: `1px solid ${app.status === "pending" && app.priority === "HIGH" ? "rgba(255, 153, 51, 0.4)" : ADMIN_THEME.border}`,
+                      border: `1px solid ${app.status === "pending" && daysWaiting(app.submittedAt) >= 3 ? "rgba(255, 153, 51, 0.4)" : ADMIN_THEME.border}`,
                       borderRadius: 8,
                       padding: 16,
                       display: "flex",
@@ -2214,22 +2013,27 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
                       overflow: "hidden"
                     }}
                   >
-                    {/* Priority Tag */}
-                    {(app.status === "pending" || app.status === "under_review") && (
-                      <span style={{
-                        position: "absolute",
-                        top: 10,
-                        right: 10,
-                        fontSize: 9,
-                        fontWeight: 800,
-                        background: app.priority === "HIGH" ? `${ADMIN_THEME.red}20` : `${ADMIN_THEME.accentGold}20`,
-                        color: app.priority === "HIGH" ? ADMIN_THEME.red : ADMIN_THEME.accentGold,
-                        padding: "2px 6px",
-                        borderRadius: 4
-                      }}>
-                        {app.priority} PRIORITY
-                      </span>
-                    )}
+                    {/*
+                      How long they have waited, in place of the old PRIORITY
+                      tag. Priority was a Firestore field registration never
+                      set, so every card read "MEDIUM PRIORITY" — decoration
+                      with the shape of information. Waiting time is measured.
+                    */}
+                    {(app.status === "pending" || app.status === "under_review") && (() => {
+                      const d = daysWaiting(app.submittedAt);
+                      const urgent = d >= 3;
+                      return (
+                        <span style={{
+                          position: "absolute", top: 10, right: 10,
+                          fontSize: 9, fontWeight: 800,
+                          background: urgent ? `${ADMIN_THEME.red}20` : `${ADMIN_THEME.accentGold}20`,
+                          color: urgent ? ADMIN_THEME.red : ADMIN_THEME.accentGold,
+                          padding: "2px 6px", borderRadius: 4,
+                        }}>
+                          {d <= 0 ? "TODAY" : `${d} DAY${d === 1 ? "" : "S"} WAITING`}
+                        </span>
+                      );
+                    })()}
 
                     {/* Body */}
                     <div>
@@ -2363,7 +2167,7 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
         <div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
             <div>
-              <h1 style={{ fontSize: 22, fontWeight: 800 }}>Approved Officer Directory</h1>
+              <h1 style={{ fontSize: 22, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>Officer Directory</h1>
               <p style={{ fontSize: 12, color: ADMIN_THEME.textSecondary }}>View profiles, adjust station assignments, and manage access parameters</p>
             </div>
             
@@ -2382,11 +2186,11 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
                 onChange={e => setDirRankFilter(e.target.value)}
                 style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 6, padding: "4px 8px", fontSize: 12, color: ADMIN_THEME.textPrimary }}
               >
+                {/* From the Rank table. The four literals that used to be here
+                    matched none of the eleven ranks actually in use, so most of
+                    the directory was unreachable through this filter. */}
                 <option value="ALL">All Ranks</option>
-                <option value="Superintendent">Superintendent</option>
-                <option value="Inspector">Inspector</option>
-                <option value="Sub Inspector">Sub Inspector</option>
-                <option value="Constable">Constable</option>
+                {reference.ranks.map(r => <option key={r.id} value={r.name}>{r.name}</option>)}
               </select>
               <div style={{ position: "relative" }}>
                 <Search style={{ width: 12, height: 12, color: ADMIN_THEME.textSecondary, position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)" }} />
@@ -2453,9 +2257,13 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
                       <div><strong style={{ color: ADMIN_THEME.textPrimary }}>District:</strong> {off.district}</div>
                       <div><strong style={{ color: ADMIN_THEME.textPrimary }}>Station:</strong> {off.station}</div>
                       <div><strong style={{ color: ADMIN_THEME.textPrimary }}>Email:</strong> {off.email}</div>
-                      <div><strong style={{ color: ADMIN_THEME.textPrimary }}>Phone:</strong> {off.mobile || off.phone || "N/A"}</div>
-                      <div><strong style={{ color: ADMIN_THEME.textPrimary }}>Access Level:</strong> <span style={{ color: ADMIN_THEME.accentGold, fontWeight: 600 }}>{off.requestedAccess || "Full Investigator Access"}</span></div>
-                      <div><strong style={{ color: ADMIN_THEME.textPrimary }}>Clearance:</strong> <span style={{ color: ADMIN_THEME.accentGold, fontWeight: 600 }}>{off.clearanceLevel || "ISD-LEVEL-IV"}</span></div>
+                      <div><strong style={{ color: ADMIN_THEME.textPrimary }}>Phone:</strong> {off.mobile || "—"}</div>
+                      {/* Role, not "Access Level". The old line fell back to
+                          "Full Investigator Access" when the field was absent,
+                          which read as a granted permission and was not one. */}
+                      <div><strong style={{ color: ADMIN_THEME.textPrimary }}>Role:</strong> <span style={{ color: ADMIN_THEME.accentGold, fontWeight: 600 }}>{off.dashboardRole || "—"}</span></div>
+                      <div><strong style={{ color: ADMIN_THEME.textPrimary }}>Clearance:</strong> <span style={{ color: ADMIN_THEME.accentGold, fontWeight: 600 }}>{off.clearanceLevel || "—"}</span></div>
+                      <div><strong style={{ color: ADMIN_THEME.textPrimary }}>Personnel Record:</strong> {off.employeeId ? `${off.badgeId || "no KGID"} (Employee ${off.employeeId})` : <span style={{ color: ADMIN_THEME.red, fontWeight: 700 }}>MISSING</span>}</div>
                       <div><strong style={{ color: ADMIN_THEME.textPrimary }}>Last Login:</strong> {off.lastLogin ? new Date(off.lastLogin).toLocaleString() : "Never"}</div>
                       <div><strong style={{ color: ADMIN_THEME.textPrimary }}>Status:</strong> <span style={{ color: off.active ? ADMIN_THEME.green : ADMIN_THEME.red, fontWeight: 700 }}>{off.active ? "ACTIVE" : "INACTIVE / SUSPENDED"}</span></div>
                     </div>
@@ -2567,16 +2375,15 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
                         </div>
                         <div>
                           <label style={{ display: "block", fontSize: 10, color: ADMIN_THEME.textSecondary, marginBottom: 4, fontWeight: 600 }}>Clearance Level</label>
-                          <select 
-                            value={editProfileClearance} 
-                            onChange={e => setEditProfileClearance(e.target.value)} 
-                            style={{ width: "100%", background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 6, padding: "8px 12px", color: ADMIN_THEME.textPrimary, fontSize: 12, cursor: "pointer" }}
-                          >
-                            <option value="ISD-LEVEL-I">ISD-LEVEL-I</option>
-                            <option value="ISD-LEVEL-II">ISD-LEVEL-II</option>
-                            <option value="ISD-LEVEL-III">ISD-LEVEL-III</option>
-                            <option value="ISD-LEVEL-IV">ISD-LEVEL-IV</option>
-                          </select>
+                          {/*
+                            Read-only. Editing clearance here wrote it without a
+                            role, which the route now refuses — and which is how
+                            live accounts drifted onto a clearance their role
+                            does not carry. Change it from Roles & Permissions.
+                          */}
+                          <div style={{ width: "100%", background: "#f1f5f9", border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 6, padding: "8px 12px", color: ADMIN_THEME.textPrimary, fontSize: 12 }}>
+                            {editProfileClearance || "—"}
+                          </div>
                         </div>
                       </div>
 
@@ -2678,7 +2485,7 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
                         <div><strong style={{ color: ADMIN_THEME.textPrimary }}>Badge Number:</strong> {activeOfficerProfile.badgeId}</div>
                         <div><strong style={{ color: ADMIN_THEME.textPrimary }}>Email Address:</strong> {activeOfficerProfile.email}</div>
                         <div><strong style={{ color: ADMIN_THEME.textPrimary }}>Department:</strong> Cyber Crime Cell Division</div>
-                        <div><strong style={{ color: ADMIN_THEME.textPrimary }}>Clearance Level:</strong> {activeOfficerProfile.clearanceLevel || "ISD-LEVEL-IV"}</div>
+                        <div><strong style={{ color: ADMIN_THEME.textPrimary }}>Clearance Level:</strong> {activeOfficerProfile.clearanceLevel || "Not recorded"}</div>
                         <div><strong style={{ color: ADMIN_THEME.textPrimary }}>State District:</strong> {activeOfficerProfile.district}</div>
                         <div><strong style={{ color: ADMIN_THEME.textPrimary }}>Station Hub:</strong> {activeOfficerProfile.station}</div>
                         <div><strong style={{ color: ADMIN_THEME.textPrimary }}>Status Code:</strong> <span style={{ color: activeOfficerProfile.active ? ADMIN_THEME.green : ADMIN_THEME.red, fontWeight: 600 }}>● {activeOfficerProfile.active ? "ACTIVE CLEARANCE" : "SUSPENDED"}</span></div>
@@ -2694,7 +2501,14 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
                             <button 
                               onClick={() => {
                                 if (confirm("Reset account credentials security key pin?")) {
-                                  alert("Password reset trigger initialized. System notification queued.");
+                                  // Nothing sent a reset email; the message was
+                                  // the whole feature. Firebase Auth owns
+                                  // password resets and the officer can start
+                                  // one from the sign-in screen.
+                                  setAdminNotice({
+                                    kind: "error",
+                                    text: "Password resets are not issued from here. Firebase Auth owns them — the officer can request one from the sign-in screen.",
+                                  });
                                 }
                               }}
                               style={{ flex: 1, background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 6, padding: "8px 0", fontSize: 11, color: ADMIN_THEME.textSecondary, fontWeight: 700, cursor: "pointer", transition: "all 0.2s" }}
@@ -2714,11 +2528,38 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
       )}
 
       {/* 4. ROLES & PERMISSIONS */}
+      {/*
+        ROLES & PERMISSIONS.
+
+        This tab used to render an editable 9-role x 12-permission grid held in
+        component state. Ticking a box changed a local array and nothing else;
+        the Save button said "RBAC matrix updated locally in memory layer" and
+        the change vanished on reload. Worse than useless: an administrator
+        could believe they had revoked someone's access.
+
+        None of those twelve permission names existed in the enforcing config
+        either, and three real modules that DO gate access - Case Registration,
+        Evidence Management, Crime Analytics - were absent from the grid
+        entirely, so they could not be reasoned about at all.
+
+        Access is decided by RBAC_CONFIG in src/lib/rbac.ts, keyed on
+        `dashboardRole`, and read by canAccessTab() on every render. That is now
+        what this screen shows: the real thing, read-only, because it lives in
+        code. Editing it is a code change and a deployment, which is the point -
+        a permission matrix that can be edited by whoever is looking at it is
+        not an access control.
+
+        Assigning a role to an officer IS a live operation and stays live: that
+        is RoleAssignmentManager below, which writes OfficerAccount and the
+        Firebase claim through /api/admin/rbac/set-role.
+      */}
       {adminTab === "admin-roles" && (
         <div>
           <div style={{ marginBottom: 20 }}>
-            <h1 style={{ fontSize: 22, fontWeight: 800 }}>Role-Based Access Controls (RBAC)</h1>
-            <p style={{ fontSize: 12, color: ADMIN_THEME.textSecondary }}>Configure individually binded module clearances and operation clearances across active rank roles</p>
+            <h1 style={{ fontSize: 22, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>Roles &amp; Permissions</h1>
+            <p style={{ fontSize: 12, color: ADMIN_THEME.textSecondary }}>
+              Assign a role to an officer, and see exactly what each role can reach
+            </p>
           </div>
 
           <div style={{ marginBottom: 28 }}>
@@ -2726,94 +2567,83 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
             <RoleChangeLogTable />
           </div>
 
-          {PERMISSION_CATEGORIES.map(category => {
-            const Icon = category.icon;
-            return (
-              <div 
-                key={category.id} 
-                style={{ 
-                  background: ADMIN_THEME.cardBg, 
-                  border: `1px solid ${ADMIN_THEME.border}`, 
-                  borderRadius: 8, 
-                  overflow: "hidden", 
-                  marginBottom: 20, 
-                  boxShadow: ADMIN_THEME.shadow 
-                }}
-              >
-                {/* Section Header */}
-                <div style={{ 
-                  background: "rgba(0,31,63,0.02)", 
-                  borderBottom: `1px solid ${ADMIN_THEME.border}`, 
-                  padding: "12px 16px", 
-                  display: "flex", 
-                  alignItems: "center", 
-                  gap: 8 
-                }}>
-                  <Icon style={{ width: 15, height: 15, color: ADMIN_THEME.accentGold }} />
-                  <span style={{ fontSize: 12, fontWeight: 700, color: ADMIN_THEME.textPrimary, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                    {category.name}
-                  </span>
-                </div>
+          <div style={{
+            background: "rgba(255,153,51,0.06)", border: "1px solid rgba(255,153,51,0.25)",
+            borderRadius: 8, padding: "12px 16px", marginBottom: 18,
+            display: "flex", gap: 10, alignItems: "flex-start",
+          }}>
+            <Info style={{ width: 16, height: 16, color: ADMIN_THEME.accentGold, flexShrink: 0, marginTop: 2 }} />
+            <div style={{ fontSize: 11.5, color: ADMIN_THEME.textSecondary, lineHeight: 1.55 }}>
+              <strong style={{ color: ADMIN_THEME.textPrimary }}>This matrix is read-only, and it is the real one.</strong>{" "}
+              It is read from <code style={{ fontFamily: "JetBrains Mono, monospace" }}>RBAC_CONFIG</code> in{" "}
+              <code style={{ fontFamily: "JetBrains Mono, monospace" }}>src/lib/rbac.ts</code>, the same config the app checks
+              on every screen. Changing what a role can reach is a code change, deliberately — an access matrix
+              that could be edited from inside the app by whoever was looking at it would not be an access control.
+              To change one <em>officer</em>, use Role Assignment above.
+            </div>
+          </div>
 
+          {(() => {
+            /**
+             * The matrix shows ASSIGNABLE roles only.
+             *
+             * `admin_scrb` is a deprecated alias of `scrb_officer` and renders
+             * with the same label, so leaving it in gave two identical columns
+             * — one of them dead. It still appears in "Roles In Use" below,
+             * marked deprecated, because an account may still hold it and that
+             * is worth being able to see.
+             */
+            const roles = (Object.keys(RBAC_CONFIG) as (keyof typeof RBAC_CONFIG)[])
+              .filter((r) => !DEPRECATED_ROLES.has(r));
+            const allRoles = Object.keys(RBAC_CONFIG) as (keyof typeof RBAC_CONFIG)[];
+            // Every tab any role can reach, in a stable order.
+            const allTabs = Array.from(
+              new Set(roles.flatMap(r => RBAC_CONFIG[r].allowedTabs))
+            ).sort();
+            const officerTabs = allTabs.filter(t => !t.startsWith("admin-"));
+            const adminTabs = allTabs.filter(t => t.startsWith("admin-"));
+
+            const label = (t: string) =>
+              (TAB_LABELS[t] || t.replace(/^admin-/, "").replace(/-/g, " "));
+
+            const section = (title: string, tabs: string[]) => (
+              <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, marginBottom: 20, overflow: "hidden" }}>
+                <div style={{ background: "rgba(0,31,63,0.02)", borderBottom: `1px solid ${ADMIN_THEME.border}`, padding: "12px 16px", display: "flex", alignItems: "center", gap: 8 }}>
+                  <Shield style={{ width: 15, height: 15, color: ADMIN_THEME.accentGold }} />
+                  <span style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em" }}>{title}</span>
+                </div>
                 <div style={{ overflowX: "auto" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: "800px" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 900 }}>
                     <thead>
                       <tr style={{ background: "rgba(0,0,0,0.01)", borderBottom: `1px solid ${ADMIN_THEME.border}` }}>
-                        <th style={{ padding: "10px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary, fontWeight: 700, width: "25%" }}>Operation Permission</th>
-                        {Object.keys(rbacPermissions).map(role => (
-                          <th key={role} style={{ padding: "10px 12px", textAlign: "center", color: ADMIN_THEME.textPrimary, fontWeight: 600, fontSize: 11 }}>
-                            {role}
+                        <th style={{ padding: "10px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary, fontWeight: 700, minWidth: 190, position: "sticky", left: 0, background: "#fbfcfd" }}>
+                          Section
+                        </th>
+                        {roles.map(r => (
+                          <th key={r} title={RBAC_CONFIG[r].label} style={{ padding: "10px 8px", textAlign: "center", fontSize: 10, fontWeight: 700, color: ADMIN_THEME.textPrimary, fontFamily: "JetBrains Mono, monospace" }}>
+                            {r}
                           </th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
-                      {category.permissions.map((perm, pIdx) => (
-                        <tr 
-                          key={perm} 
-                          style={{ 
-                            borderBottom: pIdx !== category.permissions.length - 1 ? `1px solid ${ADMIN_THEME.border}` : "none",
-                            transition: "background-color 0.15s ease"
-                          }}
-                          onMouseEnter={e => { e.currentTarget.style.backgroundColor = "rgba(0,31,63,0.015)"; }}
-                          onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; }}
-                        >
-                          <td style={{ padding: "12px 16px", fontWeight: 600, color: ADMIN_THEME.textPrimary }}>{perm}</td>
-                          {Object.keys(rbacPermissions).map(role => {
-                            const hasPerm = rbacPermissions[role].includes(perm);
+                      {tabs.map((t, i) => (
+                        <tr key={t} style={{ borderBottom: i !== tabs.length - 1 ? `1px solid ${ADMIN_THEME.border}` : "none" }}>
+                          <td style={{ padding: "10px 16px", fontWeight: 600, textTransform: "capitalize", position: "sticky", left: 0, background: "#fff" }}>
+                            {label(t)}
+                          </td>
+                          {roles.map(r => {
+                            const allowed = RBAC_CONFIG[r].allowedTabs.includes(t);
+                            const isDefault = RBAC_CONFIG[r].defaultTab === t;
                             return (
-                              <td 
-                                key={role} 
-                                style={{ padding: "12px 12px", textAlign: "center" }}
-                              >
-                                <div 
-                                  onClick={() => handlePermissionToggle(role, perm)}
-                                  style={{
-                                    display: "inline-flex",
-                                    alignItems: "center",
-                                    justifyContent: "center",
-                                    width: 24,
-                                    height: 24,
-                                    borderRadius: 4,
-                                    cursor: "pointer",
-                                    transition: "background-color 0.2s"
-                                  }}
-                                  onMouseEnter={e => { e.currentTarget.style.backgroundColor = "rgba(255,153,51,0.08)"; }}
-                                  onMouseLeave={e => { e.currentTarget.style.backgroundColor = "transparent"; }}
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={hasPerm}
-                                    onChange={() => {}} // Handled by outer div click to prevent double triggering
-                                    style={{
-                                      accentColor: ADMIN_THEME.accentGold,
-                                      width: 15,
-                                      height: 15,
-                                      cursor: "pointer",
-                                      margin: 0
-                                    }}
-                                  />
-                                </div>
+                              <td key={r} style={{ padding: "10px 8px", textAlign: "center" }}>
+                                {allowed ? (
+                                  <span title={isDefault ? "Allowed — and this role's landing page" : "Allowed"} style={{ color: isDefault ? ADMIN_THEME.accentGold : ADMIN_THEME.green, fontWeight: 800 }}>
+                                    {isDefault ? "★" : "✓"}
+                                  </span>
+                                ) : (
+                                  <span title="No access" style={{ color: "#e2e8f0", fontWeight: 800 }}>—</span>
+                                )}
                               </td>
                             );
                           })}
@@ -2824,47 +2654,95 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
                 </div>
               </div>
             );
-          })}
 
-          <div style={{ marginTop: 16, display: "flex", justifyContent: "flex-end" }}>
-            <button
-              onClick={() => alert("RBAC matrix updated locally in memory layer.")}
-              style={{
-                background: ADMIN_THEME.blue,
-                color: "white",
-                padding: "6px 14px",
-                borderRadius: 4,
-                fontWeight: 600,
-                fontSize: 12,
-                cursor: "pointer",
-                border: "none"
-              }}
-            >
-              Apply RBAC Configurations
-            </button>
-          </div>
+            return (
+              <>
+                <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 14, fontSize: 11, color: ADMIN_THEME.textSecondary }}>
+                  <span><strong style={{ color: ADMIN_THEME.green }}>✓</strong> allowed</span>
+                  <span><strong style={{ color: ADMIN_THEME.accentGold }}>★</strong> allowed, and where this role lands after sign-in</span>
+                  <span><strong style={{ color: "#cbd5e1" }}>—</strong> no access</span>
+                </div>
+                {section("Officer Sections", officerTabs)}
+                {section("Admin Controls", adminTabs)}
+
+                <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, overflow: "hidden" }}>
+                  <div style={{ background: "rgba(0,31,63,0.02)", borderBottom: `1px solid ${ADMIN_THEME.border}`, padding: "12px 16px", fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                    Roles In Use
+                  </div>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ background: "rgba(0,0,0,0.01)", borderBottom: `1px solid ${ADMIN_THEME.border}` }}>
+                        <th style={{ padding: "10px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>Role</th>
+                        <th style={{ padding: "10px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>Label</th>
+                        {/*
+                          Clearance was not shown here at all. With three tracks
+                          (ISD for police, ORCA for engineering, CRB for the
+                          records bureau) the role name no longer implies the
+                          level, so the screen that explains roles has to say it.
+                        */}
+                        <th style={{ padding: "10px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>Clearance</th>
+                        <th style={{ padding: "10px 16px", textAlign: "center", color: ADMIN_THEME.textSecondary }}>Writes</th>
+                        <th style={{ padding: "10px 16px", textAlign: "center", color: ADMIN_THEME.textSecondary }}>Sections</th>
+                        <th style={{ padding: "10px 16px", textAlign: "center", color: ADMIN_THEME.textSecondary }}>Officers Assigned</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {allRoles.map((r, i) => {
+                        const assigned = officers.filter(o => o.dashboardRole === r).length;
+                        const isDeprecated = DEPRECATED_ROLES.has(r);
+                        return (
+                          <tr key={r} style={{ borderBottom: i !== allRoles.length - 1 ? `1px solid ${ADMIN_THEME.border}` : "none", opacity: isDeprecated ? 0.6 : 1 }}>
+                            <td style={{ padding: "10px 16px", fontFamily: "JetBrains Mono, monospace", fontWeight: 700 }}>
+                              {r}
+                              {isDeprecated && (
+                                <span title="Superseded. Still resolves for accounts that hold it, but cannot be assigned." style={{ marginLeft: 8, fontSize: 9, fontWeight: 700, letterSpacing: "0.06em", color: ADMIN_THEME.textSecondary, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 4, padding: "1px 5px", fontFamily: "JetBrains Mono, monospace" }}>
+                                  DEPRECATED
+                                </span>
+                              )}
+                            </td>
+                            <td style={{ padding: "10px 16px" }}>{RBAC_CONFIG[r].label}</td>
+                            <td style={{ padding: "10px 16px", fontFamily: "JetBrains Mono, monospace", fontSize: 11 }} title={CLEARANCE_LABEL[RBAC_CONFIG[r].clearance] || ""}>
+                              {RBAC_CONFIG[r].clearance}
+                            </td>
+                            <td style={{ padding: "10px 16px", textAlign: "center", fontSize: 11 }}>
+                              {RBAC_CONFIG[r].writeAccess === "none"
+                                ? <span title="Read only — every mutating route refuses" style={{ color: ADMIN_THEME.textMuted }}>read only</span>
+                                : RBAC_CONFIG[r].writeAccess === "operational"
+                                  ? <span title="Day-to-day records, but not configuration, roles or clearances">operational</span>
+                                  : <span title="Everything, including configuration and access">full</span>}
+                            </td>
+                            <td style={{ padding: "10px 16px", textAlign: "center" }}>{RBAC_CONFIG[r].allowedTabs.length}</td>
+                            <td style={{ padding: "10px 16px", textAlign: "center", fontWeight: 700, color: assigned ? ADMIN_THEME.textPrimary : ADMIN_THEME.textMuted }}>
+                              {assigned}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            );
+          })()}
         </div>
       )}
 
-      {/* 5. VERIFICATION OVERSIGHT */}
       {adminTab === "admin-verification" && (
         <div>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 20, gap: 16, flexWrap: "wrap" }}>
             <div>
-              <h1 style={{ fontSize: 22, fontWeight: 800 }}>Document Verification Ledger Oversight</h1>
-              <p style={{ fontSize: 12, color: ADMIN_THEME.textSecondary }}>Monitor cryptographically sealed and verified legal dossiers</p>
+              <h1 style={{ fontSize: 22, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>Document Verification Oversight</h1>
+              <p style={{ fontSize: 12, color: ADMIN_THEME.textSecondary }}>Sealed documents and the scans performed against them</p>
             </div>
-            
-            {/* Search */}
             <div style={{ display: "flex", gap: 10 }}>
               <select
                 value={verStatusFilter}
                 onChange={e => setVerStatusFilter(e.target.value)}
-                style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 6, padding: "4px 8px", fontSize: 12, color: ADMIN_THEME.textPrimary }}
+                style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 6, padding: "6px 8px", fontSize: 12, color: ADMIN_THEME.textPrimary }}
               >
-                <option value="ALL">All Statuses</option>
-                <option value="verified">Verified (Sealed)</option>
-                <option value="failed">Failed Verification</option>
+                <option value="ALL">All documents</option>
+                <option value="scanned">Scanned at least once</option>
+                <option value="unscanned">Never scanned</option>
               </select>
               <div style={{ position: "relative" }}>
                 <Search style={{ width: 12, height: 12, color: ADMIN_THEME.textSecondary, position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)" }} />
@@ -2874,1609 +2752,866 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
                   value={verSearch}
                   onChange={e => setVerSearch(e.target.value)}
                   style={{
-                    background: ADMIN_THEME.cardBg,
-                    border: `1px solid ${ADMIN_THEME.border}`,
-                    borderRadius: 6,
-                    padding: "4px 10px 4px 28px",
-                    fontSize: 12,
-                    color: ADMIN_THEME.textPrimary,
-                    width: "180px",
-                    outline: "none"
+                    background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`,
+                    borderRadius: 6, padding: "6px 10px 6px 28px", fontSize: 12,
+                    color: ADMIN_THEME.textPrimary, width: 200, outline: "none",
                   }}
                 />
               </div>
             </div>
           </div>
 
-          <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, overflow: "hidden" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-              <thead>
-                <tr style={{ background: "rgba(0,0,0,0.01)", borderBottom: `2px solid ${ADMIN_THEME.border}` }}>
-                  <th style={{ padding: "12px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>Ledger ID</th>
-                  <th style={{ padding: "12px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>Document Name / Category</th>
-                  <th style={{ padding: "12px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>Verification Date</th>
-                  <th style={{ padding: "12px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>Executing Officer</th>
-                  <th style={{ padding: "12px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>SHA-256 Checksum Signature</th>
-                  <th style={{ padding: "12px 16px", textAlign: "center", color: ADMIN_THEME.textSecondary }}>Ledger Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredVerifications.map((v, idx) => (
-                  <tr key={v.verificationId} style={{ borderBottom: idx !== filteredVerifications.length - 1 ? `1px solid ${ADMIN_THEME.border}` : "none" }}>
-                    <td style={{ padding: "14px 16px", fontFamily: "JetBrains Mono, monospace", color: ADMIN_THEME.accentGold }}>{v.verificationId}</td>
-                    <td style={{ padding: "14px 16px" }}>
-                      <div style={{ fontWeight: 600 }}>{v.documentName}</div>
-                      <span style={{ fontSize: 10, color: ADMIN_THEME.textSecondary }}>{v.documentType}</span>
-                    </td>
-                    <td style={{ padding: "14px 16px" }}>{new Date(v.verificationDate).toLocaleDateString()} {new Date(v.verificationDate).toLocaleTimeString()}</td>
-                    <td style={{ padding: "14px 16px" }}>{v.verifiedBy || "System Automated"}</td>
-                    <td style={{ padding: "14px 16px", fontFamily: "JetBrains Mono, monospace", fontSize: 10.5, color: ADMIN_THEME.textSecondary }}>
-                      {v.hash ? `${v.hash.slice(0, 8)}...${v.hash.slice(-8)}` : "No signature"}
-                    </td>
-                    <td style={{ padding: "14px 16px", textAlign: "center" }}>
-                      <span style={{
-                        fontSize: 10,
-                        fontWeight: 700,
-                        background: v.status === "verified" ? "rgba(16,185,129,0.1)" : "rgba(239,68,68,0.1)",
-                        color: v.status === "verified" ? ADMIN_THEME.green : ADMIN_THEME.red,
-                        padding: "3px 8px",
-                        borderRadius: 4,
-                        textTransform: "uppercase"
-                      }}>
-                        {v.status === "verified" ? "VALID SIGNATURE" : "SIG MISMATCH"}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* 6. CRIME DB ANALYTICS */}
-      {adminTab === "admin-analytics" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-          
-          {/* Header Row */}
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
-            <div>
-              <h1 style={{ fontSize: 22, fontWeight: 800, color: ADMIN_THEME.textPrimary }}>Crime Database Analytics</h1>
-              <p style={{ fontSize: 12, color: ADMIN_THEME.textSecondary }}>Platform usage analytics, database query metrics, and intelligence access patterns</p>
-            </div>
-            
-            <button
-              onClick={() => {
-                const csvData = [
-                  ["Category", "Metrics", "Value"],
-                  ["Total Queries", "48,920", "+12% this week"],
-                  ["Daily Queries", "342", "N/A"],
-                  ["Weekly Queries", "2,194", "N/A"],
-                  ["Monthly Queries", "8,440", "N/A"],
-                  ["Query Success Rate", "97.8%", "N/A"],
-                  ["Avg Search Time", "1.2s", "N/A"],
-                  ["Total AI Queries", "12,480", "N/A"],
-                  ["Reports Generated", "1,240", "N/A"]
-                ];
-                const content = "data:text/csv;charset=utf-8," + csvData.map(e => e.join(",")).join("\n");
-                const link = document.createElement("a");
-                link.setAttribute("href", encodeURI(content));
-                link.setAttribute("download", "Crime_DB_Analytics_Summary.csv");
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-              }}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-                background: "#ffffff",
-                border: `1px solid ${ADMIN_THEME.border}`,
-                borderRadius: 6,
-                padding: "6px 14px",
-                fontSize: 12,
-                fontWeight: 600,
-                color: ADMIN_THEME.textPrimary,
-                cursor: "pointer",
-                transition: "background 0.2s"
-              }}
-              onMouseEnter={e => e.currentTarget.style.background = "#f8fafc"}
-              onMouseLeave={e => e.currentTarget.style.background = "#ffffff"}
-            >
-              <Download style={{ width: 14, height: 14, color: ADMIN_THEME.textSecondary }} />
-              <span>Export</span>
-              <ChevronDown style={{ width: 12, height: 12, color: ADMIN_THEME.textSecondary }} />
-            </button>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 14, marginBottom: 20 }}>
+            {([
+              ["Documents Sealed", verifications.length, ADMIN_THEME.textPrimary],
+              ["Scans Performed", verifications.reduce((n: number, v: any) => n + v.scanCount, 0), ADMIN_THEME.textPrimary],
+              ["Never Scanned", verifications.filter((v: any) => v.scanCount === 0).length, ADMIN_THEME.textSecondary],
+              ["Failed Scans", admin.failedScans.length, admin.failedScans.length ? ADMIN_THEME.red : ADMIN_THEME.green],
+            ] as const).map(([label, value, colour]) => (
+              <div key={label} style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: ADMIN_THEME.textSecondary, textTransform: "uppercase", letterSpacing: "0.05em" }}>{label}</div>
+                <div style={{ fontSize: 26, fontWeight: 800, color: colour as string, marginTop: 6 }}>{value}</div>
+              </div>
+            ))}
           </div>
 
-          {/* 8 Stats Cards Grid */}
-          <div style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-            gap: 16
-          }}>
-            {/* Card 1 */}
-            <div style={{
-              background: ADMIN_THEME.cardBg,
-              border: `1px solid ${ADMIN_THEME.border}`,
-              borderTop: "3.5px solid rgb(99, 102, 241)",
-              borderRadius: 8,
-              padding: 16,
-              boxShadow: ADMIN_THEME.shadow,
-              display: "flex",
-              flexDirection: "column",
-              gap: 8
-            }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <Database style={{ width: 16, height: 16, color: "rgb(99, 102, 241)" }} />
-                  <span style={{ fontSize: 10, fontWeight: 700, color: ADMIN_THEME.textSecondary, textTransform: "uppercase" }}>Total DB Queries</span>
-                </div>
-                <span style={{
-                  fontSize: 9,
-                  fontWeight: 700,
-                  background: "#ecfdf5",
-                  color: "#065f46",
-                  padding: "2px 6px",
-                  borderRadius: 4,
-                  display: "inline-flex",
-                  alignItems: "center"
-                }}>
-                  ▲ +12% this week
-                </span>
+          {/* Scans that did not verify. Surfaced above the ledger because a
+              failed scan is the thing an administrator needs to see first. */}
+          {admin.failedScans.length > 0 && (
+            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.red}55`, borderRadius: 8, marginBottom: 20, overflow: "hidden" }}>
+              <div style={{ padding: "12px 16px", borderBottom: `1px solid ${ADMIN_THEME.border}`, fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "JetBrains Mono", color: ADMIN_THEME.red }}>
+                Scans That Did Not Verify
               </div>
-              <div style={{ fontSize: 26, fontWeight: 800, color: ADMIN_THEME.textPrimary, marginTop: 4 }}>48,920</div>
-            </div>
-
-            {/* Card 2 */}
-            <div style={{
-              background: ADMIN_THEME.cardBg,
-              border: `1px solid ${ADMIN_THEME.border}`,
-              borderTop: "3.5px solid rgb(249, 115, 22)",
-              borderRadius: 8,
-              padding: 16,
-              boxShadow: ADMIN_THEME.shadow,
-              display: "flex",
-              flexDirection: "column",
-              gap: 8
-            }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <Search style={{ width: 16, height: 16, color: "rgb(249, 115, 22)" }} />
-                <span style={{ fontSize: 10, fontWeight: 700, color: ADMIN_THEME.textSecondary, textTransform: "uppercase" }}>Daily Queries</span>
-              </div>
-              <div style={{ fontSize: 26, fontWeight: 800, color: ADMIN_THEME.textPrimary, marginTop: 4 }}>342</div>
-            </div>
-
-            {/* Card 3 */}
-            <div style={{
-              background: ADMIN_THEME.cardBg,
-              border: `1px solid ${ADMIN_THEME.border}`,
-              borderTop: "3.5px solid rgb(168, 85, 247)",
-              borderRadius: 8,
-              padding: 16,
-              boxShadow: ADMIN_THEME.shadow,
-              display: "flex",
-              flexDirection: "column",
-              gap: 8
-            }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <TrendingUp style={{ width: 16, height: 16, color: "rgb(168, 85, 247)" }} />
-                <span style={{ fontSize: 10, fontWeight: 700, color: ADMIN_THEME.textSecondary, textTransform: "uppercase" }}>Weekly Queries</span>
-              </div>
-              <div style={{ fontSize: 26, fontWeight: 800, color: ADMIN_THEME.textPrimary, marginTop: 4 }}>2,194</div>
-            </div>
-
-            {/* Card 4 */}
-            <div style={{
-              background: ADMIN_THEME.cardBg,
-              border: `1px solid ${ADMIN_THEME.border}`,
-              borderTop: "3.5px solid rgb(20, 184, 166)",
-              borderRadius: 8,
-              padding: 16,
-              boxShadow: ADMIN_THEME.shadow,
-              display: "flex",
-              flexDirection: "column",
-              gap: 8
-            }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <BarChart3 style={{ width: 16, height: 16, color: "rgb(20, 184, 166)" }} />
-                <span style={{ fontSize: 10, fontWeight: 700, color: ADMIN_THEME.textSecondary, textTransform: "uppercase" }}>Monthly Queries</span>
-              </div>
-              <div style={{ fontSize: 26, fontWeight: 800, color: ADMIN_THEME.textPrimary, marginTop: 4 }}>8,440</div>
-            </div>
-
-            {/* Card 5 */}
-            <div style={{
-              background: ADMIN_THEME.cardBg,
-              border: `1px solid ${ADMIN_THEME.border}`,
-              borderTop: "3.5px solid rgb(34, 197, 94)",
-              borderRadius: 8,
-              padding: 16,
-              boxShadow: ADMIN_THEME.shadow,
-              display: "flex",
-              flexDirection: "column",
-              gap: 8
-            }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <Zap style={{ width: 16, height: 16, color: "rgb(34, 197, 94)" }} />
-                <span style={{ fontSize: 10, fontWeight: 700, color: ADMIN_THEME.textSecondary, textTransform: "uppercase" }}>Query Success Rate</span>
-              </div>
-              <div style={{ fontSize: 26, fontWeight: 800, color: ADMIN_THEME.textPrimary, marginTop: 4 }}>97.8%</div>
-            </div>
-
-            {/* Card 6 */}
-            <div style={{
-              background: ADMIN_THEME.cardBg,
-              border: `1px solid ${ADMIN_THEME.border}`,
-              borderTop: "3.5px solid #ea580c",
-              borderRadius: 8,
-              padding: 16,
-              boxShadow: ADMIN_THEME.shadow,
-              display: "flex",
-              flexDirection: "column",
-              gap: 8
-            }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <Clock style={{ width: 16, height: 16, color: "#ea580c" }} />
-                <span style={{ fontSize: 10, fontWeight: 700, color: ADMIN_THEME.textSecondary, textTransform: "uppercase" }}>Avg Search Time</span>
-              </div>
-              <div style={{ fontSize: 26, fontWeight: 800, color: ADMIN_THEME.textPrimary, marginTop: 4 }}>1.2s</div>
-            </div>
-
-            {/* Card 7 */}
-            <div style={{
-              background: ADMIN_THEME.cardBg,
-              border: `1px solid ${ADMIN_THEME.border}`,
-              borderTop: "3.5px solid #eab308",
-              borderRadius: 8,
-              padding: 16,
-              boxShadow: ADMIN_THEME.shadow,
-              display: "flex",
-              flexDirection: "column",
-              gap: 8
-            }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <Sparkles style={{ width: 16, height: 16, color: "#eab308" }} />
-                <span style={{ fontSize: 10, fontWeight: 700, color: ADMIN_THEME.textSecondary, textTransform: "uppercase" }}>Total AI Queries</span>
-              </div>
-              <div style={{ fontSize: 26, fontWeight: 800, color: ADMIN_THEME.textPrimary, marginTop: 4 }}>12,480</div>
-            </div>
-
-            {/* Card 8 */}
-            <div style={{
-              background: ADMIN_THEME.cardBg,
-              border: `1px solid ${ADMIN_THEME.border}`,
-              borderTop: "3.5px solid #10b981",
-              borderRadius: 8,
-              padding: 16,
-              boxShadow: ADMIN_THEME.shadow,
-              display: "flex",
-              flexDirection: "column",
-              gap: 8
-            }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <FileText style={{ width: 16, height: 16, color: "#10b981" }} />
-                <span style={{ fontSize: 10, fontWeight: 700, color: ADMIN_THEME.textSecondary, textTransform: "uppercase" }}>Reports Generated</span>
-              </div>
-              <div style={{ fontSize: 26, fontWeight: 800, color: ADMIN_THEME.textPrimary, marginTop: 4 }}>1,240</div>
-            </div>
-          </div>
-
-          {/* Search bar */}
-          <div style={{ position: "relative", maxWidth: "480px" }}>
-            <Search style={{ width: 14, height: 14, color: ADMIN_THEME.textMuted, position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)" }} />
-            <input
-              type="text"
-              placeholder="Search queries, officers, FIRs..."
-              value={dbAnalyticsSearch}
-              onChange={e => setDbAnalyticsSearch(e.target.value)}
-              style={{
-                width: "100%",
-                padding: "8px 12px 8px 34px",
-                border: `1px solid ${ADMIN_THEME.border}`,
-                borderRadius: 6,
-                fontSize: 13,
-                outline: "none",
-                background: "#ffffff",
-                color: ADMIN_THEME.textPrimary
-              }}
-            />
-          </div>
-
-          {/* Top FIRS & Queried Criminals columns */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
-            {/* Top Accessed FIRs */}
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, overflow: "hidden", boxShadow: ADMIN_THEME.shadow }}>
-              <div style={{ borderBottom: `1px solid ${ADMIN_THEME.border}`, padding: "12px 16px", background: "rgba(0,0,0,0.005)" }}>
-                <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", color: ADMIN_THEME.textSecondary }}>Top Accessed FIRs</span>
-              </div>
-              <div style={{ display: "flex", flexDirection: "column" }}>
-                {[
-                  { title: "Oil Smuggling Syndicate — Bengaluru", ref: "FIR-442-BLR • Cyber Crime", val: 342 },
-                  { title: "Identity Fraud Ring — Mysuru", ref: "FIR-891-MYS • Economic Offences", val: 289 },
-                  { title: "Narcotics Trafficking — Belagavi", ref: "FIR-1203-BLG • Narcotics", val: 234 },
-                  { title: "Cyber Extortion Cases — Dharwad", ref: "FIR-556-HDW • Cyber Crime", val: 198 },
-                  { title: "Organized Land Grab — Bengaluru Rural", ref: "FIR-720-BLR • Special Branch", val: 167 }
-                ].filter(item => {
-                  if (!dbAnalyticsSearch) return true;
-                  const query = dbAnalyticsSearch.toLowerCase();
-                  return item.title.toLowerCase().includes(query) || item.ref.toLowerCase().includes(query);
-                }).map((item, idx) => (
-                  <div key={idx} style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    padding: "12px 16px",
-                    borderBottom: idx !== 4 ? `1px solid ${ADMIN_THEME.border}` : "none"
-                  }}>
-                    <div style={{ display: "flex", gap: 12 }}>
-                      <span style={{ color: ADMIN_THEME.textMuted, fontSize: 13, fontWeight: 700, fontFamily: "JetBrains Mono" }}>#{idx + 1}</span>
-                      <div>
-                        <div style={{ fontSize: 12.5, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>{item.title}</div>
-                        <div style={{ fontSize: 10.5, color: ADMIN_THEME.textMuted, marginTop: 2 }}>{item.ref}</div>
-                      </div>
+              {admin.failedScans.map((f: any, idx: number) => (
+                <div key={f.scanId || idx} style={{ padding: "12px 16px", borderBottom: idx !== admin.failedScans.length - 1 ? `1px solid ${ADMIN_THEME.border}` : "none", display: "flex", justifyContent: "space-between", gap: 12 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 600 }}>{f.documentName || f.crimeNo || f.verificationId || "Unidentified document"}</div>
+                    <div style={{ fontSize: 11, color: ADMIN_THEME.textSecondary, marginTop: 2 }}>
+                      {f.status}{f.error ? ` — ${f.error}` : ""}
                     </div>
-                    <div style={{ textAlign: "right" }}>
-                      <div style={{ fontSize: 13, fontWeight: 700, color: "rgb(200, 146, 42)" }}>{item.val}</div>
-                      <div style={{ fontSize: 9, color: ADMIN_THEME.textMuted, textTransform: "uppercase" }}>accesses</div>
-                    </div>
+                    <div style={{ fontSize: 10.5, color: ADMIN_THEME.textMuted, marginTop: 3 }}>Scanned by {f.scannedBy || "unknown"}</div>
                   </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Most Queried Criminals */}
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, overflow: "hidden", boxShadow: ADMIN_THEME.shadow }}>
-              <div style={{ borderBottom: `1px solid ${ADMIN_THEME.border}`, padding: "12px 16px", background: "rgba(0,0,0,0.005)" }}>
-                <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", color: ADMIN_THEME.textSecondary }}>Most Queried Criminals</span>
-              </div>
-              <div style={{ display: "flex", flexDirection: "column" }}>
-                {[
-                  { name: "Ravi Shankar Gupta", ref: "Aliases: Ravi Don, RSG • Last: 2 hours ago", val: 420 },
-                  { name: "Mohammed Yusuf Khan", ref: "Aliases: Yusuf Bhai • Last: 5 hours ago", val: 380 },
-                  { name: "Lakshmi Devi Patel", ref: "Aliases: Lakshmi Ma • Last: 1 day ago", val: 312 },
-                  { name: "Suresh Kumar Reddy", ref: "Aliases: SK Reddy, Red Bull • Last: 2 days ago", val: 245 }
-                ].filter(item => {
-                  if (!dbAnalyticsSearch) return true;
-                  const query = dbAnalyticsSearch.toLowerCase();
-                  return item.name.toLowerCase().includes(query) || item.ref.toLowerCase().includes(query);
-                }).map((item, idx) => (
-                  <div key={idx} style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    padding: "12px 16px",
-                    borderBottom: idx !== 3 ? `1px solid ${ADMIN_THEME.border}` : "none"
-                  }}>
-                    <div style={{ display: "flex", gap: 12 }}>
-                      <span style={{ color: ADMIN_THEME.textMuted, fontSize: 13, fontWeight: 700, fontFamily: "JetBrains Mono" }}>#{idx + 1}</span>
-                      <div>
-                        <div style={{ fontSize: 12.5, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>{item.name}</div>
-                        <div style={{ fontSize: 10.5, color: ADMIN_THEME.textMuted, marginTop: 2 }}>{item.ref}</div>
-                      </div>
-                    </div>
-                    <div style={{ textAlign: "right" }}>
-                      <div style={{ fontSize: 13, fontWeight: 700, color: "rgb(200, 146, 42)" }}>{item.val}</div>
-                      <div style={{ fontSize: 9, color: ADMIN_THEME.textMuted, textTransform: "uppercase" }}>queries</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* Department Usage Rankings */}
-          <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 20, boxShadow: ADMIN_THEME.shadow }}>
-            <div style={{ borderBottom: `1px solid ${ADMIN_THEME.border}`, paddingBottom: 10, marginBottom: 16 }}>
-              <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", color: ADMIN_THEME.textSecondary, textTransform: "uppercase" }}>Department Usage Rankings</span>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-              {[
-                { name: "Cyber Crime Wing", percentage: 75, val: "12,400", sub: "45 officers" },
-                { name: "Criminal Investigation", percentage: 60, val: "9,800", sub: "38 officers" },
-                { name: "Narcotics Control", percentage: 40, val: "6,200", sub: "22 officers" },
-                { name: "Economic Offences", percentage: 35, val: "4,800", sub: "18 officers" },
-                { name: "Special Branch", percentage: 25, val: "3,600", sub: "15 officers" },
-                { name: "Traffic", percentage: 15, val: "2,400", sub: "28 officers" }
-              ].map((dept, idx) => (
-                <div key={idx} style={{ display: "flex", alignItems: "center", gap: 16 }}>
-                  <div style={{ width: "160px", fontSize: 12, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>{dept.name}</div>
-                  
-                  <div style={{ flex: 1, height: "8px", borderRadius: 4, background: "#f1f5f9", overflow: "hidden", position: "relative" }}>
-                    <div style={{
-                      width: `${dept.percentage}%`,
-                      height: "100%",
-                      borderRadius: 4,
-                      background: "#FF9933",
-                      transition: "width 0.5s ease-out"
-                    }} />
-                  </div>
-
-                  <div style={{ display: "flex", gap: 10, width: "150px", justifyContent: "flex-end", alignItems: "center" }}>
-                    <span style={{ fontSize: 13, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>{dept.val}</span>
-                    <span style={{ fontSize: 10.5, color: ADMIN_THEME.textMuted }}>{dept.sub}</span>
+                  <div style={{ fontSize: 10.5, color: ADMIN_THEME.textMuted, whiteSpace: "nowrap" }}>
+                    {f.scannedAt ? new Date(f.scannedAt.replace(" ", "T")).toLocaleString() : "—"}
                   </div>
                 </div>
               ))}
             </div>
-          </div>
+          )}
 
-          {/* Recent Queries Table */}
-          <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, overflow: "hidden", boxShadow: ADMIN_THEME.shadow }}>
-            <div style={{ borderBottom: `1px solid ${ADMIN_THEME.border}`, padding: "12px 16px", background: "rgba(0,0,0,0.005)" }}>
-              <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", color: ADMIN_THEME.textSecondary, textTransform: "uppercase" }}>Recent Crime Database Queries</span>
-            </div>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-              <thead>
-                <tr style={{ background: "rgba(0,0,0,0.01)", borderBottom: `2px solid ${ADMIN_THEME.border}` }}>
-                  <th style={{ padding: "10px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>Officer</th>
-                  <th style={{ padding: "10px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>Query</th>
-                  <th style={{ padding: "10px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>Module</th>
-                  <th style={{ padding: "10px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>Time</th>
-                  <th style={{ padding: "10px 16px", textAlign: "center", color: ADMIN_THEME.textSecondary }}>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {[
-                  { officer: "Inspector Ananth Murthy", query: "FIR 442 suspect list", module: "FIR Analytics", time: "2 min ago", status: "SUCCESS" },
-                  { officer: "Officer Shruthi Rao", query: "Mysuru cybercrime trend 2026", module: "Crime Analytics", time: "15 min ago", status: "SUCCESS" },
-                  { officer: "DSP R. K. Shastry", query: "Cross-district syndicate mapping", module: "Criminal Networks", time: "1 hour ago", status: "SUCCESS" },
-                  { officer: "Inspector Rajesh Kumar", query: "Darkweb vendor identification", module: "Cyber Intel", time: "3 hours ago", status: "SUCCESS" }
-                ].filter(item => {
-                  if (!dbAnalyticsSearch) return true;
-                  const query = dbAnalyticsSearch.toLowerCase();
-                  return (
-                    item.officer.toLowerCase().includes(query) ||
-                    item.query.toLowerCase().includes(query) ||
-                    item.module.toLowerCase().includes(query)
-                  );
-                }).map((item, idx) => (
-                  <tr key={idx} style={{ borderBottom: idx !== 3 ? `1px solid ${ADMIN_THEME.border}` : "none" }}>
-                    <td style={{ padding: "12px 16px", fontWeight: 700 }}>{item.officer}</td>
-                    <td style={{ padding: "12px 16px", color: ADMIN_THEME.textPrimary }}>{item.query}</td>
-                    <td style={{ padding: "12px 16px" }}>
-                      <span style={{ background: "rgba(255,153,51,0.08)", color: ADMIN_THEME.accentGold, padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>
-                        {item.module}
-                      </span>
-                    </td>
-                    <td style={{ padding: "12px 16px", color: ADMIN_THEME.textSecondary }}>{item.time}</td>
-                    <td style={{ padding: "12px 16px", textAlign: "center" }}>
-                      <span style={{ fontSize: 9, background: "rgba(16,185,129,0.1)", color: ADMIN_THEME.green, padding: "2px 6px", borderRadius: 3, fontWeight: 800 }}>
-                        ● {item.status}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, overflow: "hidden" }}>
+            {filteredVerifications.length === 0 ? (
+              <div style={{ padding: 32, textAlign: "center", color: ADMIN_THEME.textSecondary, fontSize: 13 }}>
+                {verifications.length === 0
+                  ? "No documents have been sealed yet. A document enters this ledger when it is registered at print time."
+                  : "No document matches this filter."}
+              </div>
+            ) : (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 900 }}>
+                  <thead>
+                    <tr style={{ background: "rgba(0,0,0,0.01)", borderBottom: `2px solid ${ADMIN_THEME.border}` }}>
+                      <th style={{ padding: "12px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>Verification ID</th>
+                      <th style={{ padding: "12px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>Crime Number</th>
+                      <th style={{ padding: "12px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>Sealed</th>
+                      <th style={{ padding: "12px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>Issued By</th>
+                      <th style={{ padding: "12px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>SHA-256</th>
+                      <th style={{ padding: "12px 16px", textAlign: "center", color: ADMIN_THEME.textSecondary }}>Scans</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredVerifications.map((v: any, idx: number) => (
+                      <tr key={v.verificationId || idx} style={{ borderBottom: idx !== filteredVerifications.length - 1 ? `1px solid ${ADMIN_THEME.border}` : "none" }}>
+                        <td style={{ padding: "13px 16px", fontFamily: "JetBrains Mono, monospace", color: ADMIN_THEME.accentGold }}>{v.verificationId}</td>
+                        <td style={{ padding: "13px 16px", fontFamily: "JetBrains Mono, monospace" }}>{v.crimeNo || "—"}</td>
+                        <td style={{ padding: "13px 16px", whiteSpace: "nowrap" }}>
+                          {v.issuedAt ? new Date(v.issuedAt.replace(" ", "T")).toLocaleString() : "—"}
+                        </td>
+                        <td style={{ padding: "13px 16px" }}>{v.issuedBy || "—"}</td>
+                        <td style={{ padding: "13px 16px", fontFamily: "JetBrains Mono, monospace", fontSize: 10.5, color: ADMIN_THEME.textSecondary }}>
+                          {v.documentHash ? `${v.documentHash.slice(0, 8)}...${v.documentHash.slice(-8)}` : "no signature"}
+                        </td>
+                        <td style={{ padding: "13px 16px", textAlign: "center" }}>
+                          {v.scanCount === 0 ? (
+                            <span style={{ fontSize: 10, fontWeight: 700, color: ADMIN_THEME.textMuted }}>never scanned</span>
+                          ) : (
+                            <span style={{
+                              fontSize: 10, fontWeight: 700, padding: "3px 8px", borderRadius: 4,
+                              background: String(v.lastScanStatus).toUpperCase() === "VERIFIED" ? "rgba(16,185,129,0.1)" : "rgba(239,68,68,0.1)",
+                              color: String(v.lastScanStatus).toUpperCase() === "VERIFIED" ? ADMIN_THEME.green : ADMIN_THEME.red,
+                            }}>
+                              {v.scanCount} · {v.lastScanStatus || "unknown"}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
-
         </div>
       )}
 
-      {/* 7. AI MONITORING CONSOLE */}
-      {adminTab === "admin-ai" && (
-        <div>
-          {/* Header row */}
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
+      {adminTab === "admin-analytics" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 16, flexWrap: "wrap" }}>
             <div>
-              <h1 style={{ fontSize: 22, fontWeight: 800, color: ADMIN_THEME.textPrimary }}>AI Monitoring Console</h1>
-              <p style={{ fontSize: 12, color: ADMIN_THEME.textSecondary }}>Monitor AI conversations, ratings, confidence scores, and flagged interactions</p>
+              <h1 style={{ fontSize: 22, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>Platform Analytics</h1>
+              <p style={{ fontSize: 12, color: ADMIN_THEME.textSecondary }}>
+                Usage counted from officer activity, sessions and the case ledger
+              </p>
             </div>
-            
-            {/* Export options */}
-            <div style={{ position: "relative" }}>
-              <button
-                onClick={() => setIsExportOpen(p => !p)}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  background: ADMIN_THEME.cardBg,
-                  border: `1px solid ${ADMIN_THEME.border}`,
-                  borderRadius: 6,
-                  padding: "8px 14px",
-                  fontSize: 12,
-                  fontWeight: 600,
-                  color: ADMIN_THEME.textSecondary,
-                  cursor: "pointer",
-                  transition: "all 0.15s ease",
-                  boxShadow: ADMIN_THEME.shadow
-                }}
-                onMouseEnter={e => { e.currentTarget.style.background = "rgba(0,0,0,0.02)"; }}
-                onMouseLeave={e => { e.currentTarget.style.background = ADMIN_THEME.cardBg; }}
-              >
-                <Download style={{ width: 14, height: 14 }} /> 
-                <span>Export</span>
-                <ChevronDown style={{ width: 12, height: 12 }} />
-              </button>
-              
-              {isExportOpen && (
-                <div style={{
-                  position: "absolute",
-                  right: 0,
-                  top: "100%",
-                  marginTop: 6,
-                  background: "#ffffff",
-                  border: `1px solid ${ADMIN_THEME.border}`,
-                  borderRadius: 6,
-                  boxShadow: ADMIN_THEME.shadowMd,
-                  width: 145,
-                  zIndex: 100
-                }}>
-                  <button
-                    onClick={() => {
-                      const headers = ["Officer", "Badge No", "Query", "Module", "Confidence", "Rating", "Status", "Time"];
-                      const rows = conversations.map(c => [
-                        c.officer, c.badgeNo, c.query, c.module, c.confidence + "%", c.rating ?? "N/A", c.status, c.time
-                      ]);
-                      const csvContent = "data:text/csv;charset=utf-8," 
-                        + [headers.join(","), ...rows.map(e => e.map(val => `"${val}"`).join(","))].join("\n");
-                      const encodedUri = encodeURI(csvContent);
-                      const link = document.createElement("a");
-                      link.setAttribute("href", encodedUri);
-                      link.setAttribute("download", `AI_Monitoring_Report_${Date.now()}.csv`);
-                      document.body.appendChild(link);
-                      link.click();
-                      document.body.removeChild(link);
-                      setIsExportOpen(false);
-                    }}
-                    style={{
-                      width: "100%",
-                      textAlign: "left",
-                      padding: "8px 12px",
-                      background: "none",
-                      border: "none",
-                      fontSize: 12,
-                      cursor: "pointer",
-                      color: ADMIN_THEME.textPrimary
-                    }}
-                    onMouseEnter={e => { e.currentTarget.style.background = "#f1f5f9"; }}
-                    onMouseLeave={e => { e.currentTarget.style.background = "none"; }}
-                  >
-                    Export as CSV
-                  </button>
-                  <button
-                    onClick={() => {
-                      window.print();
-                      setIsExportOpen(false);
-                    }}
-                    style={{
-                      width: "100%",
-                      textAlign: "left",
-                      padding: "8px 12px",
-                      background: "none",
-                      border: "none",
-                      fontSize: 12,
-                      cursor: "pointer",
-                      color: ADMIN_THEME.textPrimary
-                    }}
-                    onMouseEnter={e => { e.currentTarget.style.background = "#f1f5f9"; }}
-                    onMouseLeave={e => { e.currentTarget.style.background = "none"; }}
-                  >
-                    Print Report
-                  </button>
+            <button
+              onClick={() => {
+                // Exports what is on screen, including the "not measured" rows.
+                // The reason travels with them so a spreadsheet cannot quietly
+                // turn an absent metric into a zero.
+                const rows: string[][] = [["Metric", "Value", "Note"]];
+                (admin.analytics?.metrics || []).forEach((m: any) => {
+                  rows.push([m.label, m.value === null ? "not measured" : String(m.value), m.unavailable || m.hint || ""]);
+                });
+                rows.push([]);
+                rows.push(["Day", "AI Queries"]);
+                (admin.analytics?.aiQueriesByDay || []).forEach((d: any) => rows.push([d.day, String(d.count)]));
+                const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+                const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+                const link = document.createElement("a");
+                link.href = url;
+                link.download = `ORCA_Platform_Analytics_${new Date().toISOString().slice(0, 10)}.csv`;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                URL.revokeObjectURL(url);
+              }}
+              disabled={!admin.analytics}
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 6,
+                background: "#ffffff", border: `1px solid ${ADMIN_THEME.border}`,
+                borderRadius: 6, padding: "7px 14px", fontSize: 12, fontWeight: 600,
+                color: ADMIN_THEME.textPrimary, cursor: admin.analytics ? "pointer" : "default",
+              }}
+            >
+              <Download style={{ width: 14, height: 14, color: ADMIN_THEME.textSecondary }} />
+              <span>Export CSV</span>
+            </button>
+          </div>
+
+          {!admin.analytics ? (
+            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 32, textAlign: "center", color: ADMIN_THEME.textSecondary, fontSize: 13 }}>
+              {loading ? "Counting..." : "No analytics available."}
+            </div>
+          ) : (
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 16 }}>
+                {admin.analytics.metrics.map((m: any) => (
+                  <div key={m.key} style={{
+                    background: ADMIN_THEME.cardBg,
+                    border: `1px solid ${ADMIN_THEME.border}`,
+                    borderTop: `3.5px solid ${m.value === null ? "#cbd5e1" : ADMIN_THEME.accentGold}`,
+                    borderRadius: 8, padding: 16,
+                  }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: ADMIN_THEME.textSecondary, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                      {m.label}
+                    </div>
+                    {m.value === null ? (
+                      <>
+                        <div style={{ fontSize: 15, fontWeight: 700, color: ADMIN_THEME.textMuted, marginTop: 8 }}>Not measured</div>
+                        <div style={{ fontSize: 10.5, color: ADMIN_THEME.textSecondary, marginTop: 5, lineHeight: 1.45 }}>{m.unavailable}</div>
+                      </>
+                    ) : (
+                      <>
+                        <div style={{ fontSize: 26, fontWeight: 800, color: ADMIN_THEME.textPrimary, marginTop: 6 }}>
+                          {m.value.toLocaleString()}
+                        </div>
+                        {m.hint && <div style={{ fontSize: 10, color: ADMIN_THEME.textMuted, marginTop: 4 }}>{m.hint}</div>}
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {/* AI queries per day. Zero-filled, so a quiet day shows as a
+                  gap rather than being skipped and compressing the timeline. */}
+              <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "JetBrains Mono", marginBottom: 14 }}>
+                  AI Queries - Last 14 Days
                 </div>
+                {(() => {
+                  const series = admin.analytics.aiQueriesByDay;
+                  const peak = Math.max(1, ...series.map((d: any) => d.count));
+                  return (
+                    <div style={{ display: "flex", alignItems: "flex-end", gap: 6, height: 120 }}>
+                      {series.map((d: any) => (
+                        <div key={d.day} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 5 }}>
+                          <div style={{ fontSize: 9, color: ADMIN_THEME.textSecondary }}>{d.count || ""}</div>
+                          <div
+                            title={`${d.day}: ${d.count}`}
+                            style={{
+                              width: "100%",
+                              height: `${Math.round((d.count / peak) * 84)}px`,
+                              minHeight: d.count ? 3 : 1,
+                              background: d.count ? ADMIN_THEME.accentGold : "#e2e8f0",
+                              borderRadius: "3px 3px 0 0",
+                            }}
+                          />
+                          <div style={{ fontSize: 8.5, color: ADMIN_THEME.textMuted, fontFamily: "JetBrains Mono, monospace" }}>
+                            {d.day.slice(8)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 16 }}>
+                <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "JetBrains Mono", marginBottom: 12 }}>
+                    Activity by Category
+                  </div>
+                  {admin.analytics.activityByCategory.length === 0 ? (
+                    <div style={{ fontSize: 12, color: ADMIN_THEME.textSecondary }}>No activity recorded yet.</div>
+                  ) : admin.analytics.activityByCategory.map((c: any) => (
+                    <div key={c.category} style={{ display: "flex", justifyContent: "space-between", padding: "7px 0", borderBottom: `1px solid ${ADMIN_THEME.border}`, fontSize: 12 }}>
+                      <span style={{ color: ADMIN_THEME.textSecondary }}>{c.category}</span>
+                      <strong>{c.count}</strong>
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "JetBrains Mono", marginBottom: 12 }}>
+                    Most Active Officers
+                  </div>
+                  {admin.analytics.topOfficers.length === 0 ? (
+                    <div style={{ fontSize: 12, color: ADMIN_THEME.textSecondary }}>No activity recorded yet.</div>
+                  ) : admin.analytics.topOfficers.map((o: any) => (
+                    <div key={o.officer} style={{ display: "flex", justifyContent: "space-between", padding: "7px 0", borderBottom: `1px solid ${ADMIN_THEME.border}`, fontSize: 12 }}>
+                      <span style={{ color: ADMIN_THEME.textSecondary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.officer}</span>
+                      <strong style={{ paddingLeft: 10 }}>{o.events}</strong>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/*
+        AI MONITORING CONSOLE.
+
+        WHAT THIS SCREEN IS
+
+        Every officer's AI questions and the answers they were given, visible to
+        any administrator who can reach this tab. That is a surveillance
+        capability. It was chosen deliberately after the alternatives
+        (aggregate-only, or removing the tab) were put to the user - it is not
+        an accident of the implementation.
+
+        WHAT IS REAL, AND WHAT WAS REMOVED
+
+        The version this replaced held five invented conversations in component
+        state, complete with a "confidence" percentage, a star rating, and
+        statuses of FLAGGED / ESCALATED. None of those exist anywhere:
+
+          confidence  the models return no confidence score - literals
+          rating      nothing in the app ever asks an officer to rate an answer
+          FLAGGED     there was no review workflow to flag anything into
+
+        They are gone rather than approximated. What replaced them is measured:
+        latency timed around the provider call, token counts from the provider's
+        own usage block, the model that answered, and whether the call
+        succeeded. The flags are conditions, not scores - see buildAiQueries().
+
+        Rows written before those columns existed show "not recorded" rather
+        than a zero, so an old query does not read as an instant one.
+      */}
+      {adminTab === "admin-ai" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 16, flexWrap: "wrap" }}>
+            <div>
+              <h1 style={{ fontSize: 22, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>AI Monitoring Console</h1>
+              <p style={{ fontSize: 12, color: ADMIN_THEME.textSecondary }}>
+                Every officer's AI queries, the answers returned, and what each one cost
+              </p>
+            </div>
+            <button
+              onClick={() => {
+                const rows: string[][] = [[
+                  "When", "Officer", "KGID", "Module", "Query", "Response",
+                  "Model", "Latency (ms)", "Prompt Tokens", "Completion Tokens",
+                  "Total Tokens", "Outcome", "Flags", "Context",
+                ]];
+                aiVisible.forEach((c: any) => rows.push([
+                  c.occurredAt, c.officer, c.badge, c.module, c.query, c.response,
+                  c.model, c.latencyMs ?? "", c.promptTokens ?? "", c.completionTokens ?? "",
+                  c.totalTokens ?? "", c.outcome || "not recorded", c.flags.join("; "), c.context,
+                ]));
+                const csv = rows.map(r => r.map(x => `"${String(x ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
+                const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+                const link = document.createElement("a");
+                link.href = url;
+                link.download = `ORCA_ai_queries_${new Date().toISOString().slice(0, 10)}.csv`;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                URL.revokeObjectURL(url);
+              }}
+              disabled={aiVisible.length === 0}
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 6,
+                background: "#fff", border: `1px solid ${ADMIN_THEME.border}`,
+                borderRadius: 6, padding: "7px 14px", fontSize: 12, fontWeight: 600,
+                color: ADMIN_THEME.textPrimary, cursor: aiVisible.length ? "pointer" : "default",
+              }}
+            >
+              <Download style={{ width: 14, height: 14, color: ADMIN_THEME.textSecondary }} />
+              <span>Export CSV</span>
+            </button>
+          </div>
+
+          {/* This tab shows officers' own words. Say so, on the page. */}
+          <div style={{
+            background: "rgba(255,153,51,0.06)", border: "1px solid rgba(255,153,51,0.25)",
+            borderRadius: 8, padding: "12px 16px", display: "flex", gap: 10, alignItems: "flex-start",
+          }}>
+            <Lock style={{ width: 16, height: 16, color: ADMIN_THEME.accentGold, flexShrink: 0, marginTop: 2 }} />
+            <div style={{ fontSize: 11.5, color: ADMIN_THEME.textSecondary, lineHeight: 1.55 }}>
+              <strong style={{ color: ADMIN_THEME.textPrimary }}>This page shows what officers typed and what they were told.</strong>{" "}
+              Queries are recorded for every officer and are readable by any administrator with access to this tab.
+              Attachment contents are not stored — only the file name, because an attachment is sent to an
+              external model provider and that is worth recording.
+              {(admin.aiStats?.inlinedAttachmentRows ?? 0) > 0 && (
+                <>
+                  {" "}<strong style={{ color: ADMIN_THEME.red }}>
+                    Except for {admin.aiStats.inlinedAttachmentRows} older quer
+                    {admin.aiStats.inlinedAttachmentRows === 1 ? "y" : "ies"}.
+                  </strong>{" "}
+                  Those were recorded before the typed question was separated from the assembled prompt, so their
+                  stored text still contains an attached file&rsquo;s contents. They are flagged in the list below.
+                </>
               )}
             </div>
           </div>
 
-          {/* Metric cards grid */}
-          <div style={{ 
-            display: "grid", 
-            gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", 
-            gap: 16, 
-            marginBottom: 20 
-          }}>
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16, boxShadow: ADMIN_THEME.shadow }}>
-              <div style={{ fontSize: 10, color: ADMIN_THEME.textSecondary, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em" }}>Total Conversations</div>
-              <div style={{ fontSize: 28, fontWeight: 800, color: ADMIN_THEME.textPrimary, marginTop: 8 }}>{conversations.length}</div>
-            </div>
-            
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16, boxShadow: ADMIN_THEME.shadow }}>
-              <div style={{ fontSize: 10, color: ADMIN_THEME.textSecondary, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em" }}>Flagged</div>
-              <div style={{ fontSize: 28, fontWeight: 800, color: ADMIN_THEME.red, marginTop: 8 }}>{conversations.filter(c => c.status === "FLAGGED").length}</div>
-            </div>
-            
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16, boxShadow: ADMIN_THEME.shadow }}>
-              <div style={{ fontSize: 10, color: ADMIN_THEME.textSecondary, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em" }}>Avg Confidence</div>
-              <div style={{ fontSize: 28, fontWeight: 800, color: ADMIN_THEME.green, marginTop: 8 }}>
-                {conversations.length ? Math.round(conversations.reduce((acc, c) => acc + c.confidence, 0) / conversations.length) + "%" : "0%"}
+          {/* Counts */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14 }}>
+            {([
+              ["Total Queries", admin.aiStats?.total ?? 0, ADMIN_THEME.textPrimary, null],
+              ["Flagged", admin.aiStats?.flagged ?? 0, (admin.aiStats?.flagged ?? 0) ? ADMIN_THEME.accentGold : ADMIN_THEME.green, null],
+              ["Failed", admin.aiStats?.failed ?? 0, (admin.aiStats?.failed ?? 0) ? ADMIN_THEME.red : ADMIN_THEME.green, null],
+              ["With Attachments", admin.aiStats?.withAttachments ?? 0, "#f97316", "Left the department network"],
+              [
+                "Median Latency",
+                admin.aiStats?.medianLatencyMs == null ? null : `${(admin.aiStats.medianLatencyMs / 1000).toFixed(2)}s`,
+                ADMIN_THEME.textPrimary,
+                "Median, not mean — one slow image read would skew a mean",
+              ],
+              [
+                "Tokens Used",
+                admin.aiStats?.totalTokens == null ? null : admin.aiStats.totalTokens.toLocaleString(),
+                ADMIN_THEME.textPrimary,
+                "From the provider's usage block",
+              ],
+            ] as const).map(([label, value, colour, hint]) => (
+              <div key={label} style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: ADMIN_THEME.textSecondary, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                  {label}
+                </div>
+                {value === null ? (
+                  <>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: ADMIN_THEME.textMuted, marginTop: 8 }}>Not recorded</div>
+                    <div style={{ fontSize: 10, color: ADMIN_THEME.textSecondary, marginTop: 4, lineHeight: 1.4 }}>
+                      No query carries this yet.
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div style={{ fontSize: 26, fontWeight: 800, color: colour as string, marginTop: 6 }}>{value}</div>
+                    {hint && <div style={{ fontSize: 10, color: ADMIN_THEME.textMuted, marginTop: 4, lineHeight: 1.4 }}>{hint}</div>}
+                  </>
+                )}
               </div>
-            </div>
-            
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16, boxShadow: ADMIN_THEME.shadow }}>
-              <div style={{ fontSize: 10, color: ADMIN_THEME.textSecondary, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em" }}>Low Confidence</div>
-              <div style={{ fontSize: 28, fontWeight: 800, color: "#f97316", marginTop: 8 }}>{conversations.filter(c => c.confidence < 60).length}</div>
-            </div>
-            
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16, boxShadow: ADMIN_THEME.shadow }}>
-              <div style={{ fontSize: 10, color: ADMIN_THEME.textSecondary, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em" }}>Escalated</div>
-              <div style={{ fontSize: 28, fontWeight: 800, color: "#a855f7", marginTop: 8 }}>{conversations.filter(c => c.status === "ESCALATED").length}</div>
-            </div>
+            ))}
           </div>
 
-          {/* Search and filter bar */}
-          <div style={{ 
-            display: "flex", 
-            justifyContent: "space-between", 
-            alignItems: "center", 
-            marginBottom: 16,
-            gap: 16
-          }}>
-            {/* Search */}
-            <div style={{ position: "relative", flex: 1, maxWidth: 420 }}>
-              <Search style={{ width: 14, height: 14, color: ADMIN_THEME.textMuted, position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)" }} />
+          {/* Rows recorded before the telemetry columns existed. */}
+          {(admin.aiStats?.legacyRows ?? 0) > 0 && (
+            <div style={{ fontSize: 11.5, color: ADMIN_THEME.textSecondary, display: "flex", gap: 8, alignItems: "center" }}>
+              <Info style={{ width: 14, height: 14, color: ADMIN_THEME.textMuted, flexShrink: 0 }} />
+              {admin.aiStats.legacyRows} earlier quer{admin.aiStats.legacyRows === 1 ? "y was" : "ies were"} recorded
+              before answers, latency and token counts were captured. Their question and module are real; the rest
+              reads &ldquo;not recorded&rdquo; rather than zero.
+            </div>
+          )}
+
+          {/* Search + filter */}
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <div style={{ position: "relative", flex: 1, minWidth: 220 }}>
+              <Search style={{ width: 12, height: 12, color: ADMIN_THEME.textSecondary, position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)" }} />
               <input
                 type="text"
-                placeholder="Search conversations..."
+                placeholder="Search officer, question or answer..."
                 value={aiSearch}
                 onChange={e => setAiSearch(e.target.value)}
                 style={{
-                  width: "100%",
-                  padding: "8px 12px 8px 32px",
-                  border: `1px solid ${ADMIN_THEME.border}`,
-                  borderRadius: 6,
-                  fontSize: 13,
-                  outline: "none",
-                  background: "#ffffff",
-                  color: ADMIN_THEME.textPrimary
+                  width: "100%", background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`,
+                  borderRadius: 6, padding: "7px 10px 7px 28px", fontSize: 12,
+                  color: ADMIN_THEME.textPrimary, outline: "none",
                 }}
               />
             </div>
-
-            {/* Status Filter */}
-            <div style={{ position: "relative" }}>
-              <button
-                onClick={() => setIsFilterDropdownOpen(p => !p)}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  background: ADMIN_THEME.cardBg,
-                  border: `1px solid ${ADMIN_THEME.border}`,
-                  borderRadius: 6,
-                  padding: "8px 14px",
-                  fontSize: 13,
-                  fontWeight: 500,
-                  color: ADMIN_THEME.textSecondary,
-                  cursor: "pointer"
-                }}
-              >
-                <span>{aiStatusFilter}</span>
-                <ChevronDown style={{ width: 14, height: 14, color: ADMIN_THEME.textSecondary }} />
-              </button>
-
-              {isFilterDropdownOpen && (
-                <div style={{
-                  position: "absolute",
-                  right: 0,
-                  top: "100%",
-                  marginTop: 6,
-                  background: "#ffffff",
-                  border: `1px solid ${ADMIN_THEME.border}`,
-                  borderRadius: 6,
-                  boxShadow: ADMIN_THEME.shadowMd,
-                  width: 140,
-                  zIndex: 100
-                }}>
-                  {["All Status", "COMPLETED", "FLAGGED", "ESCALATED"].map(st => (
-                    <button
-                      key={st}
-                      onClick={() => {
-                        setAiStatusFilter(st);
-                        setIsFilterDropdownOpen(false);
-                      }}
-                      style={{
-                        width: "100%",
-                        textAlign: "left",
-                        padding: "8px 12px",
-                        background: aiStatusFilter === st ? "#f1f5f9" : "none",
-                        border: "none",
-                        fontSize: 12,
-                        cursor: "pointer",
-                        fontWeight: aiStatusFilter === st ? 600 : 400,
-                        color: ADMIN_THEME.textPrimary
-                      }}
-                      onMouseEnter={e => { if (aiStatusFilter !== st) e.currentTarget.style.background = "#f8fafc"; }}
-                      onMouseLeave={e => { if (aiStatusFilter !== st) e.currentTarget.style.background = "none"; }}
-                    >
-                      {st}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
+            <select
+              value={aiStatusFilter}
+              onChange={e => setAiStatusFilter(e.target.value)}
+              style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 6, padding: "7px 10px", fontSize: 12, color: ADMIN_THEME.textPrimary }}
+            >
+              <option value="ALL">All queries</option>
+              <option value="FLAGGED">Flagged only</option>
+              <option value="FAILED">Failed only</option>
+              <option value="ATTACHMENT">With attachments</option>
+            </select>
+            <select
+              value={aiOfficerFilter}
+              onChange={e => setAiOfficerFilter(e.target.value)}
+              style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 6, padding: "7px 10px", fontSize: 12, color: ADMIN_THEME.textPrimary }}
+            >
+              <option value="ALL">All officers</option>
+              {Array.from(new Set(admin.aiQueries.map((c: any) => c.officer))).map((o: any) => (
+                <option key={o} value={o}>{o}</option>
+              ))}
+            </select>
           </div>
 
-          {/* Table Container */}
-          <div style={{ 
-            background: "#ffffff", 
-            border: `1px solid ${ADMIN_THEME.border}`, 
-            borderRadius: 8, 
-            overflowX: "auto",
-            boxShadow: ADMIN_THEME.shadow 
-          }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: 13 }}>
-              <thead>
-                <tr style={{ background: "#f8fafc", borderBottom: `1px solid ${ADMIN_THEME.border}`, color: ADMIN_THEME.textSecondary, fontWeight: 700 }}>
-                  <th style={{ padding: "12px 16px" }}>OFFICER</th>
-                  <th style={{ padding: "12px 16px" }}>QUERY</th>
-                  <th style={{ padding: "12px 16px" }}>MODULE</th>
-                  <th style={{ padding: "12px 16px" }}>CONFIDENCE</th>
-                  <th style={{ padding: "12px 16px" }}>RATING</th>
-                  <th style={{ padding: "12px 16px" }}>STATUS</th>
-                  <th style={{ padding: "12px 16px" }}>TIME</th>
-                  <th style={{ padding: "12px 16px", textAlign: "center" }}>ACTIONS</th>
-                </tr>
-              </thead>
-              <tbody>
-                {conversations
-                  .filter(c => {
-                    const matchesStatus = aiStatusFilter === "All Status" || c.status === aiStatusFilter;
-                    const matchesSearch = 
-                      c.officer.toLowerCase().includes(aiSearch.toLowerCase()) ||
-                      c.badgeNo.toLowerCase().includes(aiSearch.toLowerCase()) ||
-                      c.query.toLowerCase().includes(aiSearch.toLowerCase()) ||
-                      c.module.toLowerCase().includes(aiSearch.toLowerCase());
-                    return matchesStatus && matchesSearch;
-                  })
-                  .map((c, i) => {
-                    const pillStyles = (() => {
-                      switch (c.status) {
-                        case "COMPLETED": return { bg: "#f1f5f9", border: "#cbd5e1", text: "#475569", dot: "#94a3b8" };
-                        case "FLAGGED": return { bg: "#fef2f2", border: "#fca5a5", text: "#ef4444", dot: "#ef4444" };
-                        case "ESCALATED": return { bg: "#faf5ff", border: "#e9d5ff", text: "#a855f7", dot: "#a855f7" };
-                        default: return { bg: "#f1f5f9", border: "#cbd5e1", text: "#475569", dot: "#94a3b8" };
-                      }
-                    })();
+          {admin.aiQueries.length > 0 && aiVisible.length !== admin.aiQueries.length && (
+            <div style={{ fontSize: 11.5, color: ADMIN_THEME.textSecondary }}>
+              showing {aiVisible.length} of {admin.aiQueries.length}
+            </div>
+          )}
 
-                    const confidenceColor = c.confidence >= 80 ? ADMIN_THEME.green : c.confidence >= 60 ? "#f97316" : ADMIN_THEME.red;
+          {/* The queries */}
+          <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, overflow: "hidden" }}>
+            {aiVisible.length === 0 ? (
+              <div style={{ padding: 34, textAlign: "center", color: ADMIN_THEME.textSecondary, fontSize: 13 }}>
+                {admin.aiQueries.length === 0
+                  ? "No AI queries recorded yet."
+                  : "No query matches these filters."}
+              </div>
+            ) : (
+              aiVisible.slice(0, 200).map((c: any, idx: number, arr: any[]) => (
+                <div
+                  key={c.id}
+                  style={{
+                    padding: "14px 16px",
+                    borderBottom: idx !== Math.min(199, arr.length - 1) ? `1px solid ${ADMIN_THEME.border}` : "none",
+                    background: c.outcome === "ERROR" ? "rgba(239,68,68,0.03)" : "transparent",
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 14, alignItems: "flex-start" }}>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 5 }}>
+                        <span style={{ fontSize: 12.5, fontWeight: 700 }}>{c.officer}</span>
+                        {c.badge && (
+                          <span style={{ fontSize: 10, fontFamily: "JetBrains Mono, monospace", color: ADMIN_THEME.textSecondary }}>
+                            {c.badge}
+                          </span>
+                        )}
+                        {c.module && (
+                          <span style={{ fontSize: 9, fontWeight: 700, background: "rgba(255,153,51,0.1)", color: ADMIN_THEME.accentGold, padding: "2px 6px", borderRadius: 4 }}>
+                            {c.module}
+                          </span>
+                        )}
+                        {c.flags.map((f: string) => (
+                          <span key={f} style={{
+                            fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 4,
+                            background: f.startsWith("Failed") ? "rgba(239,68,68,0.12)" : "rgba(148,163,184,0.18)",
+                            color: f.startsWith("Failed") ? ADMIN_THEME.red : ADMIN_THEME.textSecondary,
+                          }}>
+                            {f}
+                          </span>
+                        ))}
+                      </div>
 
-                    return (
-                      <tr 
-                        key={c.id} 
-                        onClick={() => setSelectedConv(c)}
-                        style={{ 
-                          borderBottom: `1px solid ${ADMIN_THEME.border}`, 
-                          cursor: "pointer",
-                          transition: "background 0.1s"
-                        }}
-                        onMouseEnter={e => { e.currentTarget.style.background = "rgba(0,0,0,0.01)"; }}
-                        onMouseLeave={e => { e.currentTarget.style.background = "none"; }}
-                      >
-                        <td style={{ padding: "14px 16px" }}>
-                          <div style={{ fontWeight: 600, color: ADMIN_THEME.textPrimary }}>{c.officer}</div>
-                          <div style={{ fontSize: 10, color: ADMIN_THEME.textMuted, fontFamily: "JetBrains Mono, monospace", marginTop: 2 }}>{c.badgeNo}</div>
-                        </td>
-                        <td style={{ padding: "14px 16px", maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: ADMIN_THEME.textPrimary }}>
-                          {c.query}
-                        </td>
-                        <td style={{ padding: "14px 16px", color: ADMIN_THEME.textSecondary, fontWeight: 500 }}>
-                          {c.module}
-                        </td>
-                        <td style={{ padding: "14px 16px", fontWeight: 700, color: confidenceColor }}>
-                          {c.confidence}%
-                        </td>
-                        <td style={{ padding: "14px 16px" }}>
-                          {c.rating === null ? (
-                            <span style={{ color: ADMIN_THEME.textMuted }}>—</span>
-                          ) : (
-                            <div style={{ display: "flex", gap: 2 }}>
-                              {[1, 2, 3, 4, 5].map(star => (
-                                <Star 
-                                  key={star} 
-                                  style={{ 
-                                    width: 13, 
-                                    height: 13, 
-                                    color: "#eab308",
-                                    fill: star <= c.rating ? "#eab308" : "transparent"
-                                  }} 
-                                />
-                              ))}
+                      <div style={{ fontSize: 13, color: ADMIN_THEME.textPrimary, lineHeight: 1.5 }}>
+                        {c.query || <span style={{ color: ADMIN_THEME.textMuted }}>(attachment only)</span>}
+                      </div>
+
+                      {aiOpenId === c.id ? (
+                        <div style={{ marginTop: 10 }}>
+                          <div style={{ fontSize: 10, fontWeight: 700, color: ADMIN_THEME.textSecondary, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 5 }}>
+                            Answer returned
+                          </div>
+                          <div style={{
+                            fontSize: 12.5, color: ADMIN_THEME.textPrimary, lineHeight: 1.6,
+                            background: ADMIN_THEME.bg, border: `1px solid ${ADMIN_THEME.border}`,
+                            borderRadius: 6, padding: 12, whiteSpace: "pre-wrap", maxHeight: 320, overflowY: "auto",
+                          }}>
+                            {c.response || (
+                              <span style={{ color: ADMIN_THEME.textMuted }}>
+                                Not recorded — this query predates answer capture.
+                              </span>
+                            )}
+                          </div>
+                          {c.context && (
+                            <div style={{ fontSize: 11, color: ADMIN_THEME.textSecondary, marginTop: 8 }}>
+                              <strong>Context:</strong> {c.context}
                             </div>
                           )}
-                        </td>
-                        <td style={{ padding: "14px 16px" }}>
-                          <span style={{
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: 6,
-                            padding: "3px 8px",
-                            borderRadius: 12,
-                            fontSize: 10,
-                            fontWeight: 700,
-                            background: pillStyles.bg,
-                            border: `1px solid ${pillStyles.border}`,
-                            color: pillStyles.text
-                          }}>
-                            <span style={{ width: 5, height: 5, borderRadius: "50%", background: pillStyles.dot }} />
-                            {c.status}
-                          </span>
-                        </td>
-                        <td style={{ padding: "14px 16px", color: ADMIN_THEME.textSecondary, fontSize: 12 }}>
-                          {c.time}
-                        </td>
-                        <td style={{ padding: "14px 16px", textAlign: "center" }}>
-                          <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setConversations(prev => prev.map(item => {
-                                  if (item.id === c.id) {
-                                    return {
-                                      ...item,
-                                      status: item.status === "FLAGGED" ? "COMPLETED" : "FLAGGED"
-                                    };
-                                  }
-                                  return item;
-                                }));
-                              }}
-                              title={c.status === "FLAGGED" ? "Unflag interaction" : "Flag interaction"}
-                              style={{ background: "none", border: "none", cursor: "pointer", padding: 0 }}
-                            >
-                              <Flag style={{ 
-                                width: 14, 
-                                height: 14, 
-                                color: c.status === "FLAGGED" ? ADMIN_THEME.red : ADMIN_THEME.textMuted,
-                                fill: c.status === "FLAGGED" ? ADMIN_THEME.red : "transparent"
-                              }} />
-                            </button>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                if (confirm(`Delete conversation record audit ${c.id}?`)) {
-                                  setConversations(prev => prev.filter(item => item.id !== c.id));
-                                }
-                              }}
-                              title="Delete record"
-                              style={{ background: "none", border: "none", cursor: "pointer", padding: 0 }}
-                            >
-                              <Trash2 style={{ width: 14, height: 14, color: ADMIN_THEME.textMuted }} />
-                            </button>
+                          <div style={{ display: "flex", gap: 18, flexWrap: "wrap", marginTop: 10, fontSize: 11, fontFamily: "JetBrains Mono, monospace", color: ADMIN_THEME.textSecondary }}>
+                            <span>model: {c.model || "not recorded"}</span>
+                            <span>latency: {c.latencyMs == null ? "not recorded" : `${(c.latencyMs / 1000).toFixed(2)}s`}</span>
+                            <span>
+                              tokens: {c.totalTokens == null
+                                ? "not recorded"
+                                : `${c.totalTokens} (${c.promptTokens ?? "?"} in / ${c.completionTokens ?? "?"} out)`}
+                            </span>
+                            <span>outcome: {c.outcome || "not recorded"}</span>
                           </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-              </tbody>
-            </table>
+                        </div>
+                      ) : (
+                        c.response && (
+                          <div style={{
+                            fontSize: 12, color: ADMIN_THEME.textSecondary, marginTop: 5, lineHeight: 1.5,
+                            overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box",
+                            WebkitLineClamp: 2, WebkitBoxOrient: "vertical",
+                          }}>
+                            {c.response}
+                          </div>
+                        )
+                      )}
+                    </div>
+
+                    <div style={{ textAlign: "right", flexShrink: 0 }}>
+                      <div style={{ fontSize: 10.5, color: ADMIN_THEME.textMuted, whiteSpace: "nowrap" }}>
+                        {c.occurredAt ? new Date(c.occurredAt.replace(" ", "T")).toLocaleString() : "—"}
+                      </div>
+                      <button
+                        onClick={() => setAiOpenId(aiOpenId === c.id ? null : c.id)}
+                        style={{
+                          marginTop: 8, background: "none", border: `1px solid ${ADMIN_THEME.border}`,
+                          borderRadius: 4, padding: "4px 10px", fontSize: 11, fontWeight: 600,
+                          color: ADMIN_THEME.textPrimary, cursor: "pointer", whiteSpace: "nowrap",
+                        }}
+                      >
+                        {aiOpenId === c.id ? "Hide" : "View"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
 
-          {/* Conversation details Modal popup */}
-          {selectedConv && (
-            <div style={{
-              position: "fixed",
-              top: 0, left: 0, right: 0, bottom: 0,
-              background: "rgba(10, 25, 47, 0.4)",
-              backdropFilter: "blur(6px)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              zIndex: 9999,
-              padding: 20
-            }} onClick={() => setSelectedConv(null)}>
-              <div 
-                style={{
-                  background: "#ffffff",
-                  borderRadius: 12,
-                  border: `1px solid ${ADMIN_THEME.border}`,
-                  boxShadow: ADMIN_THEME.shadowMd,
-                  width: "100%",
-                  maxWidth: 680,
-                  maxHeight: "90vh",
-                  display: "flex",
-                  flexDirection: "column",
-                  overflow: "hidden"
-                }}
-                onClick={e => e.stopPropagation()}
-              >
-                {/* Modal Header */}
-                <div style={{ 
-                  padding: "16px 20px", 
-                  borderBottom: `1px solid ${ADMIN_THEME.border}`, 
-                  display: "flex", 
-                  justifyContent: "space-between", 
-                  alignItems: "center",
-                  background: "#f8fafc"
-                }}>
-                  <div>
-                    <h2 style={{ fontSize: 16, fontWeight: 800, color: ADMIN_THEME.textPrimary, display: "flex", alignItems: "center", gap: 8 }}>
-                      <span>Interaction Audit Audit</span>
-                      <span style={{ fontSize: 11, background: "rgba(0,31,63,0.06)", padding: "2px 6px", borderRadius: 4, fontFamily: "JetBrains Mono, monospace", color: ADMIN_THEME.textSecondary }}>
-                        {selectedConv.id}
-                      </span>
-                    </h2>
-                    <p style={{ fontSize: 11, color: ADMIN_THEME.textSecondary, marginTop: 2 }}>Logged at {selectedConv.time}</p>
-                  </div>
-                  <button 
-                    onClick={() => setSelectedConv(null)}
-                    style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, color: ADMIN_THEME.textMuted }}
-                  >
-                    <X style={{ width: 18, height: 18 }} />
-                  </button>
-                </div>
+          {aiVisible.length > 200 && (
+            <div style={{ fontSize: 11.5, color: ADMIN_THEME.textSecondary, textAlign: "center" }}>
+              Showing the 200 most recent of {aiVisible.length} matches. Narrow the filters, or export the CSV for the full set.
+            </div>
+          )}
 
-                {/* Modal Body */}
-                <div style={{ padding: 20, overflowY: "auto", display: "flex", flexDirection: "column", gap: 16 }}>
-                  {/* Metadata Row */}
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, background: "#f8fafc", border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 12 }}>
-                    <div>
-                      <div style={{ fontSize: 9, fontWeight: 700, color: ADMIN_THEME.textMuted, textTransform: "uppercase" }}>Initiating Officer</div>
-                      <div style={{ fontSize: 12, fontWeight: 600, color: ADMIN_THEME.textPrimary, marginTop: 2 }}>{selectedConv.officer}</div>
-                      <div style={{ fontSize: 10, color: ADMIN_THEME.textSecondary, fontFamily: "JetBrains Mono, monospace" }}>{selectedConv.badgeNo}</div>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: 9, fontWeight: 700, color: ADMIN_THEME.textMuted, textTransform: "uppercase" }}>Module & Gateway</div>
-                      <div style={{ fontSize: 12, fontWeight: 600, color: ADMIN_THEME.textPrimary, marginTop: 2 }}>{selectedConv.module}</div>
-                      <div style={{ fontSize: 10, color: ADMIN_THEME.textSecondary }}>IP: {selectedConv.ip}</div>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: 9, fontWeight: 700, color: ADMIN_THEME.textMuted, textTransform: "uppercase" }}>Metrics</div>
-                      <div style={{ fontSize: 12, fontWeight: 600, color: selectedConv.confidence >= 80 ? ADMIN_THEME.green : "#f97316", marginTop: 2 }}>
-                        {selectedConv.confidence}% Confidence
-                      </div>
-                      <div style={{ fontSize: 10, color: ADMIN_THEME.textSecondary }}>Latency: {selectedConv.latency}</div>
-                    </div>
-                  </div>
-
-                  {/* Chat logs bubbles */}
-                  <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                    {/* User prompt query */}
-                    <div>
-                      <div style={{ fontSize: 10, fontWeight: 700, color: ADMIN_THEME.textMuted, marginBottom: 4, textTransform: "uppercase" }}>User Prompt</div>
-                      <div style={{ 
-                        background: "#001f3f", 
-                        color: "#ffffff", 
-                        padding: "12px 14px", 
-                        borderRadius: "8px 8px 8px 0px", 
-                        fontSize: 13,
-                        lineHeight: 1.5
-                      }}>
-                        {selectedConv.query}
-                      </div>
-                    </div>
-
-                    {/* Assistant AI response */}
-                    <div>
-                      <div style={{ fontSize: 10, fontWeight: 700, color: ADMIN_THEME.textMuted, marginBottom: 4, textTransform: "uppercase" }}>Assistant AI Response</div>
-                      <div style={{ 
-                        background: "#f1f5f9", 
-                        border: "1px solid #cbd5e1",
-                        color: ADMIN_THEME.textPrimary, 
-                        padding: "12px 14px", 
-                        borderRadius: "8px 8px 0px 8px", 
-                        fontSize: 13,
-                        lineHeight: 1.5
-                      }}>
-                        {selectedConv.response}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Token break down block */}
-                  <div style={{ borderTop: `1px solid ${ADMIN_THEME.border}`, paddingTop: 16 }}>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: ADMIN_THEME.textMuted, marginBottom: 8, textTransform: "uppercase" }}>Token Accounting Audit</div>
-                    <div style={{ display: "flex", gap: 12 }}>
-                      <span style={{ fontSize: 11, background: "rgba(0,0,0,0.04)", border: "1px solid #cbd5e1", padding: "4px 8px", borderRadius: 4 }}>
-                        Prompt: <strong>{selectedConv.tokens.prompt}</strong>
-                      </span>
-                      <span style={{ fontSize: 11, background: "rgba(0,0,0,0.04)", border: "1px solid #cbd5e1", padding: "4px 8px", borderRadius: 4 }}>
-                        Completion: <strong>{selectedConv.tokens.completion}</strong>
-                      </span>
-                      <span style={{ fontSize: 11, background: "rgba(255,153,51,0.08)", border: "1px solid rgba(255,153,51,0.3)", padding: "4px 8px", borderRadius: 4, color: "#FF9933" }}>
-                        Total Volume: <strong>{selectedConv.tokens.total} Tokens</strong>
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Modal Footer */}
-                <div style={{ 
-                  padding: "14px 20px", 
-                  borderTop: `1px solid ${ADMIN_THEME.border}`, 
-                  display: "flex", 
-                  justifyContent: "space-between", 
-                  background: "#f8fafc",
-                  alignItems: "center"
-                }}>
-                  {/* Status update controller in Modal */}
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ fontSize: 11, fontWeight: 700, color: ADMIN_THEME.textSecondary }}>Set Status:</span>
-                    <select
-                      value={selectedConv.status}
-                      onChange={e => {
-                        const newStatus = e.target.value;
-                        setConversations(prev => prev.map(item => {
-                          if (item.id === selectedConv.id) {
-                            return { ...item, status: newStatus };
-                          }
-                          return item;
-                        }));
-                        setSelectedConv((prev: any) => prev ? { ...prev, status: newStatus } : null);
-                      }}
-                      style={{
-                        background: "#ffffff",
-                        border: `1px solid ${ADMIN_THEME.border}`,
-                        borderRadius: 4,
-                        padding: "4px 8px",
-                        fontSize: 12,
-                        color: ADMIN_THEME.textPrimary,
-                        fontWeight: 600
-                      }}
-                    >
-                      <option value="COMPLETED">COMPLETED</option>
-                      <option value="FLAGGED">FLAGGED</option>
-                      <option value="ESCALATED">ESCALATED</option>
-                    </select>
-                  </div>
-
-                  <button
-                    onClick={() => setSelectedConv(null)}
-                    style={{
-                      background: "#001f3f",
-                      color: "#ffffff",
-                      border: "none",
-                      borderRadius: 6,
-                      padding: "6px 16px",
-                      fontSize: 12,
-                      fontWeight: 600,
-                      cursor: "pointer"
-                    }}
-                  >
-                    Close Audit View
-                  </button>
-                </div>
+          {/* Which models actually answered. Counted, not configured. */}
+          {(admin.aiStats?.models?.length ?? 0) > 0 && (
+            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "JetBrains Mono", marginBottom: 10 }}>
+                Models Used
               </div>
+              {admin.aiStats.models.map((m: any) => (
+                <div key={m.model} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: 12, borderBottom: `1px solid ${ADMIN_THEME.border}` }}>
+                  <span style={{ fontFamily: "JetBrains Mono, monospace", color: ADMIN_THEME.textSecondary }}>{m.model}</span>
+                  <strong>{m.count}</strong>
+                </div>
+              ))}
             </div>
           )}
         </div>
       )}
 
-      {/* 7.5. AI MODEL MANAGEMENT */}
+      {/*
+        AI MODEL MANAGEMENT.
+
+        WHAT WAS REMOVED, AND WHY IT COULD NOT BE "FIXED"
+
+        This tab showed a hardcoded version history (v3.1.8b-2026.05, "accuracy
+        92.8%", RETIRED / ARCHIVED) and three buttons - Rollback, Retrain,
+        Restart Service - each of which was a setTimeout that set a success
+        message. Nothing was ever deployed, retrained or restarted.
+
+        Those are not features that were merely unimplemented. They are not
+        things this application can do at all: the models are hosted by NVIDIA
+        and Groq, so the department does not own the weights, cannot roll a
+        version back, cannot retrain, and has no service to restart. Making the
+        buttons "work" was never an option - only removing them was.
+
+        WHAT IS REAL, AND IS HERE INSTEAD
+
+          · which models the server is configured to call, and which is active
+          · whether each answers RIGHT NOW - a live probe, on demand
+          · the runtime parameters actually sent, editable and persisted
+          · how many queries each model answered, counted from OfficerActivity
+
+        The three parameter controls used to be dead too. They now write to the
+        SystemSetting table and /api/chat reads them per request, so moving a
+        slider changes the next answer.
+      */}
       {adminTab === "admin-model" && (
-        <div style={{ position: "relative" }}>
-          
-          {/* Notification Messages */}
-          {modelStatusMsg && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 16, flexWrap: "wrap" }}>
+            <div>
+              <h1 style={{ fontSize: 22, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>AI Model Management</h1>
+              <p style={{ fontSize: 12, color: ADMIN_THEME.textSecondary }}>
+                Configured models, live reachability, and the parameters sent with every query
+              </p>
+            </div>
+            <button
+              onClick={() => loadModels(true)}
+              disabled={modelsLoading}
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 6,
+                background: "#fff", border: `1px solid ${ADMIN_THEME.border}`,
+                borderRadius: 6, padding: "7px 14px", fontSize: 12, fontWeight: 600,
+                color: ADMIN_THEME.textPrimary, cursor: modelsLoading ? "default" : "pointer",
+              }}
+            >
+              <Zap style={{ width: 14, height: 14, color: ADMIN_THEME.accentGold }} />
+              {modelsLoading ? "Probing…" : "Test Connectivity"}
+            </button>
+          </div>
+
+          <div style={{
+            background: "rgba(255,153,51,0.06)", border: "1px solid rgba(255,153,51,0.25)",
+            borderRadius: 8, padding: "12px 16px", display: "flex", gap: 10, alignItems: "flex-start",
+          }}>
+            <Info style={{ width: 16, height: 16, color: ADMIN_THEME.accentGold, flexShrink: 0, marginTop: 2 }} />
+            <div style={{ fontSize: 11.5, color: ADMIN_THEME.textSecondary, lineHeight: 1.55 }}>
+              <strong style={{ color: ADMIN_THEME.textPrimary }}>These models are hosted by NVIDIA and Groq.</strong>{" "}
+              The department does not hold the weights, so versions cannot be rolled back, models cannot be
+              retrained, and there is no service here to restart. The Rollback / Retrain / Restart buttons that
+              used to sit on this page did none of those things. What can be changed is which model is called
+              and how it is called — that is below.
+            </div>
+          </div>
+
+          {modelsError && (
             <div style={{
-              background: "#ecfdf5",
-              border: `1px solid ${ADMIN_THEME.green}`,
-              color: "#065f46",
-              borderRadius: 8,
-              padding: "12px 16px",
-              fontSize: 13,
-              fontWeight: 600,
-              marginBottom: 20,
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              animation: "fadeIn 0.2s ease-out"
+              background: "rgba(239,68,68,0.06)", border: `1px solid ${ADMIN_THEME.red}55`,
+              borderRadius: 8, padding: "12px 16px", fontSize: 12, color: ADMIN_THEME.textPrimary,
             }}>
-              <Check style={{ width: 16, height: 16, color: ADMIN_THEME.green }} />
-              <span>{modelStatusMsg}</span>
+              {modelsError}
             </div>
           )}
 
-          {/* Loader Overlay for Service Operations */}
-          {isModelActionLoading && (
-            <div style={{
-              position: "fixed",
-              top: 0, left: 0, right: 0, bottom: 0,
-              background: "rgba(10, 25, 47, 0.25)",
-              backdropFilter: "blur(3px)",
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              justifyContent: "center",
-              zIndex: 9999,
-              gap: 12
-            }}>
-              <div style={{
-                background: "#ffffff",
-                padding: "24px 32px",
-                borderRadius: 12,
-                border: `1px solid ${ADMIN_THEME.border}`,
-                boxShadow: ADMIN_THEME.shadowMd,
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                gap: 12
+          {/* Configured models */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16 }}>
+            {(modelInfo?.models || []).map((m: any) => (
+              <div key={`${m.role}-${m.id}`} style={{
+                background: ADMIN_THEME.cardBg,
+                border: `1px solid ${m.active ? ADMIN_THEME.accentGold + "66" : ADMIN_THEME.border}`,
+                borderRadius: 8, padding: 16, display: "flex", flexDirection: "column", gap: 10,
               }}>
-                <Loader2 style={{ width: 28, height: 28, color: "#001f3f", animation: "spin 1s linear infinite" }} />
-                <span style={{ fontSize: 13, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>{isModelActionLoading}</span>
-              </div>
-            </div>
-          )}
-
-          {/* Tab Header */}
-          <div style={{ marginBottom: 20 }}>
-            <h1 style={{ fontSize: 22, fontWeight: 800, color: ADMIN_THEME.textPrimary }}>AI Model Management</h1>
-            <p style={{ fontSize: 12, color: ADMIN_THEME.textSecondary }}>Manage model deployment, configuration, and performance metrics</p>
-          </div>
-
-          {/* NVIDIA Active Model Box */}
-          <div style={{
-            background: ADMIN_THEME.cardBg,
-            border: `1px solid ${ADMIN_THEME.border}`,
-            borderRadius: 8,
-            padding: 20,
-            marginBottom: 20,
-            boxShadow: ADMIN_THEME.shadow
-          }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 16, borderBottom: `1px solid ${ADMIN_THEME.border}`, paddingBottom: 16, marginBottom: 16 }}>
-              <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-                <div style={{
-                  width: 44,
-                  height: 44,
-                  borderRadius: 8,
-                  background: "rgba(255,153,51,0.08)",
-                  border: "1px solid rgba(255,153,51,0.2)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center"
-                }}>
-                  <Bot style={{ width: 24, height: 24, color: "#FF9933" }} />
-                </div>
-                <div>
-                  <h3 style={{ fontSize: 16, fontWeight: 800, color: ADMIN_THEME.textPrimary }}>NVIDIA LLaMA 3.1 8B Instruct</h3>
-                  <div style={{ fontSize: 12, color: ADMIN_THEME.textSecondary, marginTop: 2 }}>
-                    NVIDIA NIM • <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 11 }}>Version: v3.1.8b-2026.06</span>
-                  </div>
-                </div>
-              </div>
-              <span style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 5,
-                background: "#ecfdf5",
-                border: `1px solid ${ADMIN_THEME.green}`,
-                color: ADMIN_THEME.green,
-                fontSize: 10,
-                fontWeight: 700,
-                padding: "3px 8px",
-                borderRadius: 12
-              }}>
-                <span style={{ width: 5, height: 5, borderRadius: "50%", background: ADMIN_THEME.green }} />
-                ACTIVE
-              </span>
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16 }}>
-              <div>
-                <span style={{ fontSize: 9, fontWeight: 700, color: ADMIN_THEME.textMuted, textTransform: "uppercase" }}>Training Date</span>
-                <div style={{ fontSize: 13, fontWeight: 700, color: ADMIN_THEME.textPrimary, marginTop: 4 }}>15/05/2026</div>
-              </div>
-              <div>
-                <span style={{ fontSize: 9, fontWeight: 700, color: ADMIN_THEME.textMuted, textTransform: "uppercase" }}>Last Deployed</span>
-                <div style={{ fontSize: 13, fontWeight: 700, color: ADMIN_THEME.textPrimary, marginTop: 4 }}>04/07/2026</div>
-              </div>
-              <div>
-                <span style={{ fontSize: 9, fontWeight: 700, color: ADMIN_THEME.textMuted, textTransform: "uppercase" }}>KB Status</span>
-                <div style={{ marginTop: 4 }}>
-                  <span style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 4,
-                    background: "#ecfdf5",
-                    border: "1px solid #a7f3d0",
-                    color: ADMIN_THEME.green,
-                    fontSize: 9,
-                    fontWeight: 700,
-                    padding: "2px 6px",
-                    borderRadius: 4
-                  }}>
-                    <span style={{ width: 4, height: 4, borderRadius: "50%", background: ADMIN_THEME.green }} />
-                    ACTIVE
-                  </span>
-                </div>
-              </div>
-              <div>
-                <span style={{ fontSize: 9, fontWeight: 700, color: ADMIN_THEME.textMuted, textTransform: "uppercase" }}>Total Queries</span>
-                <div style={{ fontSize: 13, fontWeight: 700, color: ADMIN_THEME.textPrimary, marginTop: 4 }}>48,920</div>
-              </div>
-            </div>
-          </div>
-
-          {/* Metrics row */}
-          <div style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-            gap: 16,
-            marginBottom: 20
-          }}>
-            {/* RESPONSE ACCURACY */}
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16, display: "flex", alignItems: "center", gap: 14, boxShadow: ADMIN_THEME.shadow }}>
-              <div style={{
-                width: 36, height: 36, borderRadius: "50%", background: "rgba(16,185,129,0.06)", border: "1px solid rgba(16,185,129,0.2)",
-                display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0
-              }}>
-                <FileCheck style={{ width: 18, height: 18, color: ADMIN_THEME.green }} />
-              </div>
-              <div>
-                <span style={{ fontSize: 9, fontWeight: 700, color: ADMIN_THEME.textMuted, textTransform: "uppercase", letterSpacing: "0.05em" }}>Response Accuracy</span>
-                <div style={{ fontSize: 22, fontWeight: 800, color: ADMIN_THEME.textPrimary, marginTop: 2 }}>94.2%</div>
-              </div>
-            </div>
-
-            {/* HALLUCINATION RATE */}
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16, display: "flex", alignItems: "center", gap: 14, boxShadow: ADMIN_THEME.shadow }}>
-              <div style={{
-                width: 36, height: 36, borderRadius: "50%", background: "rgba(239,68,68,0.06)", border: "1px solid rgba(239,68,68,0.2)",
-                display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0
-              }}>
-                <AlertTriangle style={{ width: 18, height: 18, color: "#f97316" }} />
-              </div>
-              <div>
-                <span style={{ fontSize: 9, fontWeight: 700, color: ADMIN_THEME.textMuted, textTransform: "uppercase", letterSpacing: "0.05em" }}>Hallucination Rate</span>
-                <div style={{ fontSize: 22, fontWeight: 800, color: ADMIN_THEME.textPrimary, marginTop: 2 }}>2.1%</div>
-              </div>
-            </div>
-
-            {/* AVG LATENCY */}
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16, display: "flex", alignItems: "center", gap: 14, boxShadow: ADMIN_THEME.shadow }}>
-              <div style={{
-                width: 36, height: 36, borderRadius: "50%", background: "rgba(0,31,63,0.06)", border: "1px solid rgba(0,31,63,0.2)",
-                display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0
-              }}>
-                <Clock style={{ width: 18, height: 18, color: "#3b82f6" }} />
-              </div>
-              <div>
-                <span style={{ fontSize: 9, fontWeight: 700, color: ADMIN_THEME.textMuted, textTransform: "uppercase", letterSpacing: "0.05em" }}>Avg Latency</span>
-                <div style={{ fontSize: 22, fontWeight: 800, color: ADMIN_THEME.textPrimary, marginTop: 2 }}>1840ms</div>
-              </div>
-            </div>
-
-            {/* TOTAL QUERIES */}
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16, display: "flex", alignItems: "center", gap: 14, boxShadow: ADMIN_THEME.shadow }}>
-              <div style={{
-                width: 36, height: 36, borderRadius: "50%", background: "rgba(255,153,51,0.06)", border: "1px solid rgba(255,153,51,0.2)",
-                display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0
-              }}>
-                <CloudLightning style={{ width: 18, height: 18, color: "#eab308" }} />
-              </div>
-              <div>
-                <span style={{ fontSize: 9, fontWeight: 700, color: ADMIN_THEME.textMuted, textTransform: "uppercase", letterSpacing: "0.05em" }}>Total Queries</span>
-                <div style={{ fontSize: 22, fontWeight: 800, color: ADMIN_THEME.textPrimary, marginTop: 2 }}>48,920</div>
-              </div>
-            </div>
-          </div>
-
-          {/* Model Parameters & Prompt Template Columns */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 20 }}>
-            {/* Parameters card */}
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 20, boxShadow: ADMIN_THEME.shadow }}>
-              <h3 style={{ fontSize: 12, fontWeight: 700, color: ADMIN_THEME.textSecondary, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 20 }}>Model Parameters</h3>
-              
-              <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-                {/* Temperature */}
-                <div>
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: ADMIN_THEME.textPrimary, marginBottom: 8 }}>
-                    <span>Temperature</span>
-                    <strong style={{ color: "#FF9933" }}>{modelTemp}</strong>
-                  </div>
-                  <input
-                    type="range"
-                    min="0.0"
-                    max="1.0"
-                    step="0.05"
-                    value={modelTemp}
-                    onChange={e => setModelTemp(parseFloat(e.target.value))}
-                    style={{
-                      width: "100%",
-                      accentColor: "#FF9933"
-                    }}
-                  />
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: ADMIN_THEME.textMuted, marginTop: 4 }}>
-                    <span>0.0 (Precise)</span>
-                    <span>1.0 (Creative)</span>
-                  </div>
-                </div>
-
-                {/* Max Tokens */}
-                <div>
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: ADMIN_THEME.textPrimary, marginBottom: 8 }}>
-                    <span>Max Tokens</span>
-                    <strong style={{ color: "#FF9933" }}>{modelMaxTokens}</strong>
-                  </div>
-                  <input
-                    type="range"
-                    min="256"
-                    max="8192"
-                    step="256"
-                    value={modelMaxTokens}
-                    onChange={e => setModelMaxTokens(parseInt(e.target.value))}
-                    style={{
-                      width: "100%",
-                      accentColor: "#FF9933"
-                    }}
-                  />
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: ADMIN_THEME.textMuted, marginTop: 4 }}>
-                    <span>256</span>
-                    <span>8192</span>
-                  </div>
-                </div>
-
-                <div style={{ marginTop: 8 }}>
-                  <button
-                    onClick={() => {
-                      setIsModelActionLoading("Saving parameter configuration...");
-                      setTimeout(() => {
-                        setIsModelActionLoading("");
-                        setModelStatusMsg("Model hyperparameter settings saved successfully.");
-                        setTimeout(() => setModelStatusMsg(""), 4000);
-                      }, 1200);
-                    }}
-                    style={{
-                      background: "#001f3f",
-                      color: "#ffffff",
-                      border: "none",
-                      borderRadius: 4,
-                      padding: "8px 16px",
-                      fontSize: 12,
-                      fontWeight: 600,
-                      cursor: "pointer"
-                    }}
-                  >
-                    Update Configuration
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Prompt template card */}
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 20, boxShadow: ADMIN_THEME.shadow, display: "flex", flexDirection: "column" }}>
-              <h3 style={{ fontSize: 12, fontWeight: 700, color: ADMIN_THEME.textSecondary, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 12 }}>Prompt Template</h3>
-              
-              <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 16 }}>
-                <textarea
-                  value={systemPrompt}
-                  onChange={e => setSystemPrompt(e.target.value)}
-                  style={{
-                    width: "100%",
-                    flex: 1,
-                    minHeight: 120,
-                    padding: 12,
-                    border: `1px solid ${ADMIN_THEME.border}`,
-                    borderRadius: 6,
-                    fontSize: 13,
-                    lineHeight: 1.5,
-                    outline: "none",
-                    resize: "none",
-                    fontFamily: "inherit",
-                    color: ADMIN_THEME.textPrimary
-                  }}
-                />
-
-                <div>
-                  <button
-                    onClick={() => {
-                      setIsModelActionLoading("Recompiling system instruction weights...");
-                      setTimeout(() => {
-                        setIsModelActionLoading("");
-                        setModelStatusMsg("AI System instruction template updated and re-indexed.");
-                        setTimeout(() => setModelStatusMsg(""), 4000);
-                      }, 1400);
-                    }}
-                    style={{
-                      background: "#001f3f",
-                      color: "#ffffff",
-                      border: "none",
-                      borderRadius: 4,
-                      padding: "8px 16px",
-                      fontSize: 12,
-                      fontWeight: 600,
-                      cursor: "pointer"
-                    }}
-                  >
-                    Update Prompt
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Model Operations Row */}
-          <div style={{
-            background: ADMIN_THEME.cardBg,
-            border: `1px solid ${ADMIN_THEME.border}`,
-            borderRadius: 8,
-            padding: 20,
-            marginBottom: 20,
-            boxShadow: ADMIN_THEME.shadow
-          }}>
-            <h3 style={{ fontSize: 12, fontWeight: 700, color: ADMIN_THEME.textSecondary, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 16 }}>Model Operations</h3>
-            
-            <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-              <button
-                onClick={() => {
-                  if (confirm("Deploy current model settings to the active police gateway?")) {
-                    setIsModelActionLoading("Uploading LLaMA configurations to edge terminals...");
-                    setTimeout(() => {
-                      setIsModelActionLoading("");
-                      setModelStatusMsg("Deploy sequence finished. Active version set to v3.1.8b-2026.06.");
-                      setTimeout(() => setModelStatusMsg(""), 4000);
-                    }, 1800);
-                  }
-                }}
-                style={{
-                  display: "inline-flex", alignItems: "center", gap: 6,
-                  background: "#ffffff", border: `1px solid ${ADMIN_THEME.border}`,
-                  padding: "8px 14px", borderRadius: 4, fontSize: 12, fontWeight: 600,
-                  color: ADMIN_THEME.textPrimary, cursor: "pointer", transition: "all 0.15s"
-                }}
-                onMouseEnter={e => e.currentTarget.style.background = "#f8fafc"}
-                onMouseLeave={e => e.currentTarget.style.background = "#ffffff"}
-              >
-                <Activity style={{ width: 14, height: 14, color: ADMIN_THEME.green }} />
-                <span>Deploy Model</span>
-              </button>
-
-              <button
-                onClick={() => {
-                  if (confirm("Are you sure you want to rollback to the last retired version v3.3.70b-2026.05?")) {
-                    setIsModelActionLoading("Executing parameter rollback routine...");
-                    setTimeout(() => {
-                      setIsModelActionLoading("");
-                      setModelStatusMsg("Rollback successful. Restored parameters and instructions of v3.3.70b-2026.05.");
-                      setTimeout(() => setModelStatusMsg(""), 4000);
-                    }, 1500);
-                  }
-                }}
-                style={{
-                  display: "inline-flex", alignItems: "center", gap: 6,
-                  background: "#ffffff", border: `1px solid ${ADMIN_THEME.border}`,
-                  padding: "8px 14px", borderRadius: 4, fontSize: 12, fontWeight: 600,
-                  color: ADMIN_THEME.textPrimary, cursor: "pointer", transition: "all 0.15s"
-                }}
-                onMouseEnter={e => e.currentTarget.style.background = "#f8fafc"}
-                onMouseLeave={e => e.currentTarget.style.background = "#ffffff"}
-              >
-                <History style={{ width: 14, height: 14, color: "#3b82f6" }} />
-                <span>Rollback</span>
-              </button>
-
-              <button
-                onClick={() => {
-                  setIsModelActionLoading("Queuing retrain task on state cluster...");
-                  setTimeout(() => {
-                    setIsModelActionLoading("");
-                    setModelStatusMsg("Retraining scheduled on cluster nodes. System will email when accuracy targets are met.");
-                    setTimeout(() => setModelStatusMsg(""), 4000);
-                  }, 1200);
-                }}
-                style={{
-                  display: "inline-flex", alignItems: "center", gap: 6,
-                  background: "#ffffff", border: `1px solid ${ADMIN_THEME.border}`,
-                  padding: "8px 14px", borderRadius: 4, fontSize: 12, fontWeight: 600,
-                  color: ADMIN_THEME.textPrimary, cursor: "pointer", transition: "all 0.15s"
-                }}
-                onMouseEnter={e => e.currentTarget.style.background = "#f8fafc"}
-                onMouseLeave={e => e.currentTarget.style.background = "#ffffff"}
-              >
-                <Loader2 style={{ width: 14, height: 14, color: "#a855f7" }} />
-                <span>Retrain</span>
-              </button>
-
-              <button
-                onClick={() => {
-                  setIsModelActionLoading("Synchronizing local Knowledge Base with district FIR servers...");
-                  setTimeout(() => {
-                    setIsModelActionLoading("");
-                    setModelStatusMsg("Vector registry synced. 1,028 new files index cached.");
-                    setTimeout(() => setModelStatusMsg(""), 4000);
-                  }, 1600);
-                }}
-                style={{
-                  display: "inline-flex", alignItems: "center", gap: 6,
-                  background: "#ffffff", border: `1px solid ${ADMIN_THEME.border}`,
-                  padding: "8px 14px", borderRadius: 4, fontSize: 12, fontWeight: 600,
-                  color: ADMIN_THEME.textPrimary, cursor: "pointer", transition: "all 0.15s"
-                }}
-                onMouseEnter={e => e.currentTarget.style.background = "#f8fafc"}
-                onMouseLeave={e => e.currentTarget.style.background = "#ffffff"}
-              >
-                <Database style={{ width: 14, height: 14, color: "#10b981" }} />
-                <span>Refresh KB</span>
-              </button>
-
-              <button
-                onClick={() => {
-                  if (confirm("Restart AI Core services? This will briefly disconnect active chatbot queues (approx 3 seconds).")) {
-                    setIsModelActionLoading("Rebooting NVIDIA NIM instances...");
-                    setTimeout(() => {
-                      setIsModelActionLoading("");
-                      setModelStatusMsg("AI Service restarted. Disconnect duration: 1.2 seconds.");
-                      setTimeout(() => setModelStatusMsg(""), 4000);
-                    }, 1400);
-                  }
-                }}
-                style={{
-                  display: "inline-flex", alignItems: "center", gap: 6,
-                  background: "#ffffff", border: `1px solid ${ADMIN_THEME.border}`,
-                  padding: "8px 14px", borderRadius: 4, fontSize: 12, fontWeight: 600,
-                  color: ADMIN_THEME.textPrimary, cursor: "pointer", transition: "all 0.15s"
-                }}
-                onMouseEnter={e => e.currentTarget.style.background = "#f8fafc"}
-                onMouseLeave={e => e.currentTarget.style.background = "#ffffff"}
-              >
-                <Settings style={{ width: 14, height: 14, color: ADMIN_THEME.red }} />
-                <span>Restart AI Service</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Previous Versions Table */}
-          <div style={{
-            background: ADMIN_THEME.cardBg,
-            border: `1px solid ${ADMIN_THEME.border}`,
-            borderRadius: 8,
-            boxShadow: ADMIN_THEME.shadow,
-            overflow: "hidden"
-          }}>
-            <div style={{ padding: "16px 20px", borderBottom: `1px solid ${ADMIN_THEME.border}`, background: "#f8fafc" }}>
-              <h3 style={{ fontSize: 12, fontWeight: 700, color: ADMIN_THEME.textSecondary, textTransform: "uppercase", letterSpacing: "0.06em", margin: 0 }}>Previous Versions</h3>
-            </div>
-            
-            <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: 13 }}>
-              <thead>
-                <tr style={{ background: "#f8fafc", borderBottom: `1px solid ${ADMIN_THEME.border}`, color: ADMIN_THEME.textSecondary, fontWeight: 700 }}>
-                  <th style={{ padding: "12px 20px" }}>VERSION</th>
-                  <th style={{ padding: "12px 20px" }}>DEPLOYED</th>
-                  <th style={{ padding: "12px 20px" }}>ACCURACY</th>
-                  <th style={{ padding: "12px 20px", textAlign: "center" }}>STATUS</th>
-                </tr>
-              </thead>
-              <tbody>
-                {previousVersions.map((v, idx) => {
-                  const statusPill = v.status === "RETIRED" 
-                    ? { bg: "#f1f5f9", border: "#cbd5e1", text: "#475569" }
-                    : { bg: "#f1f5f9", border: "#cbd5e1", text: "#94a3b8" };
-
-                  return (
-                    <tr key={idx} style={{ borderBottom: `1px solid ${ADMIN_THEME.border}` }}>
-                      <td style={{ padding: "14px 20px", fontWeight: 600, color: ADMIN_THEME.textPrimary, fontFamily: "JetBrains Mono, monospace" }}>
-                        {v.version}
-                      </td>
-                      <td style={{ padding: "14px 20px", color: ADMIN_THEME.textSecondary }}>
-                        Deployed: {v.deployed}
-                      </td>
-                      <td style={{ padding: "14px 20px", color: ADMIN_THEME.textSecondary, fontWeight: 600 }}>
-                        Accuracy: {v.accuracy}
-                      </td>
-                      <td style={{ padding: "14px 20px", textAlign: "center" }}>
-                        <span style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: 4,
-                          padding: "2px 8px",
-                          borderRadius: 12,
-                          fontSize: 9,
-                          fontWeight: 700,
-                          background: statusPill.bg,
-                          border: `1px solid ${statusPill.border}`,
-                          color: statusPill.text
-                        }}>
-                          <span style={{ width: 4, height: 4, borderRadius: "50%", background: statusPill.text }} />
-                          {v.status}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.06em", color: ADMIN_THEME.textSecondary }}>
+                        {m.role}
+                      </span>
+                      {m.active ? (
+                        <span style={{ fontSize: 9, fontWeight: 800, background: "rgba(16,185,129,0.12)", color: "#047857", padding: "2px 6px", borderRadius: 4 }}>
+                          IN USE
                         </span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                      ) : m.configured ? (
+                        <span style={{ fontSize: 9, fontWeight: 800, background: "rgba(148,163,184,0.18)", color: ADMIN_THEME.textSecondary, padding: "2px 6px", borderRadius: 4 }}>
+                          STANDBY
+                        </span>
+                      ) : (
+                        <span style={{ fontSize: 9, fontWeight: 800, background: "rgba(239,68,68,0.12)", color: ADMIN_THEME.red, padding: "2px 6px", borderRadius: 4 }}>
+                          NO KEY
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 13.5, fontWeight: 700, marginTop: 5, fontFamily: "JetBrains Mono, monospace", wordBreak: "break-all" }}>
+                      {m.id}
+                    </div>
+                    <div style={{ fontSize: 11, color: ADMIN_THEME.textSecondary, marginTop: 2 }}>{m.provider}</div>
+                  </div>
+                  <Cpu style={{ width: 18, height: 18, color: m.active ? ADMIN_THEME.accentGold : ADMIN_THEME.textMuted, flexShrink: 0 }} />
+                </div>
+
+                <div style={{ fontSize: 11.5, color: ADMIN_THEME.textSecondary, lineHeight: 1.5 }}>{m.note}</div>
+
+                {/* Probe result. Absent until asked for — it costs a real call. */}
+                <div style={{ fontSize: 11.5, display: "flex", alignItems: "center", gap: 7 }}>
+                  {m.reachable === true && (
+                    <>
+                      <span style={{ color: ADMIN_THEME.green, fontWeight: 800 }}>●</span>
+                      <span style={{ color: ADMIN_THEME.textPrimary }}>
+                        Answered in {m.probeLatencyMs} ms
+                      </span>
+                    </>
+                  )}
+                  {m.reachable === false && (
+                    <>
+                      <span style={{ color: ADMIN_THEME.red, fontWeight: 800 }}>●</span>
+                      <span style={{ color: ADMIN_THEME.red }}>{m.probeError || "Did not answer"}</span>
+                    </>
+                  )}
+                  {(m.reachable === undefined || m.reachable === null) && (
+                    <span style={{ color: ADMIN_THEME.textMuted }}>
+                      {m.configured ? "Not tested — press Test Connectivity" : "No key configured"}
+                    </span>
+                  )}
+                </div>
+
+                {/* Usage, counted from OfficerActivity. */}
+                <div style={{ borderTop: `1px solid ${ADMIN_THEME.border}`, paddingTop: 10, display: "flex", gap: 18, flexWrap: "wrap", fontSize: 11, fontFamily: "JetBrains Mono, monospace", color: ADMIN_THEME.textSecondary }}>
+                  <span>queries: {m.queries}</span>
+                  <span>failures: {m.failures}</span>
+                  <span>median: {m.medianLatencyMs == null ? "—" : `${(m.medianLatencyMs / 1000).toFixed(2)}s`}</span>
+                  <span>tokens: {m.totalTokens ? m.totalTokens.toLocaleString() : "—"}</span>
+                </div>
+              </div>
+            ))}
           </div>
 
+          {(modelInfo?.unattributedQueries ?? 0) > 0 && (
+            <div style={{ fontSize: 11.5, color: ADMIN_THEME.textSecondary, display: "flex", gap: 8, alignItems: "center" }}>
+              <Info style={{ width: 14, height: 14, color: ADMIN_THEME.textMuted, flexShrink: 0 }} />
+              {modelInfo.unattributedQueries} of {modelInfo.totalQueries} recorded quer
+              {modelInfo.totalQueries === 1 ? "y" : "ies"} predate model attribution, so they are not counted
+              against any model above.
+            </div>
+          )}
+
+          {/* Runtime parameters — real, stored, read by /api/chat. */}
+          <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, overflow: "hidden" }}>
+            <div style={{ background: "rgba(0,31,63,0.02)", borderBottom: `1px solid ${ADMIN_THEME.border}`, padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "JetBrains Mono" }}>
+                Runtime Parameters
+              </span>
+              <div style={{ display: "flex", gap: 10 }}>
+                <button
+                  onClick={() => {
+                    setSettingsDraft(d => ({ ...d, ...aiSpecDefaults }));
+                    setAdminNotice({ kind: "success", text: "Reset to the built-in defaults. Press Save to apply." });
+                  }}
+                  style={{
+                    background: "#fff", border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 6,
+                    padding: "6px 12px", fontSize: 11.5, fontWeight: 600, color: ADMIN_THEME.textPrimary, cursor: "pointer",
+                  }}
+                >
+                  Restore Defaults
+                </button>
+                <button
+                  onClick={() => handleSaveSettings()}
+                  disabled={actionLoading || !aiSettingsDirty}
+                  style={{
+                    display: "inline-flex", alignItems: "center", gap: 6,
+                    background: aiSettingsDirty ? "#001f3f" : "#94a3b8",
+                    border: "none", borderRadius: 6, padding: "6px 14px", fontSize: 11.5,
+                    fontWeight: 600, color: "#fff", cursor: aiSettingsDirty ? "pointer" : "default",
+                  }}
+                >
+                  <Check style={{ width: 13, height: 13 }} />
+                  {aiSettingsDirty ? "Save Parameters" : "No Changes"}
+                </button>
+              </div>
+            </div>
+
+            {aiSpecs.length === 0 ? (
+              <div style={{ padding: 28, textAlign: "center", color: ADMIN_THEME.textSecondary, fontSize: 13 }}>
+                {loading ? "Reading parameters…" : "Parameters unavailable."}
+              </div>
+            ) : aiSpecs.map((spec: any, idx: number) => {
+              const value = settingsDraft[spec.key];
+              const changed = String(value) !== String(admin.settings[spec.key]);
+              return (
+                <div key={spec.key} style={{
+                  padding: "14px 16px",
+                  borderBottom: idx !== aiSpecs.length - 1 ? `1px solid ${ADMIN_THEME.border}` : "none",
+                  background: changed ? "rgba(255,153,51,0.04)" : "transparent",
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 20, flexWrap: spec.multiline ? "wrap" : "nowrap" }}>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <span style={{ fontSize: 13, fontWeight: 600 }}>{spec.label}</span>
+                        <span style={{ fontSize: 9, fontWeight: 800, padding: "2px 6px", borderRadius: 4, background: "rgba(16,185,129,0.12)", color: "#047857", textTransform: "uppercase" }}>
+                          Sent with every query
+                        </span>
+                        {changed && (
+                          <span style={{ fontSize: 9, fontWeight: 800, color: ADMIN_THEME.accentGold, textTransform: "uppercase" }}>unsaved</span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 11.5, color: ADMIN_THEME.textSecondary, marginTop: 4, lineHeight: 1.5 }}>
+                        {spec.note}
+                      </div>
+                    </div>
+
+                    {!spec.multiline && (
+                      <div style={{ flexShrink: 0, display: "flex", alignItems: "center", gap: 10 }}>
+                        <input
+                          type="range"
+                          min={spec.min}
+                          max={spec.max}
+                          step={spec.step ?? 1}
+                          value={Number(value ?? spec.fallback)}
+                          onChange={e => setSettingsDraft(d => ({ ...d, [spec.key]: Number(e.target.value) }))}
+                          style={{ width: 170, accentColor: "#FF9933" }}
+                        />
+                        <span style={{ minWidth: 54, textAlign: "right", fontFamily: "JetBrains Mono, monospace", fontSize: 13, fontWeight: 700, color: ADMIN_THEME.accentGold }}>
+                          {String(value ?? spec.fallback)}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  {spec.multiline && (
+                    <textarea
+                      value={String(value ?? "")}
+                      onChange={e => setSettingsDraft(d => ({ ...d, [spec.key]: e.target.value }))}
+                      rows={7}
+                      spellCheck={false}
+                      style={{
+                        width: "100%", marginTop: 10, padding: 12,
+                        border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 6,
+                        fontSize: 12, lineHeight: 1.6, fontFamily: "JetBrains Mono, monospace",
+                        color: ADMIN_THEME.textPrimary, resize: "vertical", outline: "none",
+                      }}
+                    />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* How a query is actually assembled. Documents the parts that are
+              NOT editable above, so nobody assumes the textarea is the whole
+              instruction the model receives. */}
+          <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "JetBrains Mono", marginBottom: 10 }}>
+              What Is Sent With A Question
+            </div>
+            <ol style={{ fontSize: 12, color: ADMIN_THEME.textSecondary, lineHeight: 1.7, paddingLeft: 18, margin: 0 }}>
+              <li>The system prompt above.</li>
+              <li>A language mandate, when the officer has selected Hindi or Kannada. <em>Added in code.</em></li>
+              <li>The module the officer is viewing, and the active case number if one is loaded. <em>Added in code.</em></li>
+              <li>The last {String(settingsDraft["ai.historyMessages"] ?? 6)} messages of the conversation.</li>
+              <li>
+                For an attachment: the image is read by the vision model first, and its transcription is
+                handed to the answering model as ordinary text. The picture itself never reaches the
+                answering model.
+              </li>
+              <li>The officer&rsquo;s question.</li>
+            </ol>
+          </div>
         </div>
       )}
 
-      {/* 8. AUDIT LOGS */}
       {adminTab === "admin-audit" && (
         <div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
             <div>
-              <h1 style={{ fontSize: 22, fontWeight: 800 }}>Security Audit Ledger (Immutable)</h1>
+              <h1 style={{ fontSize: 22, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>Audit Log</h1>
               <p style={{ fontSize: 12, color: ADMIN_THEME.textSecondary }}>Immutable security transaction log reporting all access activities and modifications</p>
             </div>
           </div>
@@ -4517,1535 +3652,807 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
             </div>
           </div>
 
+          {/*
+            The audit table.
+
+            Columns changed because the underlying table did. OfficerAuditLog
+            records WHAT changed — an old value and a new one — which the old
+            Firestore version could not: it stored a prose sentence per entry.
+
+            The "Ingress IP Address" column is gone. It fell back to the literal
+            "10.0.12.94 (Encrypted Proxy)" whenever a row had no address, which
+            was every row, so the audit trail displayed an invented source for
+            every change ever made. The IP of a change belongs to the session
+            that made it and is shown, for real, in the Security Center.
+          */}
           <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, overflow: "hidden" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-              <thead>
-                <tr style={{ background: "rgba(0,0,0,0.01)", borderBottom: `2px solid ${ADMIN_THEME.border}` }}>
-                  <th style={{ padding: "12px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>Timestamp Signature</th>
-                  <th style={{ padding: "12px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>Officer Node</th>
-                  <th style={{ padding: "12px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>Action Log Message</th>
-                  <th style={{ padding: "12px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>Operational Module</th>
-                  <th style={{ padding: "12px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>Ingress IP Address</th>
-                  <th style={{ padding: "12px 16px", textAlign: "center", color: ADMIN_THEME.textSecondary }}>Security Token</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredAuditLogs.map((log: any, idx) => {
-                  const rawTs = log.timestamp || log.createdAt || log.time;
-                  let displayTime = "24 Jul 2026, 12:00:00 pm";
-                  if (typeof rawTs === "string") {
-                    if (rawTs.includes("Jul") || rawTs.includes("Jan") || rawTs.includes("Feb") || rawTs.includes("Mar") || rawTs.includes("Apr") || rawTs.includes("May") || rawTs.includes("Jun") || rawTs.includes("Aug") || rawTs.includes("Sep") || rawTs.includes("Oct") || rawTs.includes("Nov") || rawTs.includes("Dec")) {
-                      displayTime = rawTs;
-                    } else {
-                      const d = new Date(rawTs);
-                      displayTime = !isNaN(d.getTime()) ? d.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "medium" }) : rawTs;
-                    }
-                  } else if (typeof rawTs === "number") {
-                    displayTime = new Date(rawTs).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "medium" });
-                  } else if (rawTs && typeof rawTs === "object") {
-                    const secs = rawTs.seconds || rawTs._seconds;
-                    if (secs) displayTime = new Date(secs * 1000).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "medium" });
-                    else if (typeof rawTs.toDate === "function") displayTime = rawTs.toDate().toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "medium" });
-                  }
-
-                  const officerDisplay = log.officer || log.changedBy || log.name || (log.targetUid ? `UID: ${log.targetUid.slice(0, 10)}...` : "ISD Central Node");
-                  const actionDisplay = log.action || log.message || log.newRole || "Security Log Audit Event";
-                  const moduleDisplay = log.module || log.newIsdLevel || "ISD-RBAC";
-                  const ipDisplay = log.ipAddress || log.ip || "10.0.12.94 (Encrypted Proxy)";
-                  const statusDisplay = log.status || (log.newRole ? (log.newRole.includes("VPN") ? "VPN_FLAGGED" : "ACTIVE") : "ACTIVE");
-
-                  return (
-                    <tr key={idx} style={{ borderBottom: idx !== filteredAuditLogs.length - 1 ? `1px solid ${ADMIN_THEME.border}` : "none" }}>
-                      <td style={{ padding: "14px 16px", fontFamily: "JetBrains Mono, monospace", color: ADMIN_THEME.textSecondary, whiteSpace: "nowrap" }}>
-                        {displayTime}
-                      </td>
-                      <td style={{ padding: "14px 16px", fontWeight: 600 }}>{officerDisplay}</td>
-                      <td style={{ padding: "14px 16px", maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{actionDisplay}</td>
-                      <td style={{ padding: "14px 16px" }}>
-                        <span style={{ background: "rgba(255,153,51,0.08)", color: ADMIN_THEME.accentGold, padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>
-                          {moduleDisplay}
-                        </span>
-                      </td>
-                      <td style={{ padding: "14px 16px", fontFamily: "JetBrains Mono, monospace", fontSize: 11 }}>{ipDisplay}</td>
-                      <td style={{ padding: "14px 16px", textAlign: "center" }}>
-                        <span style={{ fontSize: 9, background: "rgba(16,185,129,0.1)", color: ADMIN_THEME.green, padding: "2px 5px", borderRadius: 3, fontWeight: 800 }}>
-                          {String(statusDisplay).toUpperCase()}
-                        </span>
-                      </td>
+            {filteredAuditLogs.length === 0 ? (
+              <div style={{ padding: 32, textAlign: "center", color: ADMIN_THEME.textSecondary, fontSize: 13 }}>
+                {auditLogs.length === 0
+                  ? "No changes have been recorded yet."
+                  : "No entries match this filter."}
+              </div>
+            ) : (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 900 }}>
+                  <thead>
+                    <tr style={{ background: "rgba(0,0,0,0.01)", borderBottom: `2px solid ${ADMIN_THEME.border}` }}>
+                      <th style={{ padding: "12px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>When</th>
+                      <th style={{ padding: "12px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>Change</th>
+                      <th style={{ padding: "12px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>Subject</th>
+                      <th style={{ padding: "12px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>Before → After</th>
+                      <th style={{ padding: "12px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>By</th>
+                      <th style={{ padding: "12px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>Reason</th>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                  </thead>
+                  <tbody>
+                    {filteredAuditLogs.map((log, idx) => {
+                      const when = log.changedAt
+                        ? new Date(log.changedAt.replace(" ", "T")).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "medium" })
+                        : "—";
+                      const subject = officers.find(o => o.uid === log.firebaseUid);
+                      return (
+                        <tr key={log.logId ?? idx} style={{ borderBottom: idx !== filteredAuditLogs.length - 1 ? `1px solid ${ADMIN_THEME.border}` : "none", verticalAlign: "top" }}>
+                          <td style={{ padding: "12px 16px", fontFamily: "JetBrains Mono, monospace", color: ADMIN_THEME.textSecondary, whiteSpace: "nowrap" }}>{when}</td>
+                          <td style={{ padding: "12px 16px" }}>
+                            <span style={{ background: "rgba(255,153,51,0.08)", color: ADMIN_THEME.accentGold, padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700, whiteSpace: "nowrap" }}>
+                              {prettyChangeType(log.changeType)}
+                            </span>
+                          </td>
+                          <td style={{ padding: "12px 16px", fontWeight: 600 }}>
+                            {subject?.name || (log.firebaseUid ? `${log.firebaseUid.slice(0, 10)}…` : "—")}
+                          </td>
+                          <td style={{ padding: "12px 16px", fontFamily: "JetBrains Mono, monospace", fontSize: 10.5, maxWidth: 340 }}>
+                            {log.oldValue && <div style={{ color: ADMIN_THEME.textSecondary, wordBreak: "break-word" }}>{log.oldValue}</div>}
+                            {log.newValue && <div style={{ color: ADMIN_THEME.textPrimary, wordBreak: "break-word" }}>→ {log.newValue}</div>}
+                            {!log.oldValue && !log.newValue && <span style={{ color: ADMIN_THEME.textMuted }}>—</span>}
+                          </td>
+                          <td style={{ padding: "12px 16px", whiteSpace: "nowrap" }}>{log.changedBy || "—"}</td>
+                          <td style={{ padding: "12px 16px", color: ADMIN_THEME.textSecondary, maxWidth: 260 }}>{log.reason || "—"}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </div>
       )}
 
       {/* 9. SYSTEM SETTINGS */}
+      {/*
+        SYSTEM SETTINGS.
+
+        The Save button here used to be:
+
+            setTimeout(() => { setSettingsSuccess(true); }, 1200)
+
+        It wrote nothing. Reloading the page reverted every change, so an
+        administrator could believe MFA had been enforced when it had not.
+
+        Two problems were tangled together and are now separated:
+
+          PERSISTENCE  every value below is stored in the SystemSetting table,
+                       and each change writes an audit row with old and new.
+          ENFORCEMENT  most of these describe behaviour owned by Firebase Auth
+                       or the hosting platform, not by this application. The
+                       badge on each control says which. A stored-but-unenforced
+                       setting is a recorded policy decision - as long as it
+                       says so rather than implying the system obeys it.
+
+        The catalogue lives in src/lib/systemSettings.ts. Adding a setting there
+        makes it appear here; there is no second list to keep in step.
+      */}
       {adminTab === "admin-settings" && (
         <div style={{ position: "relative" }}>
-          
-          {/* Notification Messages */}
-          {settingsSuccess && (
-            <div style={{
-              background: "#ecfdf5",
-              border: `1px solid ${ADMIN_THEME.green}`,
-              color: "#065f46",
-              borderRadius: 8,
-              padding: "12px 16px",
-              fontSize: 13,
-              fontWeight: 600,
-              marginBottom: 20,
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              animation: "fadeIn 0.2s ease-out"
-            }}>
-              <Check style={{ width: 16, height: 16, color: ADMIN_THEME.green }} />
-              <span>System settings saved successfully.</span>
-            </div>
-          )}
-
-          {/* Loader Overlay */}
           {actionLoading && (
             <div style={{
-              position: "fixed",
-              top: 0, left: 0, right: 0, bottom: 0,
-              background: "rgba(10, 25, 47, 0.25)",
-              backdropFilter: "blur(3px)",
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              justifyContent: "center",
-              zIndex: 9999,
-              gap: 12
+              position: "fixed", inset: 0, background: "rgba(10, 25, 47, 0.25)",
+              backdropFilter: "blur(3px)", display: "flex", alignItems: "center",
+              justifyContent: "center", zIndex: 9999,
             }}>
               <div style={{
-                background: "#ffffff",
-                padding: "24px 32px",
-                borderRadius: 12,
-                border: `1px solid ${ADMIN_THEME.border}`,
-                boxShadow: ADMIN_THEME.shadowMd,
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                gap: 12
+                background: "#fff", padding: "24px 32px", borderRadius: 12,
+                border: `1px solid ${ADMIN_THEME.border}`, boxShadow: ADMIN_THEME.shadowMd,
+                display: "flex", flexDirection: "column", alignItems: "center", gap: 12,
               }}>
                 <Loader2 style={{ width: 28, height: 28, color: "#001f3f", animation: "spin 1s linear infinite" }} />
-                <span style={{ fontSize: 13, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>Processing system configuration updates...</span>
+                <span style={{ fontSize: 13, fontWeight: 700 }}>Saving...</span>
               </div>
             </div>
           )}
 
-          {/* Header Row */}
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
             <div>
-              <h1 style={{ fontSize: 22, fontWeight: 800, color: ADMIN_THEME.textPrimary }}>System Settings</h1>
-              <p style={{ fontSize: 12, color: ADMIN_THEME.textSecondary }}>Configure application, security, authentication, and infrastructure parameters</p>
+              <h1 style={{ fontSize: 22, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>System Settings</h1>
+              <p style={{ fontSize: 12, color: ADMIN_THEME.textSecondary }}>
+                Stored in Catalyst. Each control states whether this application enforces it.
+              </p>
             </div>
-            
-            <div style={{ display: "flex", gap: 12 }}>
+            <div style={{ display: "flex", gap: 10 }}>
               <button
                 onClick={() => {
-                  if (confirm("Reset all settings to original platform defaults?")) {
-                    setSetAppName("O.R.C.A");
-                    setSetMaintMode(false);
-                    setSetDebugMode(false);
-                    setSetEnforceHttps(true);
-                    setSetRateLimiting(true);
-                    setSetIpWhitelist(false);
-                    setSetMfaEnabled(true);
-                    setSetSessionTimeout(30);
-                    setSetPassExpiry(90);
-                    setSetMaxAttempts(5);
-                    setSetEmailNotif(true);
-                    setSetPushNotif(false);
-                    setSetAutoBackup(true);
-                    setSetBackupRetention(30);
-                    setSetAuditLogRetention(365);
-                    
-                    setSettingsSuccess(true);
-                    setTimeout(() => setSettingsSuccess(false), 3000);
-                  }
+                  // Reverts the DRAFT to what is stored, not to factory values.
+                  // The old Reset button set hardcoded defaults and then showed
+                  // "saved", which silently discarded the real configuration.
+                  setSettingsDraft({ ...admin.settings });
+                  setAdminNotice({ kind: "success", text: "Reverted to the saved values." });
                 }}
                 style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 6,
-                  background: "#ffffff",
-                  border: `1px solid ${ADMIN_THEME.border}`,
-                  borderRadius: 6,
-                  padding: "6px 14px",
-                  fontSize: 12,
-                  fontWeight: 600,
-                  color: ADMIN_THEME.textPrimary,
-                  cursor: "pointer",
-                  transition: "background 0.2s"
+                  display: "inline-flex", alignItems: "center", gap: 6, background: "#fff",
+                  border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 6, padding: "7px 14px",
+                  fontSize: 12, fontWeight: 600, color: ADMIN_THEME.textPrimary, cursor: "pointer",
                 }}
-                onMouseEnter={e => e.currentTarget.style.background = "#f8fafc"}
-                onMouseLeave={e => e.currentTarget.style.background = "#ffffff"}
               >
                 <History style={{ width: 14, height: 14, color: ADMIN_THEME.textSecondary }} />
-                <span>Reset Defaults</span>
+                <span>Discard Changes</span>
               </button>
-
               <button
-                onClick={() => {
-                  setActionLoading(true);
-                  setSettingsSuccess(false);
-                  setTimeout(() => {
-                    setActionLoading(false);
-                    setSettingsSuccess(true);
-                    setTimeout(() => setSettingsSuccess(false), 4000);
-                  }, 1200);
-                }}
+                onClick={() => handleSaveSettings()}
+                disabled={actionLoading || !settingsDirty}
                 style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 6,
-                  background: "#001f3f",
-                  border: "none",
-                  borderRadius: 6,
-                  padding: "6px 14px",
-                  fontSize: 12,
-                  fontWeight: 600,
-                  color: "#ffffff",
-                  cursor: "pointer",
-                  boxShadow: ADMIN_THEME.shadow
+                  display: "inline-flex", alignItems: "center", gap: 6,
+                  background: settingsDirty ? "#001f3f" : "#94a3b8",
+                  border: "none", borderRadius: 6, padding: "7px 14px", fontSize: 12,
+                  fontWeight: 600, color: "#fff", cursor: settingsDirty ? "pointer" : "default",
                 }}
               >
                 <Check style={{ width: 14, height: 14 }} />
-                <span>Save All Changes</span>
+                <span>{settingsDirty ? "Save Changes" : "No Changes"}</span>
               </button>
             </div>
           </div>
 
-          <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-            
-            {/* 1. APPLICATION CARD */}
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 20, boxShadow: ADMIN_THEME.shadow }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, borderBottom: `1px solid ${ADMIN_THEME.border}`, paddingBottom: 10, marginBottom: 16 }}>
-                <Settings style={{ width: 15, height: 15, color: ADMIN_THEME.textSecondary }} />
-                <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: ADMIN_THEME.textSecondary }}>Application</span>
-              </div>
-
-              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                {/* Application Name */}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>Application Name</div>
-                    <div style={{ fontSize: 11, color: ADMIN_THEME.textSecondary, marginTop: 2 }}>Display name for the admin console</div>
-                  </div>
-                  <input
-                    type="text"
-                    value={setAppName}
-                    onChange={e => setSetAppName(e.target.value)}
-                    style={{
-                      border: `1px solid ${ADMIN_THEME.border}`,
-                      borderRadius: 6,
-                      padding: "6px 12px",
-                      fontSize: 13,
-                      color: ADMIN_THEME.textPrimary,
-                      outline: "none",
-                      width: "240px",
-                      textAlign: "left"
-                    }}
-                  />
-                </div>
-
-                {/* Maintenance Mode */}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>Maintenance Mode</div>
-                    <div style={{ fontSize: 11, color: ADMIN_THEME.textSecondary, marginTop: 2 }}>Disable access for non-admin users</div>
-                  </div>
-                  <div
-                    onClick={() => setSetMaintMode(!setMaintMode)}
-                    style={{
-                      position: "relative",
-                      width: 44, height: 22, borderRadius: 12,
-                      background: setMaintMode ? ADMIN_THEME.green : "#cbd5e1",
-                      cursor: "pointer", transition: "background 0.2s"
-                    }}
-                  >
-                    <div style={{
-                      position: "absolute", left: setMaintMode ? 24 : 2, top: 2,
-                      width: 18, height: 18, borderRadius: "50%", background: "#ffffff",
-                      transition: "left 0.2s"
-                    }} />
-                  </div>
-                </div>
-
-                {/* Debug Mode */}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>Debug Mode</div>
-                    <div style={{ fontSize: 11, color: ADMIN_THEME.textSecondary, marginTop: 2 }}>Enable verbose logging and error traces</div>
-                  </div>
-                  <div
-                    onClick={() => setSetDebugMode(!setDebugMode)}
-                    style={{
-                      position: "relative",
-                      width: 44, height: 22, borderRadius: 12,
-                      background: setDebugMode ? ADMIN_THEME.green : "#cbd5e1",
-                      cursor: "pointer", transition: "background 0.2s"
-                    }}
-                  >
-                    <div style={{
-                      position: "absolute", left: setDebugMode ? 24 : 2, top: 2,
-                      width: 18, height: 18, borderRadius: "50%", background: "#ffffff",
-                      transition: "left 0.2s"
-                    }} />
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* 2. SECURITY CARD */}
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 20, boxShadow: ADMIN_THEME.shadow }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, borderBottom: `1px solid ${ADMIN_THEME.border}`, paddingBottom: 10, marginBottom: 16 }}>
-                <Shield style={{ width: 15, height: 15, color: ADMIN_THEME.textSecondary }} />
-                <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: ADMIN_THEME.textSecondary }}>Security</span>
-              </div>
-
-              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                {/* Enforce HTTPS */}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>Enforce HTTPS</div>
-                    <div style={{ fontSize: 11, color: ADMIN_THEME.textSecondary, marginTop: 2 }}>Redirect all HTTP traffic to HTTPS</div>
-                  </div>
-                  <div
-                    onClick={() => setSetEnforceHttps(!setEnforceHttps)}
-                    style={{
-                      position: "relative",
-                      width: 44, height: 22, borderRadius: 12,
-                      background: setEnforceHttps ? ADMIN_THEME.green : "#cbd5e1",
-                      cursor: "pointer", transition: "background 0.2s"
-                    }}
-                  >
-                    <div style={{
-                      position: "absolute", left: setEnforceHttps ? 24 : 2, top: 2,
-                      width: 18, height: 18, borderRadius: "50%", background: "#ffffff",
-                      transition: "left 0.2s"
-                    }} />
-                  </div>
-                </div>
-
-                {/* Rate Limiting */}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>Rate Limiting</div>
-                    <div style={{ fontSize: 11, color: ADMIN_THEME.textSecondary, marginTop: 2 }}>Enable API rate limiting to prevent abuse</div>
-                  </div>
-                  <div
-                    onClick={() => setSetRateLimiting(!setRateLimiting)}
-                    style={{
-                      position: "relative",
-                      width: 44, height: 22, borderRadius: 12,
-                      background: setRateLimiting ? ADMIN_THEME.green : "#cbd5e1",
-                      cursor: "pointer", transition: "background 0.2s"
-                    }}
-                  >
-                    <div style={{
-                      position: "absolute", left: setRateLimiting ? 24 : 2, top: 2,
-                      width: 18, height: 18, borderRadius: "50%", background: "#ffffff",
-                      transition: "left 0.2s"
-                    }} />
-                  </div>
-                </div>
-
-                {/* IP Whitelist */}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>IP Whitelist</div>
-                    <div style={{ fontSize: 11, color: ADMIN_THEME.textSecondary, marginTop: 2 }}>Restrict access to approved IP addresses</div>
-                  </div>
-                  <div
-                    onClick={() => setSetIpWhitelist(!setIpWhitelist)}
-                    style={{
-                      position: "relative",
-                      width: 44, height: 22, borderRadius: 12,
-                      background: setIpWhitelist ? ADMIN_THEME.green : "#cbd5e1",
-                      cursor: "pointer", transition: "background 0.2s"
-                    }}
-                  >
-                    <div style={{
-                      position: "absolute", left: setIpWhitelist ? 24 : 2, top: 2,
-                      width: 18, height: 18, borderRadius: "50%", background: "#ffffff",
-                      transition: "left 0.2s"
-                    }} />
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* 3. AUTHENTICATION CARD */}
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 20, boxShadow: ADMIN_THEME.shadow }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, borderBottom: `1px solid ${ADMIN_THEME.border}`, paddingBottom: 10, marginBottom: 16 }}>
-                <Fingerprint style={{ width: 15, height: 15, color: ADMIN_THEME.textSecondary }} />
-                <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: ADMIN_THEME.textSecondary }}>Authentication</span>
-              </div>
-
-              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                {/* Multi-Factor Authentication */}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>Multi-Factor Authentication</div>
-                    <div style={{ fontSize: 11, color: ADMIN_THEME.textSecondary, marginTop: 2 }}>Require MFA for all admin accounts</div>
-                  </div>
-                  <div
-                    onClick={() => setSetMfaEnabled(!setMfaEnabled)}
-                    style={{
-                      position: "relative",
-                      width: 44, height: 22, borderRadius: 12,
-                      background: setMfaEnabled ? ADMIN_THEME.green : "#cbd5e1",
-                      cursor: "pointer", transition: "background 0.2s"
-                    }}
-                  >
-                    <div style={{
-                      position: "absolute", left: setMfaEnabled ? 24 : 2, top: 2,
-                      width: 18, height: 18, borderRadius: "50%", background: "#ffffff",
-                      transition: "left 0.2s"
-                    }} />
-                  </div>
-                </div>
-
-                {/* Session Timeout */}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>Session Timeout (minutes)</div>
-                    <div style={{ fontSize: 11, color: ADMIN_THEME.textSecondary, marginTop: 2 }}>Auto-logout after inactivity</div>
-                  </div>
-                  <input
-                    type="number"
-                    value={setSessionTimeout}
-                    onChange={e => setSetSessionTimeout(parseInt(e.target.value) || 0)}
-                    style={{
-                      border: `1px solid ${ADMIN_THEME.border}`,
-                      borderRadius: 6,
-                      padding: "6px 12px",
-                      fontSize: 13,
-                      color: ADMIN_THEME.textPrimary,
-                      outline: "none",
-                      width: "80px",
-                      textAlign: "center"
-                    }}
-                  />
-                </div>
-
-                {/* Password Expiry */}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>Password Expiry (days)</div>
-                    <div style={{ fontSize: 11, color: ADMIN_THEME.textSecondary, marginTop: 2 }}>Force password change after interval</div>
-                  </div>
-                  <input
-                    type="number"
-                    value={setPassExpiry}
-                    onChange={e => setSetPassExpiry(parseInt(e.target.value) || 0)}
-                    style={{
-                      border: `1px solid ${ADMIN_THEME.border}`,
-                      borderRadius: 6,
-                      padding: "6px 12px",
-                      fontSize: 13,
-                      color: ADMIN_THEME.textPrimary,
-                      outline: "none",
-                      width: "80px",
-                      textAlign: "center"
-                    }}
-                  />
-                </div>
-
-                {/* Max Login Attempts */}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>Max Login Attempts</div>
-                    <div style={{ fontSize: 11, color: ADMIN_THEME.textSecondary, marginTop: 2 }}>Lock account after failed attempts</div>
-                  </div>
-                  <input
-                    type="number"
-                    value={setMaxAttempts}
-                    onChange={e => setSetMaxAttempts(parseInt(e.target.value) || 0)}
-                    style={{
-                      border: `1px solid ${ADMIN_THEME.border}`,
-                      borderRadius: 6,
-                      padding: "6px 12px",
-                      fontSize: 13,
-                      color: ADMIN_THEME.textPrimary,
-                      outline: "none",
-                      width: "80px",
-                      textAlign: "center"
-                    }}
-                  />
-                </div>
-              </div>
-            </div>
-
-            {/* 4. NOTIFICATIONS CARD */}
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 20, boxShadow: ADMIN_THEME.shadow }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, borderBottom: `1px solid ${ADMIN_THEME.border}`, paddingBottom: 10, marginBottom: 16 }}>
-                <Bell style={{ width: 15, height: 15, color: ADMIN_THEME.textSecondary }} />
-                <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: ADMIN_THEME.textSecondary }}>Notifications</span>
-              </div>
-
-              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                {/* Email Notifications */}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>Email Notifications</div>
-                    <div style={{ fontSize: 11, color: ADMIN_THEME.textSecondary, marginTop: 2 }}>Send email alerts for critical events</div>
-                  </div>
-                  <div
-                    onClick={() => setSetEmailNotif(!setEmailNotif)}
-                    style={{
-                      position: "relative",
-                      width: 44, height: 22, borderRadius: 12,
-                      background: setEmailNotif ? ADMIN_THEME.green : "#cbd5e1",
-                      cursor: "pointer", transition: "background 0.2s"
-                    }}
-                  >
-                    <div style={{
-                      position: "absolute", left: setEmailNotif ? 24 : 2, top: 2,
-                      width: 18, height: 18, borderRadius: "50%", background: "#ffffff",
-                      transition: "left 0.2s"
-                    }} />
-                  </div>
-                </div>
-
-                {/* Push Notifications */}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>Push Notifications</div>
-                    <div style={{ fontSize: 11, color: ADMIN_THEME.textSecondary, marginTop: 2 }}>Browser push notifications for admins</div>
-                  </div>
-                  <div
-                    onClick={() => setSetPushNotif(!setPushNotif)}
-                    style={{
-                      position: "relative",
-                      width: 44, height: 22, borderRadius: 12,
-                      background: setPushNotif ? ADMIN_THEME.green : "#cbd5e1",
-                      cursor: "pointer", transition: "background 0.2s"
-                    }}
-                  >
-                    <div style={{
-                      position: "absolute", left: setPushNotif ? 24 : 2, top: 2,
-                      width: 18, height: 18, borderRadius: "50%", background: "#ffffff",
-                      transition: "left 0.2s"
-                    }} />
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* 5. BACKUP & DATABASE CARD */}
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 20, boxShadow: ADMIN_THEME.shadow }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, borderBottom: `1px solid ${ADMIN_THEME.border}`, paddingBottom: 10, marginBottom: 16 }}>
-                <Database style={{ width: 15, height: 15, color: ADMIN_THEME.textSecondary }} />
-                <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: ADMIN_THEME.textSecondary }}>Backup & Database</span>
-              </div>
-
-              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                {/* Auto-Backup */}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>Auto-Backup</div>
-                    <div style={{ fontSize: 11, color: ADMIN_THEME.textSecondary, marginTop: 2 }}>Automated daily database backups</div>
-                  </div>
-                  <div
-                    onClick={() => setSetAutoBackup(!setAutoBackup)}
-                    style={{
-                      position: "relative",
-                      width: 44, height: 22, borderRadius: 12,
-                      background: setAutoBackup ? ADMIN_THEME.green : "#cbd5e1",
-                      cursor: "pointer", transition: "background 0.2s"
-                    }}
-                  >
-                    <div style={{
-                      position: "absolute", left: setAutoBackup ? 24 : 2, top: 2,
-                      width: 18, height: 18, borderRadius: "50%", background: "#ffffff",
-                      transition: "left 0.2s"
-                    }} />
-                  </div>
-                </div>
-
-                {/* Backup Retention */}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>Backup Retention (days)</div>
-                    <div style={{ fontSize: 11, color: ADMIN_THEME.textSecondary, marginTop: 2 }}>Number of days to retain backups</div>
-                  </div>
-                  <input
-                    type="number"
-                    value={setBackupRetention}
-                    onChange={e => setSetBackupRetention(parseInt(e.target.value) || 0)}
-                    style={{
-                      border: `1px solid ${ADMIN_THEME.border}`,
-                      borderRadius: 6,
-                      padding: "6px 12px",
-                      fontSize: 13,
-                      color: ADMIN_THEME.textPrimary,
-                      outline: "none",
-                      width: "80px",
-                      textAlign: "center"
-                    }}
-                  />
-                </div>
-
-                {/* Audit Log Retention */}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>Audit Log Retention (days)</div>
-                    <div style={{ fontSize: 11, color: ADMIN_THEME.textSecondary, marginTop: 2 }}>Auto-purge audit logs after interval</div>
-                  </div>
-                  <input
-                    type="number"
-                    value={setAuditLogRetention}
-                    onChange={e => setSetAuditLogRetention(parseInt(e.target.value) || 0)}
-                    style={{
-                      border: `1px solid ${ADMIN_THEME.border}`,
-                      borderRadius: 6,
-                      padding: "6px 12px",
-                      fontSize: 13,
-                      color: ADMIN_THEME.textPrimary,
-                      outline: "none",
-                      width: "80px",
-                      textAlign: "center"
-                    }}
-                  />
-                </div>
-              </div>
-            </div>
-
-            {/* 6. DANGER ZONE */}
-            <div style={{ background: "#fff5f5", border: `1.5px solid ${ADMIN_THEME.red}`, borderRadius: 8, padding: 20, boxShadow: ADMIN_THEME.shadow }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, borderBottom: `1px solid ${ADMIN_THEME.red}`, paddingBottom: 10, marginBottom: 16 }}>
-                <AlertTriangle style={{ width: 15, height: 15, color: ADMIN_THEME.red }} />
-                <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: ADMIN_THEME.red }}>Danger Zone</span>
-              </div>
-
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>Restart Application</div>
-                  <div style={{ fontSize: 11, color: ADMIN_THEME.textSecondary, marginTop: 2 }}>Restart all ORCA services. Brief downtime expected.</div>
-                </div>
-                
-                <button
-                  onClick={() => {
-                    if (confirm("Restart the Organized Crime Analysis Authority (O.R.C.A) core servers? Active sessions will be refreshed.")) {
-                      setActionLoading(true);
-                      setTimeout(() => {
-                        setActionLoading(false);
-                        alert("Application services reboot completed. Checksum valid.");
-                      }, 2000);
-                    }
-                  }}
-                  style={{
-                    background: "transparent",
-                    border: `1.5px solid ${ADMIN_THEME.red}`,
-                    borderRadius: 6,
-                    padding: "8px 16px",
-                    fontSize: 12,
-                    fontWeight: 700,
-                    color: ADMIN_THEME.red,
-                    cursor: "pointer",
-                    transition: "all 0.2s"
-                  }}
-                  onMouseEnter={e => {
-                    e.currentTarget.style.background = ADMIN_THEME.red;
-                    e.currentTarget.style.color = "#ffffff";
-                  }}
-                  onMouseLeave={e => {
-                    e.currentTarget.style.background = "transparent";
-                    e.currentTarget.style.color = ADMIN_THEME.red;
-                  }}
-                >
-                  Restart Application
-                </button>
-              </div>
-            </div>
-
-          </div>
-        </div>
-      )}
-
-      {/* 10. SECURITY CENTER */}
-      {adminTab === "admin-security" && (
-        <div>
-          {/* Header */}
-          <div style={{ marginBottom: 20 }}>
-            <h1 style={{ fontSize: 22, fontWeight: 800, color: ADMIN_THEME.textPrimary }}>Centralized Security Operations Center</h1>
-            <p style={{ fontSize: 12, color: ADMIN_THEME.textSecondary }}>Monitor security warnings, locked accounts, and block metrics</p>
-          </div>
-
-          {/* Metric cards grid */}
-          <div style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(5, 1fr)",
-            gap: 16,
-            marginBottom: 20
-          }}>
-            {/* 1. FAILED LOGINS */}
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16, display: "flex", flexDirection: "column", gap: 12, boxShadow: ADMIN_THEME.shadow }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, color: ADMIN_THEME.textMuted, fontSize: 10, fontWeight: 700, textTransform: "uppercase" }}>
-                <AlertTriangle style={{ width: 14, height: 14, color: ADMIN_THEME.red }} />
-                <span>Failed Logins</span>
-              </div>
-              <div style={{ fontSize: 28, fontWeight: 800, color: ADMIN_THEME.textPrimary }}>1</div>
-            </div>
-
-            {/* 2. BLOCKED IPS */}
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16, display: "flex", flexDirection: "column", gap: 12, boxShadow: ADMIN_THEME.shadow }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, color: ADMIN_THEME.textMuted, fontSize: 10, fontWeight: 700, textTransform: "uppercase" }}>
-                <Globe style={{ width: 14, height: 14, color: "#f97316" }} />
-                <span>Blocked IPs</span>
-              </div>
-              <div style={{ fontSize: 28, fontWeight: 800, color: ADMIN_THEME.textPrimary }}>1</div>
-            </div>
-
-            {/* 3. ACTIVE THREATS */}
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16, display: "flex", flexDirection: "column", gap: 12, boxShadow: ADMIN_THEME.shadow }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, color: ADMIN_THEME.textMuted, fontSize: 10, fontWeight: 700, textTransform: "uppercase" }}>
-                <AlertCircle style={{ width: 14, height: 14, color: ADMIN_THEME.red }} />
-                <span>Active Threats</span>
-              </div>
-              <div style={{ fontSize: 28, fontWeight: 800, color: ADMIN_THEME.textPrimary }}>1</div>
-            </div>
-
-            {/* 4. FIREWALL STATUS */}
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16, display: "flex", flexDirection: "column", gap: 12, boxShadow: ADMIN_THEME.shadow }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, color: ADMIN_THEME.textMuted, fontSize: 10, fontWeight: 700, textTransform: "uppercase" }}>
-                <Lock style={{ width: 14, height: 14, color: ADMIN_THEME.green }} />
-                <span>Firewall Status</span>
-              </div>
-              <div style={{ fontSize: 28, fontWeight: 800, color: ADMIN_THEME.textPrimary }}>Active</div>
-            </div>
-
-            {/* 5. ENCRYPTION */}
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16, display: "flex", flexDirection: "column", gap: 12, boxShadow: ADMIN_THEME.shadow }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, color: ADMIN_THEME.textMuted, fontSize: 10, fontWeight: 700, textTransform: "uppercase" }}>
-                <Key style={{ width: 14, height: 14, color: "#3b82f6" }} />
-                <span>Encryption</span>
-              </div>
-              <div style={{ fontSize: 28, fontWeight: 800, color: ADMIN_THEME.textPrimary }}>AES-256</div>
-            </div>
-          </div>
-
-          <div style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(3, 1fr)",
-            gap: 16,
-            marginBottom: 20
-          }}>
-            {/* 6. MFA STATUS */}
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16, display: "flex", flexDirection: "column", gap: 12, boxShadow: ADMIN_THEME.shadow }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, color: ADMIN_THEME.textMuted, fontSize: 10, fontWeight: 700, textTransform: "uppercase" }}>
-                <ShieldCheck style={{ width: 14, height: 14, color: ADMIN_THEME.green }} />
-                <span>MFA Status</span>
-              </div>
-              <div style={{ fontSize: 28, fontWeight: 800, color: ADMIN_THEME.textPrimary }}>Enforced</div>
-            </div>
-
-            {/* 7. ACTIVE SESSIONS */}
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16, display: "flex", flexDirection: "column", gap: 12, boxShadow: ADMIN_THEME.shadow }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, color: ADMIN_THEME.textMuted, fontSize: 10, fontWeight: 700, textTransform: "uppercase" }}>
-                <Wifi style={{ width: 14, height: 14, color: "#a855f7" }} />
-                <span>Active Sessions</span>
-              </div>
-              <div style={{ fontSize: 28, fontWeight: 800, color: ADMIN_THEME.textPrimary }}>3</div>
-            </div>
-
-            {/* 8. RISK LEVEL */}
-            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16, display: "flex", flexDirection: "column", gap: 12, boxShadow: ADMIN_THEME.shadow }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, color: ADMIN_THEME.textMuted, fontSize: 10, fontWeight: 700, textTransform: "uppercase" }}>
-                <Activity style={{ width: 14, height: 14, color: "#f97316" }} />
-                <span>Risk Level</span>
-              </div>
-              <div style={{ fontSize: 28, fontWeight: 800, color: "#001f3f" }}>ELEVATED</div>
-            </div>
-          </div>
-
-          {/* Main Content Split Layout */}
-          <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr", gap: 20, alignItems: "start" }}>
-            
-            {/* Left Column: Search & Security Event Timeline */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-              {/* Search events */}
-              <div style={{ position: "relative" }}>
-                <Search style={{ width: 14, height: 14, color: ADMIN_THEME.textMuted, position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)" }} />
-                <input
-                  type="text"
-                  placeholder="Search security events..."
-                  value={securitySearch}
-                  onChange={e => setSecuritySearch(e.target.value)}
-                  style={{
-                    width: "100%",
-                    padding: "10px 14px 10px 38px",
-                    borderRadius: 8,
-                    border: `1px solid ${ADMIN_THEME.border}`,
-                    background: ADMIN_THEME.cardBg,
-                    fontSize: 13,
-                    outline: "none",
-                    color: ADMIN_THEME.textPrimary
-                  }}
-                />
-              </div>
-
-              {/* Security Event Timeline card */}
-              <div style={{
-                background: ADMIN_THEME.cardBg,
-                border: `1px solid ${ADMIN_THEME.border}`,
-                borderRadius: 8,
-                boxShadow: ADMIN_THEME.shadow,
-                overflow: "hidden"
-              }}>
-                <div style={{ padding: "16px 20px", borderBottom: `1px solid ${ADMIN_THEME.border}`, background: "#f8fafc" }}>
-                  <h3 style={{ fontSize: 12, fontWeight: 700, color: ADMIN_THEME.textSecondary, textTransform: "uppercase", letterSpacing: "0.06em", margin: 0 }}>
-                    Security Event Timeline
-                  </h3>
-                </div>
-
-                <div style={{ display: "flex", flexDirection: "column" }}>
-                  {securityEvents
-                    .filter(ev => {
-                      if (!securitySearch) return true;
-                      const query = securitySearch.toLowerCase();
-                      return (
-                        ev.title.toLowerCase().includes(query) ||
-                        ev.ip.toLowerCase().includes(query) ||
-                        ev.officer.toLowerCase().includes(query) ||
-                        ev.device.toLowerCase().includes(query) ||
-                        ev.browser.toLowerCase().includes(query)
-                      );
-                    })
-                    .map((ev, idx, arr) => {
-                      // Severity style mappings
-                      const getSeverityStyle = (sev: string) => {
-                        switch (sev) {
-                          case "CRITICAL": return { border: "1px solid #fee2e2", bg: "#fef2f2", text: "#991b1b", dot: "#ef4444" };
-                          case "HIGH": return { border: "1px solid #fee2e2", bg: "#fef2f2", text: "#b91c1c", dot: "#f87171" };
-                          case "MEDIUM": return { border: "1px solid #ffedd5", bg: "#fff7ed", text: "#c2410c", dot: "#f97316" };
-                          default: return { border: "1px solid #f1f5f9", bg: "#f8fafc", text: "#475569", dot: "#94a3b8" };
-                        }
-                      };
-
-                      // Status style mappings
-                      const getStatusStyle = (st: string) => {
-                        switch (st) {
-                          case "ACTIVE": return { border: "1px solid #d1fae5", bg: "#ecfdf5", text: "#065f46" };
-                          case "INVESTIGATING": return { border: "1px solid #dbeafe", bg: "#eff6ff", text: "#1e40af" };
-                          case "RESOLVED": return { border: "1px solid #e2e8f0", bg: "#f1f5f9", text: "#475569" };
-                          default: return { border: "1px solid #f1f5f9", bg: "#f8fafc", text: "#475569" };
-                        }
-                      };
-
-                      const sevStyle = getSeverityStyle(ev.severity);
-                      const stStyle = getStatusStyle(ev.status);
-
-                      return (
-                        <div
-                          key={ev.id}
-                          style={{
-                            padding: "16px 20px",
-                            borderBottom: idx === arr.length - 1 ? "none" : `1px solid ${ADMIN_THEME.border}`,
-                            display: "flex",
-                            justifyContent: "space-between",
-                            alignItems: "center",
-                            gap: 16
-                          }}
-                        >
-                          <div>
-                            {/* Event Title Row */}
-                            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                              <span style={{ width: 6, height: 6, borderRadius: "50%", background: sevStyle.dot }} />
-                              <h4 style={{ fontSize: 13, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>{ev.title}</h4>
-                            </div>
-
-                            {/* Meta Tags Row */}
-                            <div style={{ display: "flex", flexWrap: "wrap", gap: "8px 12px", fontSize: 11, color: ADMIN_THEME.textSecondary }}>
-                              <span>IP: <strong style={{ color: ADMIN_THEME.textPrimary }}>{ev.ip}</strong></span>
-                              <span>•</span>
-                              <span>Officer: <strong style={{ color: ADMIN_THEME.textPrimary }}>{ev.officer}</strong></span>
-                              <span>•</span>
-                              <span>Browser: <strong style={{ color: ADMIN_THEME.textPrimary }}>{ev.browser}</strong></span>
-                              <span>•</span>
-                              <span>Device: <strong style={{ color: ADMIN_THEME.textPrimary }}>{ev.device}</strong></span>
-                              <span>•</span>
-                              <span style={{ color: ADMIN_THEME.textMuted }}>{ev.timestamp}</span>
-                            </div>
-                          </div>
-
-                          {/* Right hand Badges */}
-                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                            <span style={{
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: 4,
-                              padding: "3px 8px",
-                              borderRadius: 12,
-                              fontSize: 9,
-                              fontWeight: 700,
-                              background: sevStyle.bg,
-                              border: sevStyle.border,
-                              color: sevStyle.text
-                            }}>
-                              <span style={{ width: 4, height: 4, borderRadius: "50%", background: sevStyle.text }} />
-                              {ev.severity}
-                            </span>
-
-                            <span
-                              onClick={() => {
-                                // Cycle status on click
-                                const nextStatus = ev.status === "ACTIVE" ? "INVESTIGATING" : ev.status === "INVESTIGATING" ? "RESOLVED" : "ACTIVE";
-                                setSecurityEvents(prev => prev.map(item => item.id === ev.id ? { ...item, status: nextStatus } : item));
-                              }}
-                              style={{
-                                display: "inline-flex",
-                                alignItems: "center",
-                                gap: 4,
-                                padding: "3px 8px",
-                                borderRadius: 12,
-                                fontSize: 9,
-                                fontWeight: 700,
-                                background: stStyle.bg,
-                                border: stStyle.border,
-                                color: stStyle.text,
-                                cursor: "pointer",
-                                userSelect: "none"
-                              }}
-                            >
-                              <span style={{ width: 4, height: 4, borderRadius: "50%", background: stStyle.text }} />
-                              {ev.status}
-                            </span>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  {securityEvents.filter(ev => {
-                    if (!securitySearch) return true;
-                    const query = securitySearch.toLowerCase();
-                    return (
-                      ev.title.toLowerCase().includes(query) ||
-                      ev.ip.toLowerCase().includes(query) ||
-                      ev.officer.toLowerCase().includes(query) ||
-                      ev.device.toLowerCase().includes(query) ||
-                      ev.browser.toLowerCase().includes(query)
-                    );
-                  }).length === 0 && (
-                    <div style={{ padding: "24px", textAlign: "center", color: ADMIN_THEME.textSecondary, fontSize: 13 }}>
-                      No security events found matching the query.
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* Right Column: Whitelist & Critical Alerts Feed */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-              
-              {/* Critical Security Alerts */}
-              <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 20, boxShadow: ADMIN_THEME.shadow, display: "flex", flexDirection: "column", gap: 16 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", borderBottom: `1px solid ${ADMIN_THEME.border}`, paddingBottom: 10 }}>
-                  <span style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "JetBrains Mono" }}>Critical Security Alerts</span>
-                  <ShieldAlert style={{ width: 14, height: 14, color: ADMIN_THEME.red }} />
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                  <div style={{ borderLeft: `3px solid ${ADMIN_THEME.red}`, paddingLeft: 12, paddingBottom: 4 }}>
-                    <div style={{ fontWeight: 700, fontSize: 12, color: ADMIN_THEME.red }}>FAILED LOGIN ATTACK BLOCKED</div>
-                    <p style={{ fontSize: 11.5, color: ADMIN_THEME.textSecondary, marginTop: 4, lineHeight: 1.4 }}>
-                      Terminal at 10.0.91.104 attempted 3 consecutive incorrect PIN inputs for user `INSP_ANANTH_12`. Terminal geofenced temporarily.
-                    </p>
-                    <span style={{ fontSize: 10, color: ADMIN_THEME.textMuted }}>July 3, 2026 23:44:12 IST</span>
-                  </div>
-                  <div style={{ borderLeft: `3px solid ${ADMIN_THEME.accentGold}`, paddingLeft: 12, paddingBottom: 4 }}>
-                    <div style={{ fontWeight: 700, fontSize: 12, color: ADMIN_THEME.accentGold }}>PROXY BACKUP NODE DEVIATION</div>
-                    <p style={{ fontSize: 11.5, color: ADMIN_THEME.textSecondary, marginTop: 4, lineHeight: 1.4 }}>
-                      Secondary cloud ledger reported 0.02% latency drift matching statewide database replication rules.
-                    </p>
-                    <span style={{ fontSize: 10, color: ADMIN_THEME.textMuted }}>July 2, 2026 12:12:04 IST</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Active Whitelisted Terminals */}
-              <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 20, boxShadow: ADMIN_THEME.shadow }}>
-                <div style={{ display: "flex", justifyContent: "space-between", borderBottom: `1px solid ${ADMIN_THEME.border}`, paddingBottom: 10, marginBottom: 12 }}>
-                  <span style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "JetBrains Mono" }}>Active Whitelisted Terminals</span>
-                  <Lock style={{ width: 14, height: 14, color: ADMIN_THEME.green }} />
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 12 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", borderBottom: `1px solid ${ADMIN_THEME.border}`, paddingBottom: 8 }}>
-                    <span>State Command HQ Console (10.0.12.94)</span>
-                    <span style={{ color: ADMIN_THEME.green, fontWeight: 700, fontSize: 11 }}>● SECURE</span>
-                  </div>
-                  <div style={{ display: "flex", justifyContent: "space-between", borderBottom: `1px solid ${ADMIN_THEME.border}`, paddingBottom: 8 }}>
-                    <span>Bengaluru City Cyber Cell (10.0.91.104)</span>
-                    <span style={{ color: ADMIN_THEME.green, fontWeight: 700, fontSize: 11 }}>● SECURE</span>
-                  </div>
-                  <div style={{ display: "flex", justifyContent: "space-between", borderBottom: `1px solid ${ADMIN_THEME.border}`, paddingBottom: 8 }}>
-                    <span>Mysuru SCRB Center (10.4.19.82)</span>
-                    <span style={{ color: ADMIN_THEME.green, fontWeight: 700, fontSize: 11 }}>● SECURE</span>
-                  </div>
-                  <div style={{ display: "flex", justifyContent: "space-between" }}>
-                    <span>Coastal Smuggling Guard post (10.12.44.11)</span>
-                    <span style={{ color: ADMIN_THEME.accentGold, fontWeight: 700, fontSize: 11 }}>● STANDBY</span>
-                  </div>
-                </div>
-              </div>
-
-            </div>
-
-          </div>
-        </div>
-      )}
-
-      {/* 10.5. REPORTS & NOTIFICATIONS */}
-      {adminTab === "admin-reports" && (
-        <div style={{ position: "relative" }}>
-          
-          {/* Notification Messages */}
-          {reportsSuccessMsg && (
+          {settingsSuccess && (
             <div style={{
-              background: "#ecfdf5",
-              border: `1px solid ${ADMIN_THEME.green}`,
-              color: "#065f46",
-              borderRadius: 8,
-              padding: "12px 16px",
-              fontSize: 13,
-              fontWeight: 600,
-              marginBottom: 20,
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              animation: "fadeIn 0.2s ease-out"
+              background: "#ecfdf5", border: `1px solid ${ADMIN_THEME.green}`, color: "#065f46",
+              borderRadius: 8, padding: "12px 16px", fontSize: 13, fontWeight: 600,
+              marginBottom: 20, display: "flex", alignItems: "center", gap: 8,
             }}>
-              <Check style={{ width: 16, height: 16, color: ADMIN_THEME.green }} />
-              <span>{reportsSuccessMsg}</span>
+              <Check style={{ width: 16, height: 16 }} />
+              <span>Settings written to the database and recorded in the audit trail.</span>
             </div>
           )}
 
-          {/* Loader Overlay */}
-          {reportsLoaderMsg && (
-            <div style={{
-              position: "fixed",
-              top: 0, left: 0, right: 0, bottom: 0,
-              background: "rgba(10, 25, 47, 0.25)",
-              backdropFilter: "blur(3px)",
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              justifyContent: "center",
-              zIndex: 9999,
-              gap: 12
-            }}>
-              <div style={{
-                background: "#ffffff",
-                padding: "24px 32px",
-                borderRadius: 12,
-                border: `1px solid ${ADMIN_THEME.border}`,
-                boxShadow: ADMIN_THEME.shadowMd,
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                gap: 12
-              }}>
-                <Loader2 style={{ width: 28, height: 28, color: "#001f3f", animation: "spin 1s linear infinite" }} />
-                <span style={{ fontSize: 13, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>{reportsLoaderMsg}</span>
-              </div>
+          {admin.settingSpecs.length === 0 ? (
+            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 32, textAlign: "center", color: ADMIN_THEME.textSecondary, fontSize: 13 }}>
+              {loading ? "Reading settings..." : "Settings are unavailable."}
             </div>
-          )}
-
-          {/* Header */}
-          <div style={{ marginBottom: 20 }}>
-            <h1 style={{ fontSize: 22, fontWeight: 800, color: ADMIN_THEME.textPrimary }}>Reports & Notifications</h1>
-            <p style={{ fontSize: 12, color: ADMIN_THEME.textSecondary }}>Generate platform reports and manage administrative notifications</p>
-          </div>
-
-          {/* Sub-Tabs Button Row */}
-          <div style={{ display: "flex", gap: 12, marginBottom: 20, borderBottom: `1px solid ${ADMIN_THEME.border}`, paddingBottom: 12 }}>
-            <button
-              onClick={() => setReportsSubTab("reports")}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 8,
-                padding: "8px 16px",
-                borderRadius: 6,
-                fontSize: 13,
-                fontWeight: 600,
-                border: reportsSubTab === "reports" ? "1px solid rgba(200, 146, 42, 0.3)" : "1px solid transparent",
-                background: reportsSubTab === "reports" ? "rgba(255,153,51,0.06)" : "transparent",
-                color: reportsSubTab === "reports" ? "rgb(200, 146, 42)" : ADMIN_THEME.textSecondary,
-                cursor: "pointer",
-                transition: "all 0.2s"
-              }}
-            >
-              <FileText style={{ width: 15, height: 15 }} />
-              <span>Reports</span>
-            </button>
-
-            <button
-              onClick={() => setReportsSubTab("notifications")}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 8,
-                padding: "8px 16px",
-                borderRadius: 6,
-                fontSize: 13,
-                fontWeight: 600,
-                border: reportsSubTab === "notifications" ? "1px solid rgba(200, 146, 42, 0.3)" : "1px solid transparent",
-                background: reportsSubTab === "notifications" ? "rgba(255,153,51,0.06)" : "transparent",
-                color: reportsSubTab === "notifications" ? "rgb(200, 146, 42)" : ADMIN_THEME.textSecondary,
-                cursor: "pointer",
-                transition: "all 0.2s"
-              }}
-            >
-              <Bell style={{ width: 15, height: 15 }} />
-              <span>Notifications</span>
-              {notificationsList.filter(n => !n.read).length > 0 && (
-                <span style={{
-                  background: ADMIN_THEME.red,
-                  color: "#ffffff",
-                  fontSize: 10,
-                  fontWeight: 700,
-                  borderRadius: "50%",
-                  width: 16,
-                  height: 16,
-                  display: "inline-flex",
-                  alignItems: "center",
-                  justifyContent: "center"
-                }}>
-                  {notificationsList.filter(n => !n.read).length}
-                </span>
-              )}
-            </button>
-          </div>
-
-          {/* Sub-Tab 1: Reports Section */}
-          {reportsSubTab === "reports" && (
-            <div>
-              <div style={{ height: 10 }} />
-
-              {/* Reports Cards Grid */}
-              <div style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(3, 1fr)",
-                gap: 16
-              }}>
-                {[
-                  "Officer Activity Summary",
-                  "Monthly Login Analytics",
-                  "Security Incident Report",
-                  "AI Usage Analytics",
-                  "Document Verification Summary",
-                  "RBAC Configuration Audit",
-                  "Database Health Report",
-                  "Platform Performance Report",
-                  "Crime Database Query Summary"
-                ].map((reportName, idx) => {
-                  const getReportData = (name: string) => {
-                    switch (name) {
-                      case "Officer Activity Summary":
-                        return {
-                          headers: ["Officer", "Badge ID", "Active Cases", "Actions Logged", "Status"],
-                          rows: [
-                            ["DSP R. K. Shastry", "DSP-94812", "14", "182", "ACTIVE"],
-                            ["Inspector Ananth Murthy", "INS-84192", "8", "94", "ACTIVE"],
-                            ["Sub-Inspector Kavitha Patil", "SI-39821", "11", "143", "ACTIVE"]
-                          ],
-                          desc: "Summary of individual case assignments, log entries, and active system activation states for registered officers."
-                        };
-                      case "Monthly Login Analytics":
-                        return {
-                          headers: ["Month", "Total Logins", "Unique Devices", "Failed Attempts", "Avg Session"],
-                          rows: [
-                            ["July 2026", "4,280 logins", "142 devices", "19 failed", "42 mins"],
-                            ["June 2026", "3,910 logins", "138 devices", "24 failed", "38 mins"],
-                            ["May 2026", "3,450 logins", "120 devices", "11 failed", "45 mins"]
-                          ],
-                          desc: "Monthly statistical breakdown of security portal logins, unique device footprints, and access indicators."
-                        };
-                      case "Security Incident Report":
-                        return {
-                          headers: ["Incident ID", "Source IP", "Event Type", "Severity", "Resolution"],
-                          rows: [
-                            ["#SEC-902", "103.21.58.120", "Geo-Location Bypass Attempt", "MEDIUM", "INVESTIGATING"],
-                            ["#SEC-891", "10.142.92.12", "Spoofed Header Signature", "HIGH", "BLOCKED"],
-                            ["#SEC-882", "192.168.1.42", "Multi-Failure MFA Loop", "LOW", "RESOLVED"]
-                          ],
-                          desc: "Detailed record of high-priority security exceptions, system bypass attempts, and automatic block actions."
-                        };
-                      case "AI Usage Analytics":
-                        return {
-                          headers: ["Query ID", "Officer Badge", "Query Context", "Tokens Used", "Response Time"],
-                          rows: [
-                            ["#AI-8291", "DSP-94812", "Cybercrime Trend Bengaluru Rural", "2.4k tokens", "1.82s"],
-                            ["#AI-8290", "SI-39821", "FIR 2026/04 cross-reference check", "4.1k tokens", "2.14s"],
-                            ["#AI-8289", "INS-84192", "Document verification checksum matches", "1.2k tokens", "1.10s"]
-                          ],
-                          desc: "Audit of cognitive queries processed through the secure AI Chatbot portal, measuring performance and resource footprint."
-                        };
-                      case "Document Verification Summary":
-                        return {
-                          headers: ["Verification ID", "Applicant Name", "Submitted Rank", "Document Type", "Status"],
-                          rows: [
-                            ["#VER-9201", "Kavitha Patil", "Sub Inspector", "Official CSIRT ID", "APPROVED"],
-                            ["#VER-9200", "Harish Kumar", "Inspector", "HQ Rank Endorsement", "APPROVED"],
-                            ["#VER-9199", "Ravi Shankar", "DSP", "Government ID Proof", "PENDING"]
-                          ],
-                          desc: "Registry of user document review decisions, verification queues, and rank-approval authorizations."
-                        };
-                      case "RBAC Configuration Audit":
-                        return {
-                          headers: ["Role Level", "Access Code", "Assigned Users", "Security Level", "Last Audited"],
-                          rows: [
-                            ["Super Administrator", "RBAC-L3", "2 Users", "LEVEL 4 (SECURE)", "08 July 2026"],
-                            ["Verification Officer (L1)", "RBAC-L2", "14 Users", "LEVEL 2 (RESTRICTED)", "07 July 2026"],
-                            ["Investigation Officer", "RBAC-L1", "180 Users", "LEVEL 1 (COPS INTERNAL)", "06 July 2026"]
-                          ],
-                          desc: "Detailed privilege distribution audit across user roles, ensuring adherence to the revised police hierarchy."
-                        };
-                      case "Database Health Report":
-                        return {
-                          headers: ["Database Node", "Sync Status", "Active Connections", "Disk Space", "Replication Latency"],
-                          rows: [
-                            ["SCRB Central Node", "ONLINE", "42 connections", "74.2% (1.2TB free)", "0.12s"],
-                            ["ISD Local Buffer", "ONLINE", "18 connections", "92.1% (84GB free)", "0.04s"],
-                            ["Statewide sync", "STANDBY", "4 connections", "38.4% (8.4TB free)", "1.45s"]
-                          ],
-                          desc: "Server metrics showing statewide replication health, storage allocations, and transactional performance."
-                        };
-                      case "Platform Performance Report":
-                        return {
-                          headers: ["Platform Module", "Server Latency", "CPU Load", "Memory Utilization", "Error Rate"],
-                          rows: [
-                            ["Crime Database Engine", "1.8ms", "14.2%", "62.4%", "0.00%"],
-                            ["AI Agent Endpoint", "182ms", "28.1%", "44.8%", "0.02%"],
-                            ["GIS Mapping Service", "1420ms", "72.4%", "88.1%", "0.14%"]
-                          ],
-                          desc: "Service metrics measuring latency curves, resource loading, and response health for primary system components."
-                        };
-                      case "Crime Database Query Summary":
-                      default:
-                        return {
-                          headers: ["Query Timestamp", "Officer ID", "Search Parameter", "Records Returned", "Action Taken"],
-                          rows: [
-                            ["08/07/2026 18:24", "INS-84192", '"Kumar" + "Assault" (Bengaluru)', "42 files", "Dossier Exported"],
-                            ["08/07/2026 15:10", "DSP-94812", '"Terrorism" + "Intel Log 2026"', "4 files", "View Only"],
-                            ["08/07/2026 11:04", "SI-39821", '"Vehicle Theft" + "KA-03"', "112 files", "Printed"]
-                          ],
-                          desc: "Operational database search audit logging target keywords, matches returned, and active query profiles."
-                        };
-                    }
-                  };
-
-                  const reportData = getReportData(reportName);
-                  
-                  const triggerReportGenWithFormat = (fmt: string) => {
-                    if (fmt === "PDF") {
-                      const printWindow = window.open("", "_blank");
-                      if (!printWindow) {
-                        alert("Popup blocker prevented printing. Please allow popups for this site.");
-                        return;
-                      }
-                      
-                      const dateStr = new Date().toLocaleDateString() + " " + new Date().toLocaleTimeString();
-                      const authority = "Organized Crime Analysis Authority (O.R.C.A)";
-                      const classification = "RESTRICTED // COPS INTERNAL USE ONLY";
-                      
-                      printWindow.document.write(`
-                        <html>
-                          <head>
-                            <title>${reportName} - PDF Export</title>
-                            <style>
-                              body { font-family: 'Helvetica Neue', Arial, sans-serif; padding: 24px; color: #1e293b; line-height: 1.5; background: #fff; }
-                              .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #001f3f; padding-bottom: 12px; margin-bottom: 16px; }
-                              .logo { font-size: 20px; font-weight: 800; color: #001f3f; letter-spacing: 1px; }
-                              .classification { background: rgba(239, 68, 68, 0.08); color: #ef4444; border: 1px solid #fca5a5; padding: 4px 10px; font-size: 10px; font-weight: 700; border-radius: 4px; font-family: monospace; }
-                              .title { font-size: 18px; font-weight: 700; color: #001f3f; margin-bottom: 10px; }
-                              .metadata { margin-bottom: 16px; font-size: 11.5px; color: #64748b; background: #f8fafc; padding: 10px 12px; border-radius: 6px; border: 1px solid #e2e8f0; line-height: 1.4; }
-                              .table { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
-                              .table th { background: #001f3f; color: #fff; text-align: left; padding: 8px 10px; font-size: 11px; text-transform: uppercase; font-weight: 700; }
-                              .table td { padding: 8px 10px; border-bottom: 1px solid #cbd5e1; font-size: 11px; }
-                              .table tr:nth-child(even) { background: #f8fafc; }
-                              .footer { margin-top: 24px; border-top: 1px solid #cbd5e1; padding-top: 10px; font-size: 9px; color: #94a3b8; text-align: center; }
-                              .watermark {
-                                position: fixed;
-                                top: 50%;
-                                left: 50%;
-                                transform: translate(-50%, -50%);
-                                z-index: 0;
-                                pointer-events: none;
-                                text-align: center;
-                              }
-                              .watermark img {
-                                width: 180px;
-                                opacity: 0.08;
-                                margin-bottom: 12px;
-                              }
-                              @media print {
-                                @page { size: auto; margin: 12mm 15mm; }
-                                body { padding: 0; background: #fff; }
-                                .footer { position: fixed; bottom: 0; left: 0; right: 0; margin-top: 0; border-top: 1px solid #cbd5e1; padding-top: 8px; }
-                              }
-                            </style>
-                          </head>
-                          <body>
-                            <div class="watermark">
-                              <img src="/logo.png" alt="Emblem"/>
-                              <div style="font-size: 3.5rem; font-weight: 900; color: rgba(0, 31, 63, 0.08); letter-spacing: 0.08em; line-height: 1;">O.R.C.A</div>
-                              <div style="font-size: 1.8rem; margin-top: 6px; color: rgba(0, 31, 63, 0.08); font-weight: bold; letter-spacing: 0.12em; line-height: 1;">CONFIDENTIAL</div>
-                            </div>
-                            
-                            <div style="position: relative; z-index: 1;">
-                              <div class="header">
-                                <div class="logo">O.R.C.A. SECURITY BRIEF</div>
-                                <div class="classification">${classification}</div>
-                              </div>
-                              <div class="title">${reportName}</div>
-                              <div class="metadata">
-                                <strong>REPORT NAME:</strong> ${reportName}<br/>
-                                <strong>DATE GENERATED:</strong> ${dateStr} IST<br/>
-                                <strong>ISSUING AUTHORITY:</strong> ${authority}<br/>
-                                <strong>VERIFICATION CHECKSUM:</strong> SHA-256 [${Math.random().toString(16).slice(2, 10).toUpperCase()}...${Math.random().toString(16).slice(2, 10).toUpperCase()}]
-                              </div>
-                              
-                              <h3>Operational Log Analysis</h3>
-                              <table class="table">
-                                <thead>
-                                  <tr>
-                                    ${reportData.headers.map(h => `<th>${h}</th>`).join("")}
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  ${reportData.rows.map(row => `
-                                    <tr>
-                                      ${row.map(val => `<td>${val}</td>`).join("")}
-                                    </tr>
-                                  `).join("")}
-                                </tbody>
-                              </table>
-
-                              <p style="font-size: 12px; color: #475569; margin-top: 20px;">
-                                ${reportData.desc} This document represents a certified cryptographic export of O.R.C.A. database metrics. All records are stored and audited on secured state servers. Any tampering with official police records is punishable under the Information Technology Act.
-                              </p>
-
-                              <div class="footer">
-                                CONFIDENTIAL STATE GOVERNMENT PROPERTY • DISCLOSURE OR DISTRIBUTION PROHIBITED
-                              </div>
-                            </div>
-                            <script>
-                              window.onload = function() {
-                                window.print();
-                                setTimeout(function() { window.close(); }, 500);
-                              }
-                            </script>
-                          </body>
-                        </html>
-                      `);
-                      printWindow.document.close();
-                      setReportsSuccessMsg(`${reportName} PDF printed successfully.`);
-                      setTimeout(() => setReportsSuccessMsg(""), 4000);
-                      return;
-                    }
-                    
-                    setReportsLoaderMsg(`Generating ${reportName} in ${fmt} format...`);
-                    setReportsSuccessMsg("");
-                    setTimeout(() => {
-                      setReportsLoaderMsg("");
-                      setReportsSuccessMsg(`${reportName} downloaded successfully.`);
-                      
-                      const fileContent = `O.R.C.A Admin Report\n` +
-                        `Report Name,${reportName}\n` +
-                        `File Format,${fmt}\n` +
-                        `Export Date,${new Date().toLocaleString()}\n` +
-                        `Authority,Organized Crime Analysis Authority (O.R.C.A)\n` +
-                        `Classification,RESTRICTED // COPS INTERNAL USE ONLY\n\n` +
-                        `ID,Metric Type,Status,Recorded Value,Confidence\n` +
-                        `#10492,Network Activity Rate,NORMAL,84.2%,99.4%\n` +
-                        `#10493,AI Query Pattern Sweep,AUDIT,12 patterns,94.8%\n` +
-                        `#10494,Clearance Key Access,SECURED,Level I-IV,100.0%\n` +
-                        `#10495,Database Ingress Rate,NORMAL,2.14ms,98.7%`;
-                      
-                      const blob = new Blob([fileContent], { type: "text/csv;charset=utf-8" });
-                      const url = URL.createObjectURL(blob);
-                      const a = document.createElement("a");
-                      a.href = url;
-                      a.download = `${reportName.toLowerCase().replace(/\s+/g, "_")}_report.csv`;
-                      document.body.appendChild(a);
-                      a.click();
-                      document.body.removeChild(a);
-                      URL.revokeObjectURL(url);
-
-                      setTimeout(() => setReportsSuccessMsg(""), 4000);
-                    }, 1200);
-                  };
-
+          ) : (
+            // `hiddenFromSettings` keeps the AI runtime parameters off this
+            // screen — they are edited on AI Model Management, beside the
+            // models they configure. Same store, same save route.
+            Array.from(new Set(admin.settingSpecs.filter((s: any) => !s.hiddenFromSettings).map((s: any) => s.group))).map((group: any) => (
+              <div key={group} style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, marginBottom: 18, overflow: "hidden" }}>
+                <div style={{ padding: "12px 16px", borderBottom: `1px solid ${ADMIN_THEME.border}`, background: "rgba(0,31,63,0.02)", fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "JetBrains Mono" }}>
+                  {group}
+                </div>
+                {admin.settingSpecs.filter((s: any) => s.group === group && !s.hiddenFromSettings).map((spec: any, idx: number, arr: any[]) => {
+                  const value = settingsDraft[spec.key];
+                  const changed = String(value) !== String(admin.settings[spec.key]);
                   return (
-                    <div
-                      key={idx}
-                      style={{
-                        background: ADMIN_THEME.cardBg,
-                        border: `1px solid ${ADMIN_THEME.border}`,
-                        borderRadius: 8,
-                        padding: "16px 20px",
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                        gap: 12,
-                        boxShadow: ADMIN_THEME.shadow,
-                        transition: "transform 0.15s, border-color 0.15s"
-                      }}
-                      onMouseEnter={e => {
-                        e.currentTarget.style.transform = "translateY(-1px)";
-                        e.currentTarget.style.borderColor = "rgba(200, 146, 42, 0.3)";
-                      }}
-                      onMouseLeave={e => {
-                        e.currentTarget.style.transform = "translateY(0)";
-                        e.currentTarget.style.borderColor = ADMIN_THEME.border;
-                      }}
-                    >
-                      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                        <FileText style={{ width: 18, height: 18, color: "#FF9933", flexShrink: 0 }} />
-                        <span style={{ fontSize: 13, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>{reportName}</span>
+                    <div key={spec.key} style={{
+                      padding: "14px 16px",
+                      borderBottom: idx !== arr.length - 1 ? `1px solid ${ADMIN_THEME.border}` : "none",
+                      display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 20,
+                      background: changed ? "rgba(255,153,51,0.04)" : "transparent",
+                    }}>
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 13, fontWeight: 600 }}>{spec.label}</span>
+                          <span style={{
+                            fontSize: 9, fontWeight: 800, padding: "2px 6px", borderRadius: 4,
+                            textTransform: "uppercase", letterSpacing: "0.04em",
+                            background: spec.enforcement === "enforced" ? "rgba(16,185,129,0.12)" : "rgba(148,163,184,0.18)",
+                            color: spec.enforcement === "enforced" ? "#047857" : ADMIN_THEME.textSecondary,
+                          }}>
+                            {spec.enforcement === "enforced" ? "Enforced here"
+                              : spec.enforcement === "firebase" ? "Firebase Auth"
+                              : spec.enforcement === "infrastructure" ? "Platform"
+                              : "Recorded only"}
+                          </span>
+                          {changed && (
+                            <span style={{ fontSize: 9, fontWeight: 800, color: ADMIN_THEME.accentGold, textTransform: "uppercase" }}>unsaved</span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: 11.5, color: ADMIN_THEME.textSecondary, marginTop: 4, lineHeight: 1.5 }}>
+                          {spec.note}
+                        </div>
                       </div>
 
+                      <div style={{ flexShrink: 0 }}>
+                        {spec.type === "boolean" ? (
+                          <button
+                            onClick={() => setSettingsDraft(d => ({ ...d, [spec.key]: !value }))}
+                            style={{
+                              width: 46, height: 25, borderRadius: 13, border: "none", cursor: "pointer",
+                              background: value ? ADMIN_THEME.green : "#cbd5e1",
+                              position: "relative", transition: "background 0.15s",
+                            }}
+                            aria-pressed={Boolean(value)}
+                            aria-label={spec.label}
+                          >
+                            <span style={{
+                              position: "absolute", top: 3, left: value ? 24 : 3,
+                              width: 19, height: 19, borderRadius: 10, background: "#fff",
+                              transition: "left 0.15s",
+                            }} />
+                          </button>
+                        ) : spec.type === "number" ? (
+                          <input
+                            type="number"
+                            value={value ?? ""}
+                            min={spec.min}
+                            max={spec.max}
+                            onChange={e => setSettingsDraft(d => ({ ...d, [spec.key]: e.target.value === "" ? "" : Number(e.target.value) }))}
+                            style={{
+                              width: 110, padding: "7px 10px", border: `1px solid ${ADMIN_THEME.border}`,
+                              borderRadius: 6, fontSize: 13, textAlign: "right", fontFamily: "JetBrains Mono, monospace",
+                            }}
+                          />
+                        ) : (
+                          <input
+                            type="text"
+                            value={String(value ?? "")}
+                            onChange={e => setSettingsDraft(d => ({ ...d, [spec.key]: e.target.value }))}
+                            style={{
+                              width: 200, padding: "7px 10px", border: `1px solid ${ADMIN_THEME.border}`,
+                              borderRadius: 6, fontSize: 13,
+                            }}
+                          />
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+                }
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
+      {adminTab === "admin-security" && (
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 20, gap: 16, flexWrap: "wrap" }}>
+            <div>
+              <h1 style={{ fontSize: 22, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>Security Center</h1>
+              <p style={{ fontSize: 12, color: ADMIN_THEME.textSecondary }}>
+                Sign-in activity across all officer accounts, and the conditions worth a look
+              </p>
+            </div>
+            <div style={{ position: "relative" }}>
+              <Search style={{ width: 12, height: 12, color: ADMIN_THEME.textSecondary, position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)" }} />
+              <input
+                type="text"
+                placeholder="Search officer or address..."
+                value={securitySearch}
+                onChange={e => setSecuritySearch(e.target.value)}
+                style={{
+                  background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`,
+                  borderRadius: 6, padding: "6px 10px 6px 28px", fontSize: 12,
+                  color: ADMIN_THEME.textPrimary, width: 220, outline: "none",
+                }}
+              />
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 14, marginBottom: 20 }}>
+            {([
+              ["Sessions Recorded", admin.sessions.length, ADMIN_THEME.textPrimary],
+              ["Currently Open", admin.sessions.filter((x: any) => x.status === "ACTIVE").length, ADMIN_THEME.green],
+              ["Events Flagged", admin.security.length, admin.security.length ? ADMIN_THEME.accentGold : ADMIN_THEME.green],
+              ["High or Critical", admin.security.filter((e: any) => e.severity === "HIGH" || e.severity === "CRITICAL").length, admin.security.some((e: any) => e.severity === "HIGH" || e.severity === "CRITICAL") ? ADMIN_THEME.red : ADMIN_THEME.green],
+              ["Distinct Addresses", new Set(admin.sessions.map((x: any) => x.ipAddress).filter(Boolean)).size, ADMIN_THEME.textPrimary],
+            ] as const).map(([label, value, colour]) => (
+              <div key={label} style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: ADMIN_THEME.textSecondary, textTransform: "uppercase", letterSpacing: "0.05em" }}>{label}</div>
+                <div style={{ fontSize: 26, fontWeight: 800, color: colour as string, marginTop: 6 }}>{value}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* What this screen cannot see. Stated, not implied. */}
+          {admin.securityBlindSpots.length > 0 && (
+            <div style={{
+              background: "rgba(255,153,51,0.06)", border: "1px solid rgba(255,153,51,0.25)",
+              borderRadius: 8, padding: "12px 16px", marginBottom: 20,
+              display: "flex", gap: 10, alignItems: "flex-start",
+            }}>
+              <Info style={{ width: 16, height: 16, color: ADMIN_THEME.accentGold, flexShrink: 0, marginTop: 2 }} />
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: ADMIN_THEME.accentGold, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>
+                  Not visible from here
+                </div>
+                {admin.securityBlindSpots.map((b: string, i: number) => (
+                  <div key={i} style={{ fontSize: 11.5, color: ADMIN_THEME.textSecondary, lineHeight: 1.5, marginBottom: 3 }}>- {b}</div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, marginBottom: 20, overflow: "hidden" }}>
+            <div style={{ padding: "12px 16px", borderBottom: `1px solid ${ADMIN_THEME.border}`, fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "JetBrains Mono" }}>
+              Flagged Events
+            </div>
+            {(() => {
+              const q = securitySearch.toLowerCase();
+              const shown = admin.security.filter((e: any) =>
+                !q || `${e.officer} ${e.ip} ${e.title}`.toLowerCase().includes(q)
+              );
+              if (!shown.length) {
+                return (
+                  <div style={{ padding: 28, textAlign: "center", color: ADMIN_THEME.textSecondary, fontSize: 13 }}>
+                    {admin.security.length === 0
+                      ? "Nothing flagged. Every recorded session closed normally and came from an address already seen for that officer."
+                      : "No flagged event matches that search."}
+                  </div>
+                );
+              }
+              return shown.map((e: any, idx: number) => (
+                <div key={e.id} style={{ padding: "14px 16px", borderBottom: idx !== shown.length - 1 ? `1px solid ${ADMIN_THEME.border}` : "none", display: "flex", gap: 12, alignItems: "flex-start" }}>
+                  <span style={{
+                    marginTop: 3, fontSize: 9, fontWeight: 800, padding: "2px 6px", borderRadius: 4, whiteSpace: "nowrap",
+                    background: e.severity === "CRITICAL" || e.severity === "HIGH" ? `${ADMIN_THEME.red}18` : e.severity === "MEDIUM" ? `${ADMIN_THEME.accentGold}20` : "rgba(148,163,184,0.15)",
+                    color: e.severity === "CRITICAL" || e.severity === "HIGH" ? ADMIN_THEME.red : e.severity === "MEDIUM" ? ADMIN_THEME.accentGold : ADMIN_THEME.textSecondary,
+                  }}>{e.severity}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>{e.title}</div>
+                    <div style={{ fontSize: 11.5, color: ADMIN_THEME.textSecondary, marginTop: 2, lineHeight: 1.5 }}>{e.detail}</div>
+                    <div style={{ fontSize: 10.5, color: ADMIN_THEME.textMuted, marginTop: 4, fontFamily: "JetBrains Mono, monospace" }}>
+                      {e.officer}{e.ip ? ` · ${e.ip}` : ""}{e.userAgent ? ` · ${e.userAgent}` : ""}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 10.5, color: ADMIN_THEME.textMuted, whiteSpace: "nowrap" }}>
+                    {e.occurredAt ? new Date(e.occurredAt.replace(" ", "T")).toLocaleString() : "—"}
+                  </div>
+                </div>
+              ));
+            })()}
+          </div>
+
+          <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, overflow: "hidden" }}>
+            <div style={{ padding: "12px 16px", borderBottom: `1px solid ${ADMIN_THEME.border}`, fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", fontFamily: "JetBrains Mono" }}>
+              Sign-in History - All Officers
+            </div>
+            {admin.sessions.length === 0 ? (
+              <div style={{ padding: 28, textAlign: "center", color: ADMIN_THEME.textSecondary, fontSize: 13 }}>No sessions recorded.</div>
+            ) : (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 820 }}>
+                  <thead>
+                    <tr style={{ background: "rgba(0,0,0,0.01)", borderBottom: `1px solid ${ADMIN_THEME.border}` }}>
+                      <th style={{ padding: "10px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>Officer</th>
+                      <th style={{ padding: "10px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>Signed In</th>
+                      <th style={{ padding: "10px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>Signed Out</th>
+                      <th style={{ padding: "10px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>Duration</th>
+                      <th style={{ padding: "10px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>Address</th>
+                      <th style={{ padding: "10px 16px", textAlign: "left", color: ADMIN_THEME.textSecondary }}>Ended</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {admin.sessions
+                      .filter((x: any) => {
+                        const q = securitySearch.toLowerCase();
+                        if (!q) return true;
+                        const who = officers.find(o => o.uid === x.firebaseUid)?.name || x.firebaseUid;
+                        return `${who} ${x.ipAddress}`.toLowerCase().includes(q);
+                      })
+                      .slice(0, 200)
+                      .map((x: any, idx: number, arr: any[]) => {
+                        const who = officers.find(o => o.uid === x.firebaseUid);
+                        const mins = x.durationSeconds ? Math.round(x.durationSeconds / 60) : null;
+                        return (
+                          <tr key={`${x.sessionId}-${x.loginAt}-${idx}`} style={{ borderBottom: idx !== arr.length - 1 ? `1px solid ${ADMIN_THEME.border}` : "none" }}>
+                            <td style={{ padding: "11px 16px", fontWeight: 600 }}>{who?.name || `${String(x.firebaseUid).slice(0, 10)}...`}</td>
+                            <td style={{ padding: "11px 16px", fontFamily: "JetBrains Mono, monospace", fontSize: 11 }}>
+                              {x.loginAt ? new Date(x.loginAt.replace(" ", "T")).toLocaleString() : "—"}
+                            </td>
+                            <td style={{ padding: "11px 16px", fontFamily: "JetBrains Mono, monospace", fontSize: 11 }}>
+                              {x.logoutAt ? new Date(x.logoutAt.replace(" ", "T")).toLocaleString() : <span style={{ color: ADMIN_THEME.green, fontWeight: 700 }}>still open</span>}
+                            </td>
+                            <td style={{ padding: "11px 16px" }}>
+                              {mins === null ? "—" : mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`}
+                            </td>
+                            <td style={{ padding: "11px 16px", fontFamily: "JetBrains Mono, monospace", fontSize: 11 }}>
+                              {/* Never substituted. A blank address means the request
+                                  carried none - see requestIp.ts and HANDOFF section 26. */}
+                              {x.ipAddress || <span style={{ color: ADMIN_THEME.textMuted }}>not recorded</span>}
+                            </td>
+                            <td style={{ padding: "11px 16px", fontSize: 11, color: ADMIN_THEME.textSecondary }}>{x.endReason || "—"}</td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/*
+        REPORTS & NOTIFICATIONS.
+
+        NOTIFICATIONS are derived on read, not stored. A stored notification
+        needs a writer, a read/unread state per administrator and a retention
+        rule - three moving parts whose only job would be to restate facts the
+        database already holds, and which can then fall out of step with it.
+        Deriving them means an application that gets approved simply stops
+        being a pending application, and its notification disappears without
+        anyone having to remember to delete it.
+
+        The trade-off, stated plainly: there is no per-administrator "mark as
+        read", because there is nowhere to record it. The old screen had a
+        "Mark all read" button over five hardcoded entries, so it dismissed
+        nothing and re-appeared identically on the next render. If dismissal
+        turns out to matter, that is the point at which a table earns its place.
+        See buildNotifications() in src/lib/adminInsights.ts.
+
+        REPORTS export the real rows. The previous version ran a setTimeout and
+        then wrote a CSV containing the report's own name and the word
+        "Generated" - no data ever left the screen.
+      */}
+      {/*
+        UNAUTHORISED ACCESS WARNINGS.
+
+        Every occasion an officer's session was found on a network the
+        department does not trust — a commercial VPN or an anonymising proxy —
+        and whether that ended in a forced sign-out.
+
+        These used to go to the Firestore `audit_logs` collection, which nothing
+        reads any more, so the alerts were written and then lost. They are now
+        rows in Catalyst `SecurityAlert`, raised by the server after it
+        re-checks the network itself rather than trusting what the browser
+        reported.
+
+        ONE ROW PER OFFICER PER SESSION, not one per poll. The browser checks
+        every five seconds while a VPN is up; the old code wrote a record each
+        time, so a five-minute connection would have produced sixty identical
+        entries and buried anything real.
+
+        There is no delete. Acknowledging records who reviewed it and when; the
+        row stays. A warning an administrator can make disappear is not a record.
+      */}
+      {adminTab === "admin-support" && <SupportTicketQueue />}
+
+      {adminTab === "admin-warnings" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 16, flexWrap: "wrap" }}>
+            <div>
+              <h1 style={{ fontSize: 22, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>Unauthorised Access Warnings</h1>
+              <p style={{ fontSize: 12, color: ADMIN_THEME.textSecondary }}>
+                Sessions found on untrusted networks, and what happened to them
+              </p>
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <select
+                value={warnFilter}
+                onChange={e => setWarnFilter(e.target.value)}
+                style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 6, padding: "7px 10px", fontSize: 12, color: ADMIN_THEME.textPrimary }}
+              >
+                <option value="ALL">All warnings</option>
+                <option value="UNREVIEWED">Not yet reviewed</option>
+                <option value="LOCKED_OUT">Ended in sign-out</option>
+                <option value="WARNED">Warned only</option>
+              </select>
+              <button
+                onClick={() => loadWarnings()}
+                disabled={warnLoading}
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: 6,
+                  background: "#fff", border: `1px solid ${ADMIN_THEME.border}`,
+                  borderRadius: 6, padding: "7px 14px", fontSize: 12, fontWeight: 600,
+                  color: ADMIN_THEME.textPrimary, cursor: warnLoading ? "default" : "pointer",
+                }}
+              >
+                <History style={{ width: 14, height: 14 }} />
+                {warnLoading ? "Reading…" : "Refresh"}
+              </button>
+            </div>
+          </div>
+
+          {warnError && (
+            <div style={{
+              background: "rgba(239,68,68,0.06)", border: `1px solid ${ADMIN_THEME.red}55`,
+              borderRadius: 8, padding: "12px 16px", fontSize: 12,
+            }}>{warnError}</div>
+          )}
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 14 }}>
+            {([
+              ["Total Warnings", warnData?.stats?.total ?? 0, ADMIN_THEME.textPrimary],
+              ["Ended In Sign-out", warnData?.stats?.lockedOut ?? 0, (warnData?.stats?.lockedOut ?? 0) ? ADMIN_THEME.red : ADMIN_THEME.green],
+              ["Warned Only", warnData?.stats?.warned ?? 0, ADMIN_THEME.accentGold],
+              ["Not Yet Reviewed", warnData?.stats?.unreviewed ?? 0, (warnData?.stats?.unreviewed ?? 0) ? ADMIN_THEME.accentGold : ADMIN_THEME.green],
+              ["Officers Involved", warnData?.stats?.officers ?? 0, ADMIN_THEME.textPrimary],
+            ] as const).map(([label, value, colour]) => (
+              <div key={label} style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: ADMIN_THEME.textSecondary, textTransform: "uppercase", letterSpacing: "0.05em" }}>{label}</div>
+                <div style={{ fontSize: 26, fontWeight: 800, color: colour as string, marginTop: 6 }}>{value}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* What this can and cannot conclude. */}
+          <div style={{
+            background: "rgba(255,153,51,0.06)", border: "1px solid rgba(255,153,51,0.25)",
+            borderRadius: 8, padding: "12px 16px", display: "flex", gap: 10, alignItems: "flex-start",
+          }}>
+            <Info style={{ width: 16, height: 16, color: ADMIN_THEME.accentGold, flexShrink: 0, marginTop: 2 }} />
+            <div style={{ fontSize: 11.5, color: ADMIN_THEME.textSecondary, lineHeight: 1.55 }}>
+              <strong style={{ color: ADMIN_THEME.textPrimary }}>A warning is not proof of misconduct.</strong>{" "}
+              It records that a session came from a network identified as a commercial VPN or an anonymising
+              proxy — which can be an officer working from a hotel, a home router with a VPN app, or a
+              mis-classified ISP. Data-centre addresses are recorded but never cause a sign-out on their own.
+              Whether a sign-out follows is controlled by <em>Block VPN / Proxy Connections</em> in System Settings.
+            </div>
+          </div>
+
+          <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, overflow: "hidden" }}>
+            {warnVisible.length === 0 ? (
+              <div style={{ padding: 34, textAlign: "center" }}>
+                <ShieldCheck style={{ width: 34, height: 34, color: ADMIN_THEME.green, margin: "0 auto 10px" }} />
+                <div style={{ fontSize: 14, fontWeight: 700 }}>
+                  {(warnData?.alerts?.length ?? 0) === 0
+                    ? "No unauthorised access recorded"
+                    : "No warning matches this filter"}
+                </div>
+                <div style={{ fontSize: 12, color: ADMIN_THEME.textSecondary, marginTop: 4 }}>
+                  {(warnData?.alerts?.length ?? 0) === 0
+                    ? "Every recorded session has come from a network the department accepts."
+                    : "Change the filter to see the rest."}
+                </div>
+              </div>
+            ) : (
+              warnVisible.map((a: any, idx: number) => (
+                <div key={a.rowId} style={{
+                  padding: "14px 16px",
+                  borderBottom: idx !== warnVisible.length - 1 ? `1px solid ${ADMIN_THEME.border}` : "none",
+                  background: a.outcome === "LOCKED_OUT" ? "rgba(239,68,68,0.03)" : "transparent",
+                  display: "flex", gap: 12, alignItems: "flex-start",
+                }}>
+                  <span style={{
+                    marginTop: 3, fontSize: 9, fontWeight: 800, padding: "2px 6px", borderRadius: 4, whiteSpace: "nowrap",
+                    background: a.outcome === "LOCKED_OUT" ? `${ADMIN_THEME.red}18` : `${ADMIN_THEME.accentGold}20`,
+                    color: a.outcome === "LOCKED_OUT" ? ADMIN_THEME.red : ADMIN_THEME.accentGold,
+                  }}>
+                    {a.outcome === "LOCKED_OUT" ? "SIGNED OUT" : "WARNED"}
+                  </span>
+
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 13, fontWeight: 700 }}>{a.officer}</span>
+                      {a.badge && (
+                        <span style={{ fontSize: 10, fontFamily: "JetBrains Mono, monospace", color: ADMIN_THEME.textSecondary }}>{a.badge}</span>
+                      )}
+                      {a.district && (
+                        <span style={{ fontSize: 10, color: ADMIN_THEME.textSecondary }}>{a.district}</span>
+                      )}
+                      <span style={{
+                        fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 4,
+                        background: "rgba(148,163,184,0.18)", color: ADMIN_THEME.textSecondary,
+                      }}>{a.severity}</span>
+                    </div>
+
+                    <div style={{ fontSize: 12, color: ADMIN_THEME.textPrimary, marginTop: 4, lineHeight: 1.5 }}>
+                      {a.reason || "Untrusted network"}
+                    </div>
+
+                    <div style={{ fontSize: 10.5, color: ADMIN_THEME.textMuted, marginTop: 4, fontFamily: "JetBrains Mono, monospace" }}>
+                      {/* Never substituted — a blank address means the platform sent
+                          no forwarding header. See requestIp.ts. */}
+                      {a.ipAddress || "address not recorded"}
+                      {a.networkName ? ` · ${a.networkName}` : ""}
+                      {a.countryCode ? ` · ${a.countryCode}` : ""}
+                    </div>
+
+                    {a.acknowledgedAt && (
+                      <div style={{ fontSize: 10.5, color: ADMIN_THEME.green, marginTop: 4 }}>
+                        Reviewed by {a.acknowledgedBy} on{" "}
+                        {new Date(a.acknowledgedAt.replace(" ", "T")).toLocaleString()}
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={{ textAlign: "right", flexShrink: 0 }}>
+                    <div style={{ fontSize: 10.5, color: ADMIN_THEME.textMuted, whiteSpace: "nowrap" }}>
+                      {a.detectedAt ? new Date(a.detectedAt.replace(" ", "T")).toLocaleString() : "—"}
+                    </div>
+                    {!a.acknowledgedAt && (
                       <button
-                        onClick={() => triggerReportGenWithFormat("PDF")}
+                        onClick={() => acknowledgeWarning(a.rowId)}
                         style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: 6,
-                          background: "#ffffff",
-                          border: `1px solid ${ADMIN_THEME.border}`,
-                          borderRadius: 4,
-                          padding: "6px 12px",
-                          fontSize: 11,
-                          fontWeight: 700,
-                          color: ADMIN_THEME.textPrimary,
-                          cursor: "pointer",
-                          transition: "all 0.15s",
-                          flexShrink: 0
+                          marginTop: 8, background: "none", border: `1px solid ${ADMIN_THEME.border}`,
+                          borderRadius: 4, padding: "4px 10px", fontSize: 11, fontWeight: 600,
+                          color: ADMIN_THEME.textPrimary, cursor: "pointer", whiteSpace: "nowrap",
                         }}
-                        onMouseEnter={e => e.currentTarget.style.background = "#f8fafc"}
-                        onMouseLeave={e => e.currentTarget.style.background = "#ffffff"}
                       >
-                        <Download style={{ width: 11, height: 11, color: ADMIN_THEME.textSecondary }} />
-                        <span>Download PDF</span>
+                        Mark reviewed
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
+      {adminTab === "admin-reports" && (
+        <div>
+          <div style={{ marginBottom: 20 }}>
+            <h1 style={{ fontSize: 22, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>Reports &amp; Notifications</h1>
+            <p style={{ fontSize: 12, color: ADMIN_THEME.textSecondary }}>
+              Export administrative records, and review what currently needs attention
+            </p>
+          </div>
+
+          {/* Sub-tabs */}
+          <div style={{ display: "flex", gap: 8, marginBottom: 20, borderBottom: `1px solid ${ADMIN_THEME.border}` }}>
+            {([["reports", "Reports"], ["notifications", `Needs Attention${admin.notifications.length ? ` (${admin.notifications.length})` : ""}`]] as const).map(([id, label]) => (
+              <button
+                key={id}
+                onClick={() => setReportsSubTab(id as "reports" | "notifications")}
+                style={{
+                  background: "none", border: "none", cursor: "pointer",
+                  padding: "8px 14px", fontSize: 13, fontWeight: 700,
+                  color: reportsSubTab === id ? ADMIN_THEME.textPrimary : ADMIN_THEME.textSecondary,
+                  borderBottom: reportsSubTab === id ? `2px solid ${ADMIN_THEME.accentGold}` : "2px solid transparent",
+                  marginBottom: -1,
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {reportsSubTab === "reports" ? (
+            <>
+              {reportsSuccessMsg && (
+                <div style={{ background: "#ecfdf5", border: `1px solid ${ADMIN_THEME.green}`, color: "#065f46", borderRadius: 8, padding: "12px 16px", fontSize: 13, fontWeight: 600, marginBottom: 18, display: "flex", alignItems: "center", gap: 8 }}>
+                  <Check style={{ width: 16, height: 16 }} />
+                  <span>{reportsSuccessMsg}</span>
+                </div>
+              )}
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }}>
+                {([
+                  {
+                    id: "officers",
+                    title: "Officer Directory",
+                    desc: "Every account with its personnel record, posting, role and clearance.",
+                    rows: () => [
+                      ["UID", "KGID", "Name", "Rank", "Designation", "District", "Unit", "Role", "Clearance", "Active", "Employee ID", "Email", "Mobile", "Last Login"],
+                      ...officers.map(o => [o.uid, o.badgeId, o.name, o.rank, o.designation, o.district, o.station, o.dashboardRole, o.clearanceLevel, o.active ? "yes" : "no", o.employeeId ?? "MISSING", o.email, o.mobile, o.lastLogin]),
+                    ],
+                  },
+                  {
+                    id: "applications",
+                    title: "Registration Applications",
+                    desc: "All applications with their current status and who reviewed them.",
+                    rows: () => [
+                      ["UID", "Name", "Email", "KGID", "Rank", "District", "Unit", "Status", "Submitted", "Reviewed By", "Reviewed At", "Remarks"],
+                      ...applications.map(a => [a.id, a.name, a.email, a.badgeId, a.rank, a.district, a.station, a.status, a.submittedAt, a.reviewedBy, a.reviewedAt, a.remarks]),
+                    ],
+                  },
+                  {
+                    id: "audit",
+                    title: "Audit Trail",
+                    desc: "Append-only record of every administrative change, with before and after.",
+                    rows: () => [
+                      ["When", "Change", "Subject UID", "Before", "After", "By", "Reason"],
+                      ...auditLogs.map(l => [l.changedAt, l.changeType, l.firebaseUid, l.oldValue, l.newValue, l.changedBy, l.reason]),
+                    ],
+                  },
+                  {
+                    id: "sessions",
+                    title: "Sign-in History",
+                    desc: "Every recorded session across all officers, with source address.",
+                    rows: () => [
+                      ["Officer", "UID", "Signed In", "Signed Out", "Duration (s)", "Status", "End Reason", "Address"],
+                      ...admin.sessions.map((x: any) => [
+                        officers.find(o => o.uid === x.firebaseUid)?.name || "",
+                        x.firebaseUid, x.loginAt, x.logoutAt, x.durationSeconds ?? "", x.status, x.endReason, x.ipAddress,
+                      ]),
+                    ],
+                  },
+                  {
+                    id: "verification",
+                    title: "Verification Ledger",
+                    desc: "Sealed documents, their signatures and how often each was scanned.",
+                    rows: () => [
+                      ["Verification ID", "Crime No", "Sealed", "Issued By", "SHA-256", "Scans", "Last Scan", "Last Status"],
+                      ...verifications.map((v: any) => [v.verificationId, v.crimeNo, v.issuedAt, v.issuedBy, v.documentHash, v.scanCount, v.lastScannedAt, v.lastScanStatus]),
+                    ],
+                  },
+                  {
+                    id: "security",
+                    title: "Flagged Security Events",
+                    desc: "Conditions derived from session records that are worth a human look.",
+                    rows: () => [
+                      ["When", "Severity", "Kind", "Officer", "Address", "Detail"],
+                      ...admin.security.map((e: any) => [e.occurredAt, e.severity, e.kind, e.officer, e.ip, e.detail]),
+                    ],
+                  },
+                ] as const).map(report => {
+                  const count = Math.max(0, report.rows().length - 1);
+                  return (
+                    <div key={report.id} style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+                        <div style={{ fontSize: 14, fontWeight: 700 }}>{report.title}</div>
+                        <span style={{ fontSize: 10, fontWeight: 700, color: ADMIN_THEME.textSecondary, whiteSpace: "nowrap", fontFamily: "JetBrains Mono, monospace" }}>
+                          {count} row{count === 1 ? "" : "s"}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: 11.5, color: ADMIN_THEME.textSecondary, lineHeight: 1.5, flex: 1 }}>{report.desc}</div>
+                      <button
+                        onClick={() => {
+                          const rows = report.rows();
+                          const csv = rows
+                            .map(r => r.map(c => `"${String(c ?? "").replace(/"/g, '""')}"`).join(","))
+                            .join("\n");
+                          const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+                          const link = document.createElement("a");
+                          link.href = url;
+                          link.download = `ORCA_${report.id}_${new Date().toISOString().slice(0, 10)}.csv`;
+                          document.body.appendChild(link);
+                          link.click();
+                          document.body.removeChild(link);
+                          URL.revokeObjectURL(url);
+                          setReportsSuccessMsg(`${report.title} exported — ${count} row${count === 1 ? "" : "s"}.`);
+                          setTimeout(() => setReportsSuccessMsg(""), 4000);
+                        }}
+                        disabled={count === 0}
+                        style={{
+                          display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6,
+                          background: count === 0 ? "#e2e8f0" : "#001f3f",
+                          color: count === 0 ? ADMIN_THEME.textSecondary : "#fff",
+                          border: "none", borderRadius: 6, padding: "8px 0", fontSize: 12, fontWeight: 700,
+                          cursor: count === 0 ? "default" : "pointer",
+                        }}
+                      >
+                        <Download style={{ width: 14, height: 14 }} />
+                        {count === 0 ? "Nothing to export" : "Export CSV"}
                       </button>
                     </div>
                   );
                 })}
               </div>
-            </div>
-          )}
-
-          {/* Sub-Tab 2: Notifications Section */}
-          {reportsSubTab === "notifications" && (
-            <div>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-                <span style={{ fontSize: 12, fontWeight: 700, color: ADMIN_THEME.textSecondary, textTransform: "uppercase" }}>System Notifications Inbox</span>
-                {notificationsList.some(n => !n.read) && (
-                  <button
-                    onClick={() => setNotificationsList(prev => prev.map(n => ({ ...n, read: true })))}
-                    style={{
-                      background: "transparent",
-                      border: "none",
-                      color: "rgb(200, 146, 42)",
-                      fontSize: 12,
-                      fontWeight: 700,
-                      cursor: "pointer"
-                    }}
-                  >
-                    Mark All As Read
-                  </button>
-                )}
-              </div>
-
-              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                {notificationsList.map(n => {
-                  // Severity layout
-                  const getBadgeColor = (type: string) => {
-                    switch (type) {
-                      case "CRITICAL": return { border: "1px solid #fee2e2", bg: "#fef2f2", text: "#991b1b" };
-                      case "WARNING": return { border: "1px solid #fef3c7", bg: "#fffbeb", text: "#92400e" };
-                      case "SECURITY": return { border: "1px solid #dbeafe", bg: "#eff6ff", text: "#1e40af" };
-                      case "SUCCESS": return { border: "1px solid #d1fae5", bg: "#ecfdf5", text: "#065f46" };
-                      default: return { border: "1px solid #e2e8f0", bg: "#f1f5f9", text: "#475569" };
-                    }
-                  };
-
-                  const badge = getBadgeColor(n.type);
-
-                  return (
-                    <div
-                      key={n.id}
-                      style={{
-                        background: ADMIN_THEME.cardBg,
-                        border: `1px solid ${ADMIN_THEME.border}`,
-                        borderRadius: 8,
-                        padding: 16,
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                        boxShadow: ADMIN_THEME.shadow,
-                        opacity: n.read ? 0.75 : 1,
-                        borderLeft: n.read ? `1px solid ${ADMIN_THEME.border}` : `3px solid #FF9933`
-                      }}
-                    >
-                      <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
-                        <div style={{ marginTop: 2 }}>
-                          {n.read ? (
-                            <Check style={{ width: 16, height: 16, color: ADMIN_THEME.textMuted }} />
-                          ) : (
-                            <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#FF9933", display: "block" }} />
-                          )}
-                        </div>
-                        <div>
-                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                            <h4 style={{ fontSize: 13, fontWeight: 700, color: ADMIN_THEME.textPrimary }}>{n.title}</h4>
-                            <span style={{
-                              fontSize: 9,
-                              fontWeight: 700,
-                              padding: "2px 6px",
-                              borderRadius: 4,
-                              background: badge.bg,
-                              border: badge.border,
-                              color: badge.text
-                            }}>
-                              {n.type}
-                            </span>
-                          </div>
-                          <p style={{ fontSize: 12, color: ADMIN_THEME.textSecondary, marginTop: 4 }}>{n.desc}</p>
-                          <span style={{ fontSize: 10, color: ADMIN_THEME.textMuted, marginTop: 6, display: "block" }}>{n.time}</span>
-                        </div>
-                      </div>
-
-                      {!n.read && (
-                        <button
-                          onClick={() => setNotificationsList(prev => prev.map(item => item.id === n.id ? { ...item, read: true } : item))}
-                          style={{
-                            background: "transparent",
-                            border: `1px solid ${ADMIN_THEME.border}`,
-                            borderRadius: 4,
-                            padding: "4px 8px",
-                            fontSize: 11,
-                            fontWeight: 600,
-                            color: ADMIN_THEME.textSecondary,
-                            cursor: "pointer"
-                          }}
-                        >
-                          Mark Read
-                        </button>
-                      )}
+            </>
+          ) : (
+            <div style={{ background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 8, overflow: "hidden" }}>
+              {admin.notifications.length === 0 ? (
+                <div style={{ padding: 32, textAlign: "center" }}>
+                  <Check style={{ width: 36, height: 36, color: ADMIN_THEME.green, margin: "0 auto 10px" }} />
+                  <div style={{ fontSize: 14, fontWeight: 700 }}>Nothing needs attention</div>
+                  <div style={{ fontSize: 12, color: ADMIN_THEME.textSecondary, marginTop: 4 }}>
+                    No pending applications, no high-severity security events, and no records missing.
+                  </div>
+                </div>
+              ) : (
+                admin.notifications.map((n: any, idx: number) => (
+                  <div key={n.id} style={{ padding: "14px 16px", borderBottom: idx !== admin.notifications.length - 1 ? `1px solid ${ADMIN_THEME.border}` : "none", display: "flex", gap: 12, alignItems: "flex-start" }}>
+                    <span style={{
+                      marginTop: 4, width: 8, height: 8, borderRadius: 4, flexShrink: 0,
+                      background: n.kind === "CRITICAL" ? ADMIN_THEME.red
+                        : n.kind === "SECURITY" ? "#f97316"
+                        : n.kind === "WARNING" ? ADMIN_THEME.accentGold
+                        : ADMIN_THEME.textMuted,
+                    }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600 }}>{n.title}</div>
+                      <div style={{ fontSize: 11.5, color: ADMIN_THEME.textSecondary, marginTop: 2, lineHeight: 1.5 }}>{n.detail}</div>
                     </div>
-                  );
-                })}
-              </div>
+                    <div style={{ fontSize: 10.5, color: ADMIN_THEME.textMuted, whiteSpace: "nowrap" }}>
+                      {n.occurredAt ? new Date(n.occurredAt.replace(" ", "T")).toLocaleDateString() : ""}
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
           )}
-
         </div>
       )}
 
@@ -6151,7 +4558,7 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
                   </div>
                   <div style={{ borderBottom: `1px solid ${ADMIN_THEME.border}`, paddingBottom: 8 }}>
                     <span style={{ fontSize: 10, color: ADMIN_THEME.textSecondary, display: "block" }}>Station Assignment</span>
-                    <strong>{modStation || "State Cyber Crime PS"} ({modDistrict || "Bengaluru Urban"})</strong>
+                    <strong>{modStation || "Station not set"} ({modDistrict || "District not set"})</strong>
                   </div>
                   <div style={{ borderBottom: `1px solid ${ADMIN_THEME.border}`, paddingBottom: 8 }}>
                     <span style={{ fontSize: 10, color: ADMIN_THEME.textSecondary, display: "block" }}>Division & State Unit</span>
@@ -6226,8 +4633,8 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
                       <strong>{selectedApp.requestedAccess || "Not specified (Basic)"}</strong>
                     </div>
                     <div>
-                      <span style={{ fontSize: 10, color: ADMIN_THEME.textSecondary, display: "block" }}>Justification / Reason</span>
-                      <strong style={{ fontWeight: 500 }}>{selectedApp.reason || selectedApp.experience || "No reason submitted."}</strong>
+                      <span style={{ fontSize: 10, color: ADMIN_THEME.textSecondary, display: "block" }}>Reviewer Remarks</span>
+                      <strong style={{ fontWeight: 500 }}>{selectedApp.remarks || "None recorded."}</strong>
                     </div>
                   </div>
                 </div>
@@ -6328,12 +4735,27 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
                         <label style={{ display: "block", fontSize: 10, color: ADMIN_THEME.textSecondary, marginBottom: 4, fontWeight: 600 }}>Assigned System Role</label>
                         <select 
                           value={modRole} 
-                          onChange={e => setModRole(e.target.value)} 
+                          onChange={e => {
+                            const role = e.target.value;
+                            setModRole(role);
+                            setModSecurityClearance(clearanceForRole(role) || "");
+                          }} 
                           disabled={officerProfile?.role === "Administrative Dashboard - Level 1"}
                           style={{ width: "100%", background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 6, padding: "8px 12px", color: ADMIN_THEME.textPrimary, fontSize: 12, cursor: "pointer" }}
                         >
-                          {Object.keys(PERMISSION_TEMPLATES).map(m => (
-                            <option key={m} value={m}>{m}</option>
+                          {/*
+                            These are RBAC roles now, not PERMISSION_TEMPLATES keys.
+
+                            This dropdown listed template names ("Investigation
+                            Dashboard"), and the drawer posts its value straight
+                            to approve-registration as `dashboardRole`. No such
+                            role exists, so approving from this drawer returned
+                            "Unknown role" the moment the reviewer touched the
+                            control. PERMISSION_TEMPLATES is presentational — it
+                            fills the module grid below and grants nothing.
+                          */}
+                          {ASSIGNABLE_ROLES.map((r) => (
+                            <option key={r.value} value={r.value}>{r.label}</option>
                           ))}
                         </select>
                       </div>
@@ -6342,17 +4764,18 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                       <div>
                         <label style={{ display: "block", fontSize: 10, color: ADMIN_THEME.textSecondary, marginBottom: 4, fontWeight: 600 }}>Clearance Level</label>
-                        <select 
-                          value={modSecurityClearance} 
-                          onChange={e => setModSecurityClearance(e.target.value)} 
-                          disabled={officerProfile?.role === "Administrative Dashboard - Level 1"}
-                          style={{ width: "100%", background: ADMIN_THEME.cardBg, border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 6, padding: "8px 12px", color: ADMIN_THEME.textPrimary, fontSize: 12, cursor: "pointer" }}
-                        >
-                          <option value="ISD-LEVEL-I">ISD-LEVEL-I (Command Center)</option>
-                          <option value="ISD-LEVEL-II">ISD-LEVEL-II (Directorate)</option>
-                          <option value="ISD-LEVEL-III">ISD-LEVEL-III (Cyber cell / forensics)</option>
-                          <option value="ISD-LEVEL-IV">ISD-LEVEL-IV (Field Officer)</option>
-                        </select>
+                        {/*
+                          Shown, not chosen — the approval route derives clearance
+                          from the role and rejects a disagreeing pair. The old
+                          list also held ISD levels only, so an O.R.C.A or SCRB
+                          role could not be paired here at all.
+                        */}
+                        <div style={{ width: "100%", background: "#f1f5f9", border: `1px solid ${ADMIN_THEME.border}`, borderRadius: 6, padding: "8px 12px", color: ADMIN_THEME.textPrimary, fontSize: 12 }}>
+                          {modSecurityClearance || "—"}
+                          {CLEARANCE_LABEL[modSecurityClearance as keyof typeof CLEARANCE_LABEL]
+                            ? ` — ${CLEARANCE_LABEL[modSecurityClearance as keyof typeof CLEARANCE_LABEL]}`
+                            : ""}
+                        </div>
                       </div>
                       <div>
                         <label style={{ display: "block", fontSize: 10, color: ADMIN_THEME.textSecondary, marginBottom: 4, fontWeight: 600 }}>Assigned Department</label>

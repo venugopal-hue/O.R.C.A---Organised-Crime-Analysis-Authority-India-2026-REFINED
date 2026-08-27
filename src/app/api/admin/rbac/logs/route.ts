@@ -1,78 +1,77 @@
 import { NextRequest, NextResponse } from "next/server";
-import { adminAuth, adminDb, checkAdminAuth } from "@/lib/firebaseAdmin";
+import { checkAdminAuth } from "@/lib/firebaseAdmin";
+import { listAuditLogs } from "@/lib/adminData";
+import { listOfficerProfiles } from "@/lib/officerAccount";
 
+/**
+ * Role-change history, read from OfficerAuditLog.
+ *
+ * WAS: two Firestore collections (`roleChangeLog` and `audit_logs`) merged,
+ * with the audit rows reshaped to look like role changes — every one of them
+ * was given `oldIsdLevel: "ISD-LEVEL-I"` and `newIsdLevel: "ISD-LEVEL-I"`
+ * regardless of what had happened, so a sign-in appeared in the role-change
+ * table as a clearance change that never took place.
+ *
+ * SECURITY — the previous version contained an authentication bypass:
+ *
+ *     if (token.includes("demo-token") || token.includes("admin")) isAllowed = true;
+ *
+ * Any bearer token whose text happened to contain the substring "admin" was
+ * accepted as an administrator, without verification. That is removed; the only
+ * way through is a verified admin session.
+ */
 export async function GET(req: NextRequest) {
+  const caller = await checkAdminAuth(req, "AuditLogs");
+  if (!caller) {
+    return NextResponse.json(
+      { success: false, logs: [], error: "PERMISSION_DENIED: Administrative clearance required." },
+      { status: 403 }
+    );
+  }
+
   try {
-    // Verify caller is an admin
-    const caller = await checkAdminAuth(req, "AuditLogs");
-
-    // Also allow fast-path for demo tokens in dev
-    let isAllowed = !!caller;
-    if (!isAllowed) {
-      const cookieHeader = req.headers.get("cookie") || "";
-      const tokenMatch = cookieHeader.match(/authToken=([^;]+)/);
-      const token = tokenMatch ? tokenMatch[1] : null;
-      if (token && (token.includes("demo-token") || token.includes("admin"))) {
-        isAllowed = true;
-      }
-    }
-
-    if (!isAllowed) {
-      return NextResponse.json({ success: false, error: "PERMISSION_DENIED: Access Restricted." }, { status: 403 });
-    }
-
-    // Query audit log collections with timeout fallback
-    const logsPromise = adminDb
-      .collection("roleChangeLog")
-      .orderBy("timestamp", "desc")
-      .limit(50)
-      .get();
-
-    const auditPromise = adminDb
-      .collection("audit_logs")
-      .orderBy("timestamp", "desc")
-      .limit(50)
-      .get();
-
-    const [logsSnap, auditSnap] = await Promise.all([
-      logsPromise.catch(() => ({ docs: [] })),
-      auditPromise.catch(() => ({ docs: [] }))
+    const [entries, officers] = await Promise.all([
+      listAuditLogs(),
+      listOfficerProfiles().catch(() => []),
     ]);
 
-    const formattedRoleLogs = logsSnap.docs.map((docSnap: any) => {
-      const data = docSnap.data();
-      return {
-        id: docSnap.id,
-        ...data,
-        timestamp: data.isoTimestamp || (data.timestamp && data.timestamp.toDate ? data.timestamp.toDate().toISOString() : new Date().toISOString()),
-      };
-    });
+    const nameOf = (uid: string) =>
+      officers.find((o) => o.firebaseUid === uid)?.name || uid || "—";
 
-    const formattedAuditLogs = auditSnap.docs.map((docSnap: any) => {
-      const data = docSnap.data();
-      return {
-        id: docSnap.id,
-        targetUid: data.uid || "SYSTEM",
-        changedBy: data.operator || data.email || "System Audit",
-        oldRole: data.action || "SECURITY_LOG",
-        newRole: data.details || data.status || "VERIFIED",
-        oldIsdLevel: "ISD-LEVEL-I",
-        newIsdLevel: "ISD-LEVEL-I",
-        timestamp: data.timestamp && data.timestamp.toDate ? data.timestamp.toDate().toISOString() : (data.loginTime || data.logoutTime || new Date().toISOString()),
-      };
-    });
+    // Only the two change types that actually carry a role and a clearance.
+    // A profile edit or an account suspension lives in the same table but has
+    // no role transition to show, and padding it out with placeholder levels is
+    // precisely what the old route did.
+    const ROLE_CHANGES = new Set(["REGISTRATION_APPROVED", "ROLE_CHANGE"]);
 
-    const combinedLogs = [...formattedRoleLogs, ...formattedAuditLogs].sort((a, b) => 
-      new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-    );
+    /** Pulls `key=value` out of the audit row's `a=1; b=2` encoding. */
+    const field = (blob: string, key: string) =>
+      new RegExp(`(?:^|;\\s*)${key}=([^;]*)`).exec(blob || "")?.[1]?.trim() || "";
+
+    const logs = entries
+      .filter((e) => ROLE_CHANGES.has(e.changeType))
+      .slice(0, 100)
+      .map((e) => ({
+        id: String(e.logId ?? ""),
+        targetUid: e.firebaseUid,
+        name: nameOf(e.firebaseUid),
+        changedBy: e.changedBy,
+        changeType: e.changeType,
+        // Blank where the entry genuinely records no previous value — an
+        // approval has no "old role" because the officer had none.
+        oldRole: field(e.oldValue, "role"),
+        newRole: field(e.newValue, "role"),
+        oldIsdLevel: field(e.oldValue, "clearance"),
+        newIsdLevel: field(e.newValue, "clearance"),
+        oldValue: e.oldValue,
+        newValue: e.newValue,
+        reason: e.reason,
+        timestamp: e.changedAt,
+      }));
 
     return NextResponse.json(
-      { success: true, logs: combinedLogs },
-      {
-        headers: {
-          "Cache-Control": "private, max-age=5, stale-while-revalidate=15"
-        }
-      }
+      { success: true, logs },
+      { headers: { "Cache-Control": "private, max-age=5, stale-while-revalidate=15" } }
     );
   } catch (err: any) {
     return NextResponse.json({ success: false, logs: [], error: err.message }, { status: 500 });

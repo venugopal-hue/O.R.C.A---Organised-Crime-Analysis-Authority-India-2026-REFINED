@@ -7,10 +7,11 @@ import {
   RANKS,
   RANK_DEFAULTS,
   IsdLevel,
-  ISD_LEVELS,
   DashboardRole,
   DASHBOARD_ROLES,
 } from "@/lib/permissions";
+import { clearanceForRole, DEPRECATED_ROLES } from "@/lib/rbac";
+import { CLEARANCE_LABEL } from "@/lib/clearance";
 import {
   ShieldCheck,
   UserPlus,
@@ -33,7 +34,7 @@ export const RoleAssignmentManager: React.FC = () => {
   const [targetUid, setTargetUid] = useState("");
   const [selectedRank, setSelectedRank] = useState<Rank>("Inspector");
   const [selectedIsdLevel, setSelectedIsdLevel] = useState<IsdLevel>("ISD-LEVEL-IV");
-  const [selectedDashboardRole, setSelectedDashboardRole] = useState<DashboardRole>("investigation");
+  const [selectedDashboardRole, setSelectedDashboardRole] = useState<DashboardRole>("field_officer_l4");
 
   // Fields for Create Officer Profile
   const [badgeNumber, setBadgeNumber] = useState("");
@@ -50,8 +51,12 @@ export const RoleAssignmentManager: React.FC = () => {
     setSelectedRank(rank);
     const defaults = RANK_DEFAULTS[rank];
     if (defaults) {
-      setSelectedIsdLevel(defaults.isdLevel);
       setSelectedDashboardRole(defaults.dashboardRole);
+      // Clearance follows the ROLE, not the rank's stored level — the two can
+      // disagree, and set-role rejects the pair when they do.
+      setSelectedIsdLevel(
+        (clearanceForRole(defaults.dashboardRole) || defaults.isdLevel) as IsdLevel
+      );
     }
   };
 
@@ -138,11 +143,11 @@ export const RoleAssignmentManager: React.FC = () => {
     }
   };
 
-  const isAuthorized =
-    dashboardRole === "admin_l2" ||
-    dashboardRole === "admin_full" ||
-    dashboardRole === "it_admin" ||
-    dashboardRole === "admin_scrb";
+  // Derived from RBAC_CONFIG rather than listed by hand — a role added there
+  // with role_assignment must not need a second edit here to work.
+  const isAuthorized = Boolean(
+    dashboardRole && DASHBOARD_ROLES[dashboardRole]?.modules.includes("role_assignment")
+  );
 
   if (!isAuthorized) {
     return (
@@ -310,22 +315,26 @@ export const RoleAssignmentManager: React.FC = () => {
             {/* 2. ISD CLEARANCE LEVEL */}
             <div className="p-4 rounded-lg bg-slate-50 border border-slate-200">
               <label className="block text-xs font-bold uppercase tracking-wider text-[#001f3f] mb-1">
-                2. ISD Clearance Level
+                2. Security Clearance
               </label>
               <p className="text-[11px] text-slate-500 mb-3">
-                Governs access to Forensic Copilot & sensitive evidence.
+                Governs access to Forensic Copilot &amp; sensitive evidence. Set by the role.
               </p>
-              <select
-                value={selectedIsdLevel}
-                onChange={(e) => setSelectedIsdLevel(e.target.value as IsdLevel)}
-                className="w-full px-3 py-2 border border-slate-300 rounded text-sm bg-white font-medium focus:outline-none focus:border-[#001f3f]"
-              >
-                {Object.entries(ISD_LEVELS).map(([levelKey, config]) => (
-                  <option key={levelKey} value={levelKey}>
-                    {config.label}
-                  </option>
-                ))}
-              </select>
+              {/*
+                Shown, not chosen — see the same change in the approval modal.
+
+                set-role derives the clearance from the role and REJECTS a
+                disagreeing pair, so every combination the administrator did not
+                match by hand came back a 400. The list here also only held ISD
+                levels, which made the O.R.C.A and SCRB roles impossible to pair
+                at all.
+              */}
+              <div className="w-full px-3 py-2 border border-slate-300 rounded text-sm bg-slate-100 font-medium text-slate-800">
+                {selectedIsdLevel || "—"}
+                {CLEARANCE_LABEL[selectedIsdLevel as keyof typeof CLEARANCE_LABEL]
+                  ? ` — ${CLEARANCE_LABEL[selectedIsdLevel as keyof typeof CLEARANCE_LABEL]}`
+                  : ""}
+              </div>
             </div>
 
             {/* 3. DASHBOARD ROLE */}
@@ -338,14 +347,26 @@ export const RoleAssignmentManager: React.FC = () => {
               </p>
               <select
                 value={selectedDashboardRole}
-                onChange={(e) => setSelectedDashboardRole(e.target.value as DashboardRole)}
+                onChange={(e) => {
+                  const role = e.target.value as DashboardRole;
+                  setSelectedDashboardRole(role);
+                  setSelectedIsdLevel(clearanceForRole(role) as IsdLevel);
+                }}
                 className="w-full px-3 py-2 border border-slate-300 rounded text-sm bg-white font-medium focus:outline-none focus:border-[#001f3f]"
               >
-                {Object.entries(DASHBOARD_ROLES).map(([roleKey, config]) => (
-                  <option key={roleKey} value={roleKey}>
-                    {config.label}
-                  </option>
-                ))}
+                {/*
+                  Deprecated roles are filtered out. `admin_scrb` renders with
+                  the same words as `scrb_officer`, so leaving it here gave the
+                  administrator two identical-looking options, one of which puts
+                  a new officer on a role that is scheduled for deletion.
+                */}
+                {Object.entries(DASHBOARD_ROLES)
+                  .filter(([roleKey]) => !DEPRECATED_ROLES.has(roleKey))
+                  .map(([roleKey, config]) => (
+                    <option key={roleKey} value={roleKey}>
+                      {config.label}
+                    </option>
+                  ))}
               </select>
             </div>
           </div>

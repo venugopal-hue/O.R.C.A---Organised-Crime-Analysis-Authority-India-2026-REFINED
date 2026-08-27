@@ -1,17 +1,12 @@
 "use client";
 
 import React, { createContext, useContext, useState, useEffect } from "react";
-import { 
-  FIRCase, 
-  firDatabase as initialFirDatabase, 
-  districtDatabase, 
-  suspectDossiers, 
-  aiReportDatabase, 
+import {
+  FirCaseListItem,
+  FirCaseDetail,
   AIPresetBrief,
-  initialTelemetryLogs,
-  initialOfficerLogs,
-  TelemetryLogEntry
-} from "@/lib/mock";
+  TelemetryLogEntry,
+} from "@/lib/intelligenceTypes";
 import { useAuth } from "./AuthContext";
 import { 
   AttachmentFile, 
@@ -37,7 +32,19 @@ interface IntelligenceContextType {
   setSelectedSuspectId: (id: string) => void;
   selectedDistrictCode: string;
   setSelectedDistrictCode: (code: string) => void;
-  firCases: FIRCase[];
+  /**
+   * Identifiers carried from a case or exhibit into the task assignment form.
+   *
+   * An officer raising a forensic follow-up on an exhibit should not retype its
+   * number — retyping is where the wrong exhibit gets attached to the work.
+   */
+  taskPreset: { caseMasterId: number | null; evidenceId: number | null } | null;
+  setTaskPreset: (p: { caseMasterId: number | null; evidenceId: number | null } | null) => void;
+  firCases: FirCaseListItem[];
+  /** The open case, loaded on demand — the list carries only what the
+   *  sidebar shows, not the people and sections behind it. */
+  activeCase: FirCaseDetail | null;
+  activeCaseLoading: boolean;
   aiReportLoading: boolean;
   activeReport: AIPresetBrief | null;
   runAiQuery: (presetId: string | null, customText?: string) => void;
@@ -60,10 +67,14 @@ interface IntelligenceContextType {
   uploadLogs: string[];
 
   // Real-time fluctuating state parameters for Command dashboard
-  threatIndex: number;
-  activeCells: number;
-  patrolRate: number;
-  ocrIntegrity: number;
+  /** Real counts from CaseMaster — see the note where these are loaded. */
+  heinousCount: number;
+  underInvestigationCount: number;
+  chargeSheetedCount: number;
+  casesRegistered: number;
+  /** False until the counts have actually been read, so 0 is not mistaken for "none". */
+  statsLoaded: boolean;
+  casesLoaded: boolean;
 
   // Real-time statewide correlation states
   criminalClusters: any[];
@@ -76,7 +87,7 @@ interface IntelligenceContextType {
   activeConvId: string | null;
   setActiveConvId: (id: string | null) => void;
   createConversation: (title?: string) => string;
-  addMessageToActiveConv: (text: string, attachments?: AttachmentFile[], report?: any, sender?: "user" | "orca", customConvId?: string, media?: any) => Promise<string>;
+  addMessageToActiveConv: (text: string, attachments?: AttachmentFile[], report?: any, sender?: "user" | "orca", customConvId?: string, media?: any, evidence?: ChatMessage["evidence"]) => Promise<string>;
   deleteConv: (id: string) => Promise<void>;
   renameConv: (id: string, title: string) => Promise<void>;
   pinConv: (id: string, pinned: boolean) => Promise<void>;
@@ -95,10 +106,34 @@ export const IntelligenceProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
   const [activeTab, setActiveTab] = useState("reports");
   const [pendingChatQuery, setPendingChatQuery] = useState<string | null>(null);
-  const [activeFirId, setActiveFirId] = useState("FIR/2026/BLR/104");
-  const [selectedSuspectId, setSelectedSuspectId] = useState("sus-01");
-  const [selectedDistrictCode, setSelectedDistrictCode] = useState("BLR_U");
-  const [firCases, setFirCases] = useState<FIRCase[]>(initialFirDatabase);
+  /**
+   * No seeded ids.
+   *
+   * `activeFirId` was "FIR/2026/BLR/104" and `selectedSuspectId` was "sus-01" —
+   * rows from the fabricated database that used to back these screens. Both
+   * pointed at records that do not exist, so the console opened claiming to
+   * show a case nobody had registered.
+   */
+  const [activeFirId, setActiveFirId] = useState("");
+  const [selectedSuspectId, setSelectedSuspectId] = useState("");
+  // District ID as a string, or "" for nothing selected. It used to default
+  // to "BLR_U" — a hardcoded code from the six-district map — which both
+  // pre-selected Bengaluru on every load and could not name the other 25
+  // districts at all.
+  const [selectedDistrictCode, setSelectedDistrictCode] = useState("");
+
+  const [taskPreset, setTaskPreset] = useState<{ caseMasterId: number | null; evidenceId: number | null } | null>(null);
+  /**
+   * Starts EMPTY and is filled from Catalyst.
+   *
+   * This used to be seeded with the invented FIR database, and real cases were
+   * prepended to it — so genuine and fabricated casework sat in one list with
+   * nothing distinguishing them.
+   */
+  const [firCases, setFirCases] = useState<FirCaseListItem[]>([]);
+  const [activeCase, setActiveCase] = useState<FirCaseDetail | null>(null);
+  const [activeCaseLoading, setActiveCaseLoading] = useState(false);
+  const [casesLoaded, setCasesLoaded] = useState(false);
   
   // AI report states
   const [aiReportLoading, setAiReportLoading] = useState(false);
@@ -129,24 +164,42 @@ export const IntelligenceProvider: React.FC<{ children: React.ReactNode }> = ({ 
     }
   }, []);
 
-  // Fluctuating dashboard indicators
-  const [threatIndex, setThreatIndex] = useState(9.4);
-  const [activeCells, setActiveCells] = useState(1482);
-  const [patrolRate, setPatrolRate] = useState(96.2);
-  const [ocrIntegrity, setOcrIntegrity] = useState(99.4);
+  /**
+   * Command Overview figures — counted from CaseMaster, not invented.
+   *
+   * These four were 9.4 / 1,482 / 96.2% / 99.4%, drifting by a random delta
+   * every six seconds so they LOOKED live. They were the first thing an officer
+   * saw on signing in. They now hold real counts from /api/analytics/crime, and
+   * `statsLoaded` lets the cards say "no cases registered" rather than show a
+   * confident zero that might mean "failed to load".
+   */
+  const [heinousCount, setHeinousCount] = useState(0);
+  const [underInvestigationCount, setUnderInvestigationCount] = useState(0);
+  const [chargeSheetedCount, setChargeSheetedCount] = useState(0);
+  const [casesRegistered, setCasesRegistered] = useState(0);
+  const [statsLoaded, setStatsLoaded] = useState(false);
 
-  // Real-time logs
-  const [telemetryLogs, setTelemetryLogs] = useState<TelemetryLogEntry[]>(initialTelemetryLogs);
-  const [officerLogs, setOfficerLogs] = useState(initialOfficerLogs);
+  // The accused-persons data path that backed the old dossier and co-accused
+  // graph was removed when the Relation Graph was rebuilt to read records
+  // directly (see src/lib/networkGraph.ts).
+
+  /**
+   * Real-time logs — both start empty.
+   *
+   * They were seeded with invented pings ("THREAT INDEX — BENGALURU URBAN
+   * ↑ 2.1%") and topped up every six seconds from a list of templates, naming
+   * officers and cases that do not exist. `officerLogs` is now the signed-in
+   * officer's own recorded activity; `telemetryLogs` has no state-wide feed
+   * behind it, so it stays empty until one exists.
+   */
+  const [telemetryLogs, setTelemetryLogs] = useState<TelemetryLogEntry[]>([]);
+  const [officerLogs, setOfficerLogs] = useState<{ time: string; message: string }[]>([]);
 
   // Ingestion workflow states
   const [uploadingState, setUploadingState] = useState<"idle" | "checksum" | "ocr" | "entity" | "timeline" | "complete">("idle");
   const [uploadLogs, setUploadLogs] = useState<string[]>([]);
 
   // Real-time correlation states
-  const [criminalClusters, setCriminalClusters] = useState<any[]>([]);
-  const [crossCaseAlerts, setCrossCaseAlerts] = useState<any[]>([]);
-  const [activeNetworkGraph, setActiveNetworkGraph] = useState<{ nodes: any[]; links: any[] }>({ nodes: [], links: [] });
 
   // Chat History & Sync State Hooks
   const [conversations, setConversations] = useState<ChatConversation[]>([]);
@@ -207,7 +260,8 @@ export const IntelligenceProvider: React.FC<{ children: React.ReactNode }> = ({ 
     report?: any,
     sender: "user" | "orca" = "user",
     customConvId?: string,
-    media?: any
+    media?: any,
+    evidence?: ChatMessage["evidence"]
   ) => {
     const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const newMsg: ChatMessage = {
@@ -217,7 +271,8 @@ export const IntelligenceProvider: React.FC<{ children: React.ReactNode }> = ({ 
       timestamp,
       attachments,
       report,
-      media
+      media,
+      evidence
     };
 
     let targetId = customConvId || activeConvId;
@@ -303,176 +358,172 @@ export const IntelligenceProvider: React.FC<{ children: React.ReactNode }> = ({ 
     });
   };
 
-  const refreshCorrelationData = async () => {
-    try {
-      // 1. Fetch clusters
-      const clustersRes = await fetch("http://localhost:8000/api/v1/correlation/clusters");
-      if (clustersRes.ok) {
-        const clustersData = await clustersRes.json();
-        if (clustersData.success && clustersData.clusters) {
-          setCriminalClusters(clustersData.clusters);
-        }
-      }
-
-      // 2. Fetch alerts
-      const alertsRes = await fetch("http://localhost:8000/api/v1/correlation/alerts");
-      if (alertsRes.ok) {
-        const alertsData = await alertsRes.json();
-        if (alertsData.success && alertsData.alerts) {
-          setCrossCaseAlerts(alertsData.alerts);
-        }
-      }
-
-      // 3. Fetch network graph
-      const networkRes = await fetch("http://localhost:8000/api/v1/correlation/network");
-      if (networkRes.ok) {
-        const networkData = await networkRes.json();
-        if (networkData.success && networkData.graph) {
-          setActiveNetworkGraph(networkData.graph);
-        }
-      }
-    } catch (e) {
-      console.warn("FastAPI Correlation engine offline. Working in sandbox model:", e);
+  /**
+   * Load the open case in full.
+   *
+   * The list endpoint returns one line per case; the workspace needs the
+   * accused, the victims, the complainants and the charged sections, which are
+   * four more tables. Fetching them per selection keeps the sidebar cheap.
+   *
+   * A sequence number guards against a slow response for a case the officer
+   * has already navigated away from overwriting a newer one.
+   */
+  const caseSeq = React.useRef(0);
+  useEffect(() => {
+    if (!isLoggedIn || !activeFirId) {
+      setActiveCase(null);
+      return;
     }
-  };
+    const seq = ++caseSeq.current;
+    setActiveCaseLoading(true);
 
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/fir/cases?view=console&id=${encodeURIComponent(activeFirId)}`,
+          { credentials: "include" }
+        );
+        const data = await res.json();
+        if (seq !== caseSeq.current) return;
+        // On failure the workspace shows nothing rather than a stale case.
+        setActiveCase(data?.success && data.case ? data.case : null);
+      } catch {
+        if (seq === caseSeq.current) setActiveCase(null);
+      } finally {
+        if (seq === caseSeq.current) setActiveCaseLoading(false);
+      }
+    })();
+  }, [isLoggedIn, activeFirId]);
+
+  /**
+   * The correlation engine is gone, not stubbed.
+   *
+   * `refreshCorrelationData` fired three requests at
+   * http://localhost:8000/api/v1/correlation/* on every mount — a FastAPI
+   * service that is not part of this project — caught the failures, and logged
+   * "working in sandbox model". Its results were never used either way: the
+   * context has always provided `criminalClusters`, `crossCaseAlerts` and
+   * `activeNetworkGraph` as empty literals, and exposed the refresh itself as
+   * an empty async function. It was three guaranteed-failing network calls per
+   * page load, doing nothing.
+   */
+
+  /**
+   * Load the real console data: registered cases, the crime counts behind the
+   * Command Overview cards, and the officer's own activity trail.
+   *
+   * This replaces a six-second `setInterval` that invented all three. A failure
+   * here leaves the empty state in place — it must never fall back to made-up
+   * figures, which is exactly what made the old screens untrustworthy.
+   */
   useEffect(() => {
-    refreshCorrelationData();
-  }, []);
+    if (!isLoggedIn) return;
+    let cancelled = false;
 
-  // Initialize presets
-  useEffect(() => {
-    runAiQuery("preset-1");
-  }, []);
+    (async () => {
+      try {
+        const res = await fetch("/api/fir/cases?view=console", { credentials: "include" });
+        const data = await res.json();
+        if (!cancelled && data?.success && Array.isArray(data.cases)) {
+          setFirCases(data.cases);
+          // `activeFirId` holds a CaseMasterID, which is what the detail
+          // endpoint takes — not the printed CrimeNo shown on the card.
+          if (data.cases.length) setActiveFirId((prev) => prev || data.cases[0].caseMasterId);
+        }
+      } catch {
+        /* leave the list empty — see the note on firCases */
+      } finally {
+        if (!cancelled) setCasesLoaded(true);
+      }
 
-  // Interval loop for fluctuating state telemetry
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const timeStr = new Date().toTimeString().split(' ')[0];
-      
-      // Fluctuate stats
-      setThreatIndex(prev => {
-        const delta = (Math.random() * 0.2 - 0.1);
-        const next = prev + delta;
-        return next > 9.9 ? 9.9 : next < 8.0 ? 8.0 : +(next.toFixed(2));
-      });
-      setActiveCells(prev => {
-        const delta = Math.floor(Math.random() * 10 - 5);
-        const next = prev + delta;
-        return next > 1550 ? 1550 : next < 1400 ? 1400 : next;
-      });
-      setPatrolRate(prev => {
-        const delta = (Math.random() * 0.4 - 0.2);
-        const next = prev + delta;
-        return next > 99.9 ? 99.9 : next < 90.0 ? 90.0 : +(next.toFixed(1));
-      });
-      setOcrIntegrity(prev => {
-        const delta = (Math.random() * 0.2 - 0.1);
-        const next = prev + delta;
-        return next > 100.0 ? 100.0 : next < 95.0 ? 95.0 : +(next.toFixed(1));
-      });
+      try {
+        const res = await fetch("/api/analytics/crime", { credentials: "include" });
+        const data = await res.json();
+        if (!cancelled && data?.success && data.totals) {
+          setHeinousCount(Number(data.totals.heinous) || 0);
+          setUnderInvestigationCount(Number(data.totals.underInvestigation) || 0);
+          setChargeSheetedCount(Number(data.totals.chargeSheeted) || 0);
+          setCasesRegistered(Number(data.casesInSystem) || 0);
+          setStatsLoaded(true);
+        }
+      } catch {
+        /* cards stay in their "not loaded" state */
+      }
 
-      // Randomly append a realistic telemetric ping log matching crime cell operations
-      const logTemplates: Omit<TelemetryLogEntry, "timestamp">[] = [
-        { source: "BLR-CYB-02", message: "CYBER CELL NODE BLR-CYB-02 REQUESTED FINANCIAL TRACE", type: "info" },
-        { source: "HQ-GRID", message: "THREAT INDEX — BENGALURU URBAN ↑ 2.1%", type: "alert" },
-        { source: "ISD-BORDER", message: "INTERSTATE TRAFFICKING WATCH ACTIVATED", type: "success" },
-        { source: "MYS-CYB", message: "MYSURU SECTOR 04 CORRIDOR: DEVICE ANOMALY TOWER PING REGISTERED", type: "danger" },
-        { source: "BLR-SOUTH", message: "DEVICE DETECTED AT COOLDOWN LOCATION NEAR JP NAGAR", type: "info" },
-        { source: "HQ-INTELL", message: "ESCALATION: BNS SECTION 111 (ORGANIZED CRIME) FLAG ASSIGNED", type: "danger" }
-      ];
-      const selectedLog = logTemplates[Math.floor(Math.random() * logTemplates.length)];
-      setTelemetryLogs(prev => [
-        { timestamp: timeStr, ...selectedLog },
-        ...prev.slice(0, 7) // keep last 8 pings
-      ]);
 
-      // Randomly append an officer activity log
-      const officerTemplates = [
-        "INSPECTOR R KUMAR ACCESSED NODE-41",
-        "MANGALURU CYBER UNIT FLAGGED NEW DEVICE CLUSTER",
-        "FIR-108/2026 ESCALATED TO ORGANIZED CRIME CELL",
-        "DSP R. K. SHASTRY ACCESS GRANTED: EXPORTS VAULT NODE 09",
-        "CYBER CELL EXECUTED CELLULAR CELL CORRELATION MODEL",
-        "ISD COMMAND UNIT SCHEDULED PATROL ROADBLOCK ON NH44 CORRIDOR"
-      ];
-      const selectedOfficerMsg = officerTemplates[Math.floor(Math.random() * officerTemplates.length)];
-      setOfficerLogs(prev => [
-        { time: timeStr.substring(0, 5), message: selectedOfficerMsg },
-        ...prev.slice(0, 7)
-      ]);
-    }, 6000);
+      try {
+        const res = await fetch("/api/officer/telemetry", { credentials: "include" });
+        const data = await res.json();
+        if (!cancelled && data?.success) {
+          const entries = [
+            ...(data.downloads || []).map((d: any) => ({ at: d.occurredAt || d.OccurredAt, message: `${d.activityType || "ACTIVITY"} — ${d.detail || d.Detail || ""}`.trim() })),
+            ...(data.aiQueries || []).map((q: any) => ({ at: q.occurredAt || q.OccurredAt, message: `AI QUERY — ${q.detail || q.Detail || ""}`.trim() })),
+          ]
+            .filter((e) => e.at)
+            .sort((a, b) => String(b.at).localeCompare(String(a.at)))
+            .slice(0, 8)
+            .map((e) => ({ time: String(e.at).slice(11, 16), message: e.message.toUpperCase() }));
+          setOfficerLogs(entries);
+        }
+      } catch {
+        /* empty trail is the honest answer */
+      }
+    })();
 
-    return () => clearInterval(interval);
-  }, []);
+    return () => { cancelled = true; };
+  }, [isLoggedIn]);
 
+  /**
+   * Run an intelligence query.
+   *
+   * WHAT THIS USED TO DO
+   *
+   * Three things, none of them real. A preset id returned a canned brief from
+   * the fabricated `aiReportDatabase`. Anything else was POSTed to
+   * `http://localhost:8000` — a FastAPI service that is not part of this
+   * project and was never running — and when that failed, which was always, it
+   * invented a report: a named suspect, a correlation coefficient of 0.91, a
+   * premises address, and a citation to case FIR/2026/BLR/104. It was rendered
+   * on an official letterhead with a classification banner.
+   *
+   * It now calls the real chat route. If that fails the report is left null and
+   * the screen says so, because a plausible answer is worse than no answer when
+   * an officer may act on it.
+   */
   const runAiQuery = async (presetId: string | null, customText: string = "") => {
-    setAiReportLoading(true);
-    setActiveReport(null);
-
-    // If it's a preset and we are using standard mocked database
-    if (presetId && aiReportDatabase[presetId]) {
-      setTimeout(() => {
-        setActiveReport(aiReportDatabase[presetId]);
-        setAiReportLoading(false);
-      }, 600);
+    const queryText = (customText || "").trim();
+    if (!queryText) {
+      setActiveReport(null);
+      setAiReportLoading(false);
       return;
     }
 
-    const queryText = customText || "CONSOLE_AUDIT_LOG";
+    setAiReportLoading(true);
+    setActiveReport(null);
 
     try {
-      // Direct REST query to the FastAPI backend
-      const response = await fetch("http://localhost:8000/api/v1/intelligence/query", {
+      const response = await fetch("/api/chat", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          query: queryText,
-          clearanceLevel: "ISD-LEVEL-IV",
-          officerName: "Command Officer"
-        })
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ message: queryText }),
       });
-
-      if (!response.ok) {
-        throw new Error(`FastAPI Intelligence query returned status ${response.status}`);
-      }
-
       const result = await response.json();
-      if (result.success && result.intelReport) {
+      const content = result?.reply || result?.message || result?.content;
+      if (response.ok && content) {
         setActiveReport({
-          title: result.intelReport.title,
-          classification: result.intelReport.classification,
-          content: result.intelReport.content
+          title: queryText.toUpperCase(),
+          classification: "GENERATED BY O.R.C.A AI — VERIFY BEFORE ACTING",
+          content: String(content),
         });
-        setAiReportLoading(false);
-        return;
+      } else {
+        setActiveReport(null);
       }
-    } catch (err) {
-      console.warn("Backend intelligence query offline, executing sandbox response:", err);
-    }
-
-    // Fallback sandbox response if backend is offline or errors
-    setTimeout(() => {
-      setActiveReport({
-        title: `EXEC DYNAMIC INQUIRY: ${queryText.toUpperCase()}`,
-        classification: "SECRET // CONFIDENTIAL // INTERNAL SECURITY DIVISION",
-        content: `<h4>1. Captured Custom Parameter Inquiry</h4>
-<p style="font-style:italic; color:#475569; font-family:var(--font-mono); font-size:11.5px;">"${queryText}"</p>
-<h4>2. Relational Correlation Results</h4>
-<p>The ISD-Rakshak criminal parser audited unified district databases matching the semantic constraints of your query. Tower pings and escrow logs show high association coefficients (0.91) with <strong>Vikram Hegde (Cyber Operator)</strong>.</p>
-<div style="background-color:#f8fafc; border:1px solid #cbd5e1; border-left:3.5px solid #1e3a8a; padding:8px 12px; margin:12px 0; font-family:var(--font-mono); font-size:11px;">
-  <strong>Forensic Citation:</strong> Automated correlation generated in 1,220ms. Mapped against active case file FIR/2026/BLR/104 nodes.
-</div>
-<h4>3. Actionable Directives</h4>
-<ul style="list-style-type:square; padding-left:16px; margin-bottom:12px;">
-  <li style="margin-bottom:6px;">Cross-reference cell signals near the whitefield tower corridors at 09:30 IST.</li>
-  <li style="margin-bottom:6px;">Coordinate localized physical audits at Pinnacle Trades premises in Malleshwaram.</li>
-</ul>`
-      });
+    } catch {
+      setActiveReport(null);
+    } finally {
       setAiReportLoading(false);
-    }, 900);
+    }
   };
 
   // Coordinated presentation workflow transitions (8 Steps)
@@ -485,20 +536,18 @@ export const IntelligenceProvider: React.FC<{ children: React.ReactNode }> = ({ 
       // Step 2: Threat Overview
       setActiveTab("dashboard");
     } else if (nextStep === 3) {
-      // Step 3: FIR Ingestion Vault (Ready state)
-      setActiveTab("fir");
-      setUploadingState("idle");
+      // Step 3-5 used to walk the Forensic Evidence Copilot vault, which has
+      // been removed. They now land on Case Registration — the living path for
+      // getting an FIR into the ledger — so the demo has no dead stops.
+      setActiveTab("case-registration");
     } else if (nextStep === 4) {
-      // Step 4: AI Extraction / Scanning OCR
-      setActiveTab("fir");
-      ingestNewCase("FIR_108_2026_Ingestion.pdf");
+      setActiveTab("case-registration");
     } else if (nextStep === 5) {
-      // Step 5: Timeline Reconstruction (still inside FIR tab)
-      setActiveTab("fir");
+      setActiveTab("analytics");
     } else if (nextStep === 6) {
-      // Step 6: Criminal Network Mapping
+      // Step 6: Threat Mapping
       setActiveTab("networks");
-      setSelectedSuspectId("sus-01");
+      setSelectedSuspectId("");
     } else if (nextStep === 7) {
       // Step 7: District Surveillance
       setActiveTab("heatmap");
@@ -514,140 +563,49 @@ export const IntelligenceProvider: React.FC<{ children: React.ReactNode }> = ({ 
     setDemoStep(1);
     logout().catch(() => {}); // Securely sign out from Firebase
     setActiveTab("dashboard");
-    setActiveFirId("FIR/2026/BLR/104");
-    setSelectedSuspectId("sus-01");
+    // Cleared, not re-seeded: these ids named fabricated records.
+    setActiveFirId(firCases[0]?.caseMasterId || "");
+    setSelectedSuspectId("");
     setSelectedDistrictCode("BLR_U");
     setUploadingState("idle");
     setUploadLogs([]);
   };
 
+  /**
+   * Accept a dropped FIR document.
+   *
+   * WHAT THIS USED TO DO, AND WHY IT HAD TO GO
+   *
+   * Dropping ANY file — any name, any content — fabricated a complete case
+   * file and inserted it into the case list as though it had been registered:
+   * a plausible FIR number (`FIR/2026/BLR/` plus a random three digits), two
+   * named suspects with ages, aliases and "91% confidence", two BNS sections,
+   * a hard-coded SHA-256, a forensic metadata block reading
+   * "VERIFIED // ENCRYPTED", and a chain-of-custody entry signed by the
+   * officer who happened to be logged in.
+   *
+   * It reached that fallback every time, because the pipeline it tried first
+   * was a FastAPI service on localhost:8000 that is not part of this project.
+   * The progress log narrated OCR sweeps and entity matching that never ran.
+   *
+   * There is no document-extraction service. Rather than simulate one, this
+   * now says so and points at Case Registration — the real module, which
+   * writes a real row to CaseMaster.
+   */
   const ingestNewCase = async (fileOrName: File | string): Promise<void> => {
-    const fileName = typeof fileOrName === "string" ? fileOrName : fileOrName.name;
+    const fileName = fileOrName instanceof File ? fileOrName.name : String(fileOrName);
+
     setUploadingState("checksum");
-    setUploadLogs(["Initiating secure evidence vault ingestion..."]);
+    setUploadLogs([
+      `Received: ${fileName}`,
+      "Automatic extraction is not available on this deployment.",
+      "No case has been created from this document.",
+      "Register the case in Case Registration to add it to the ledger.",
+    ]);
 
-    const appendLog = (msg: string, delay: number): Promise<void> => {
-      return new Promise((resolve) => {
-        setTimeout(() => {
-          setUploadLogs(prev => [...prev, msg]);
-          resolve();
-        }, delay);
-      });
-    };
-
-    // If a real file was uploaded, trigger the FastAPI real pipeline
-    if (fileOrName instanceof File) {
-      try {
-        await appendLog(`Ingesting secure packet: ${fileName} (${(fileOrName.size / 1024).toFixed(1)} KB)`, 200);
-        await appendLog("Generating SHA-256 validation checksum...", 300);
-        setUploadingState("ocr");
-        await appendLog("Activating PyMuPDF parsing streams & Tesseract OCR sweeps...", 300);
-        
-        const formData = new FormData();
-        formData.append("file", fileOrName);
-        
-        setUploadingState("entity");
-        await appendLog("Extracting Named Entities & Legal Mappings via spaCy...", 300);
-        
-        setUploadingState("timeline");
-        await appendLog("Synthesizing NVIDIA NIM LLM Intelligence report timeline...", 300);
-
-        const response = await fetch("http://localhost:8000/api/v1/fir/upload", {
-          method: "POST",
-          body: formData,
-        });
-
-        if (!response.ok) {
-          throw new Error(`FastAPI Ingest Service returned status ${response.status}`);
-        }
-
-        const result = await response.json();
-        
-        if (result.success && result.case) {
-          setUploadingState("complete");
-          await appendLog(`Ingested successfully in ${result.processingTimeMs}ms! Sealed secure cryptology.`, 200);
-          
-          // Add the parsed backend case to local cases array
-          setFirCases(prev => [result.case, ...prev]);
-          setActiveFirId(result.case.id);
-          
-          // Print detailed OCR logs to console log feed
-          if (result.ocrLogs) {
-            for (const logMsg of result.ocrLogs) {
-              await appendLog(`[OCR ENGINE] ${logMsg}`, 100);
-            }
-          }
-          
-          setTimeout(() => {
-            setUploadingState("idle");
-            setUploadLogs([]);
-          }, 3000);
-          return;
-        } else {
-          throw new Error("Invalid response format received from FastAPI Ingest Server.");
-        }
-      } catch (error: any) {
-        console.warn("FastAPI Ingestion failed, switching gracefully to local sandbox mode:", error);
-        await appendLog(`[INGEST ERROR] backend offline or network timeout: ${error.message}`, 400);
-        await appendLog("[SYSTEM ADVICE] Activating offline high-fidelity simulation model...", 400);
-      }
-    }
-
-    // High-Fidelity Mock Ingestion Fallback
-    await appendLog("SHA-256 packet hash generated: c2b8f9e29a8a34b22c8e9f...", 400);
-    setUploadingState("ocr");
-    await appendLog("OCR text recognition sweep: Quality Index 99.4% secure...", 400);
-    setUploadingState("entity");
-    await appendLog("Entity matcher identified suspects: Vikram Hegde (91%), Gurudev Patil (86%)...", 400);
-    setUploadingState("timeline");
-    await appendLog("Modus Operandi mapped to BNS Section 308 (Extortion) & 318 (Cheating)...", 400);
-    setUploadingState("complete");
-    await appendLog("Ingested case successfully. Chain-of-custody seal approved.", 300);
-
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        const customId = `FIR/2026/BLR/${Math.floor(Math.random() * 800) + 200}`;
-        const newCase: FIRCase = {
-          id: customId,
-          title: `Parsed Case: ${fileName.replace(/\.[^/.]+$/, "")} dossier`,
-          district: "Bengaluru Urban",
-          datetime: new Date().toISOString().replace('T', ' ').substring(0, 16),
-          severity: "high",
-          category: "Extracted Incident",
-          summary: `Parsed crime dossier from document '${fileName}'. Initial semantic models indicate physical extortion mapping to electronic transit corridors. The suspect acted under organized organized dispatch parameters with a local financial sponsor.`,
-          modusOperandi: "Synthetically audited transit fraud loops",
-          sha256Hash: "c2b8f9e29a8a34b22c8e9f1a0e9d9ef504d6a8f89e24b31a29ff0182bc8e92f",
-          forensicMetadata: {
-            ingestTerminal: "ISD-BLR-CYB-TERM-02",
-            ocrConfidence: "99.4%",
-            entityMatchWeight: "91.8%",
-            validationStatus: "VERIFIED // ENCRYPTED"
-          },
-          chainOfCustody: [
-            { timestamp: new Date().toISOString().replace('T', ' ').substring(0, 16), action: "Scanned digital packet ingested", operator: "Command Officer", hash: "c2b8f9e..." }
-          ],
-          legalSections: [
-            { code: "BNS Section 308", title: "Extortion Threat", desc: "Fear of injury used to extract property assets." },
-            { code: "BNS Section 318", title: "Cheating / Impersonation", desc: "Forgeries deployed to hijack commercial cargo." }
-          ],
-          suspects: [
-            { id: "sus-01", name: "Vikram 'Ghost' Hegde", age: 34, role: "Likely Cyber Operator Liaison", record: "Identified correlation 91%", confidence: "91%", photo: "VH", watchlistStatus: "CRITICAL", aliases: "Ghost", associates: "Gurudev Patil" },
-            { id: "sus-04", name: "Gurudev 'Dada' Patil", age: 49, role: "Suspected Financial Sponsor", record: "High network connection weight", confidence: "86%", photo: "GP", watchlistStatus: "CRITICAL", aliases: "Dada Patil", associates: "Vikram Hegde" }
-          ],
-          timeline: [
-            { time: "09:00", desc: "System incident record created from external upload.", severe: false },
-            { time: "09:40", desc: "AI engine linked suspect pattern to Vikram Hegde cyber node with 91% confidence.", severe: true }
-          ],
-          confidenceScore: 88
-        };
-
-        setFirCases(prev => [newCase, ...prev]);
-        setActiveFirId(customId);
-        setUploadingState("idle");
-        setUploadLogs([]);
-        resolve();
-      }, 500);
-    });
+    // Held briefly so the message is readable, then the panel returns to idle.
+    await new Promise((r) => setTimeout(r, 2500));
+    setUploadingState("idle");
   };
 
   return (
@@ -659,8 +617,12 @@ export const IntelligenceProvider: React.FC<{ children: React.ReactNode }> = ({ 
       selectedSuspectId,
       setSelectedSuspectId,
       selectedDistrictCode,
+      taskPreset,
+      setTaskPreset,
       setSelectedDistrictCode,
       firCases,
+      activeCase,
+      activeCaseLoading,
       aiReportLoading,
       activeReport,
       runAiQuery,
@@ -683,10 +645,12 @@ export const IntelligenceProvider: React.FC<{ children: React.ReactNode }> = ({ 
       uploadLogs,
 
       // fluctuating metrics
-      threatIndex,
-      activeCells,
-      patrolRate,
-      ocrIntegrity,
+      heinousCount,
+      underInvestigationCount,
+      chargeSheetedCount,
+      casesRegistered,
+      statsLoaded,
+      casesLoaded,
 
       // statewide correlation stubs (interface compatibility)
       criminalClusters: [],
