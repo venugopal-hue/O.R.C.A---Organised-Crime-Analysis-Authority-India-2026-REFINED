@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyOfficerRequest } from "@/lib/firebaseAdmin";
 import { getAllRows, insertRows, isCatalystConfigured } from "@/lib/catalyst";
+import { denyWrite } from "@/lib/writeGuard";
 
 /**
  * Reference-data loader for the Case Registration masters.
@@ -62,6 +63,9 @@ export async function POST(req: NextRequest) {
   if (!officer) {
     return NextResponse.json({ success: false, error: "ACCESS DENIED: Officer authentication required." }, { status: 403 });
   }
+  const denied = denyWrite(officer, "config");
+  if (denied) return denied;
+
   if (!isAdmin(officer.dashboardRole)) {
     return NextResponse.json(
       { success: false, error: "ACCESS DENIED: Only administrators may load reference data." },

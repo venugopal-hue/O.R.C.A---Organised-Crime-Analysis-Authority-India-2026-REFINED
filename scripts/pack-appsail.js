@@ -68,7 +68,7 @@ const port =
   process.env.X_ZOHO_CATALYST_LISTEN_PORT ||
   process.env.X_ZOHO_CATALYST_SERVER_LISTEN_PORT ||
   process.env.PORT ||
-  "3000";
+  "9000";
 
 process.env.PORT = String(port);
 
@@ -84,12 +84,11 @@ fs.writeFileSync(path.join(STANDALONE, "start.js"), startJs, "utf8");
 console.log("[pack] start.js written");
 
 /*
- * 3. The bundle carries its OWN app-config.json so the test service never
- *    borrows the root one. That keeps orca-dashboard's configuration entirely
- *    separate from anything done here.
+ * 3. The bundle carries its OWN app-config.json so this AppSail service keeps
+ *    its configuration separate from the original orca-dashboard deployment.
  */
 const appConfig = {
-  name: "orca-dashboard-test",
+  name: "orca-refined-new",
   stack: "node24",
   command: "node start.js",
   build_path: ".",

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyOfficerRequest, verifyAdminRequest } from "@/lib/firebaseAdmin";
+import { denyWrite } from "@/lib/writeGuard";
 import {
   getPhoto,
   getPhotos,
@@ -74,6 +75,8 @@ export async function POST(req: NextRequest) {
   if (!officer) {
     return NextResponse.json({ success: false, error: "Unauthorized." }, { status: 401 });
   }
+  const denied = denyWrite(officer, "operational");
+  if (denied) return denied;
 
   let body: any = {};
   try {
@@ -112,6 +115,8 @@ export async function DELETE(req: NextRequest) {
       { status: 403 }
     );
   }
+  const denied = denyWrite(admin, "config");
+  if (denied) return denied;
 
   const uid = req.nextUrl.searchParams.get("uid");
   if (!uid) {

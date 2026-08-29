@@ -25,6 +25,7 @@ export interface TelemetrySession {
   endReason: string;
   ipAddress: string;
   userAgent: string;
+  abandoned: boolean;
 }
 
 export interface TelemetryActivity {

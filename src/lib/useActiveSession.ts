@@ -21,11 +21,14 @@ import { fetchTelemetry } from "@/lib/officerTelemetryClient";
  */
 
 const CACHE_KEY = "orca_session_login_at";
+const ROW_ID_KEY = "orca_session_rowid";
+const PENDING_KEY = "orca_session_start_pending";
+const SESSION_EVENT = "orca-session-updated";
 
-/** Catalyst returns `YYYY-MM-DD HH:MM:SS` (no `T`, no zone) in server-local time. */
+/** Catalyst stores UTC as `YYYY-MM-DD HH:MM:SS` (no `T`, no zone). */
 function parseCatalystDate(value: string): number | null {
   if (!value) return null;
-  const ms = new Date(value.replace(" ", "T")).getTime();
+  const ms = new Date(`${value.replace(" ", "T")}Z`).getTime();
   return Number.isNaN(ms) ? null : ms;
 }
 
@@ -49,36 +52,59 @@ export function useActiveSession(): ActiveSession {
   const [startMs, setStartMs] = useState<number | null>(null);
   const [now, setNow] = useState<number>(() => Date.now());
 
-  // Resolve the start time once.
+  // Resolve the current login-cycle start time.
   useEffect(() => {
     let cancelled = false;
 
-    const cached = typeof window !== "undefined" ? sessionStorage.getItem(CACHE_KEY) : null;
-    const cachedMs = cached ? parseCatalystDate(cached) : null;
-    if (cachedMs) {
-      setStartMs(cachedMs);
-      return;
-    }
+    const resolveStart = async () => {
+      const cached =
+        typeof window !== "undefined" ? sessionStorage.getItem(CACHE_KEY) : null;
+      const cachedRowId =
+        typeof window !== "undefined" ? sessionStorage.getItem(ROW_ID_KEY) : null;
+      const startPending =
+        typeof window !== "undefined" && sessionStorage.getItem(PENDING_KEY) === "1";
+      const cachedMs = cached ? parseCatalystDate(cached) : null;
 
-    (async () => {
+      if (startPending && !cachedRowId) {
+        setStartMs(null);
+        return;
+      }
+
+      if (cachedMs) setStartMs(cachedMs);
+
       try {
         // Shared with the settings screen's own read - this used to be a second
         // independent request, and each one scanned two tables server-side.
-        const data = await fetchTelemetry();
+        const data = await fetchTelemetry(true);
         if (cancelled) return;
-        const open = data.sessions.find((s) => s.status === "ACTIVE");
+        const open = cachedRowId
+          ? data.sessions.find(
+              (s) => s.rowId === cachedRowId && s.status === "ACTIVE" && !s.abandoned
+            )
+          : data.sessions.find((s) => s.status === "ACTIVE" && !s.abandoned);
         const ms = open ? parseCatalystDate(open.loginAt) : null;
         if (ms && open) {
+          sessionStorage.setItem(ROW_ID_KEY, open.rowId);
           sessionStorage.setItem(CACHE_KEY, open.loginAt);
           setStartMs(ms);
+        } else {
+          sessionStorage.removeItem(ROW_ID_KEY);
+          sessionStorage.removeItem(CACHE_KEY);
+          setStartMs(null);
         }
       } catch {
         // Leave it unknown. The UI shows "—" rather than a number that would
         // look measured but be made up.
       }
-    })();
+    };
 
-    return () => { cancelled = true; };
+    void resolveStart();
+    window.addEventListener(SESSION_EVENT, resolveStart);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener(SESSION_EVENT, resolveStart);
+    };
   }, []);
 
   // Tick.

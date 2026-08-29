@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyOfficerRequest } from "@/lib/firebaseAdmin";
+import { denyWrite } from "@/lib/writeGuard";
 import {
   getAllRows,
   insertRows,
@@ -89,15 +90,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: false, error: "Unauthorized." }, { status: 401 });
   }
 
-  /**
-   * NOT behind denyWrite.
-   *
-   * Saving your own chat thread is the same class as the chat route itself and
-   * the officer's own telemetry: it records the caller's activity rather than
-   * changing a record anyone else relies on. A read-only demonstration account
-   * that could not keep its own conversation could not demonstrate the
-   * assistant at all.
-   */
+  const denied = denyWrite(officer, "operational");
+  if (denied) return denied;
+
   if (!isCatalystConfigured()) {
     return NextResponse.json(
       { success: false, error: "Catalyst is not connected." },
@@ -157,6 +152,9 @@ export async function DELETE(req: NextRequest) {
   if (!officer) {
     return NextResponse.json({ success: false, error: "Unauthorized." }, { status: 401 });
   }
+  const denied = denyWrite(officer, "operational");
+  if (denied) return denied;
+
   if (!isCatalystConfigured()) {
     return NextResponse.json({ success: false, error: "Catalyst is not connected." }, { status: 503 });
   }

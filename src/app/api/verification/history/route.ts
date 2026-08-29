@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyOfficerRequest } from "@/lib/firebaseAdmin";
 import { getAllRows, insertRows, isCatalystConfigured } from "@/lib/catalyst";
+import { denyWrite } from "@/lib/writeGuard";
 
 /**
  * Verification scan log — the audit trail of every document check.
@@ -90,18 +91,9 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  /**
-   * NOT write-guarded, deliberately.
-   *
-   * This records that a document was SCANNED. It is telemetry of a read — the
-   * same class as OfficerSession and OfficerActivity, which a read-only account
-   * also generates simply by signing in and using the assistant. Refusing it
-   * would mean the O.R.C.A Demonstration account could not demonstrate document
-   * verification at all, and would leave the scan unattributed if it half-worked.
-   *
-   * What IS guarded is /api/verification/register, which SEALS a document into
-   * the ledger. That changes the record; this only observes it.
-   */
+  const denied = denyWrite(officer, "operational");
+  if (denied) return denied;
+
   if (!isCatalystConfigured()) {
     return NextResponse.json({ success: true, configured: false });
   }

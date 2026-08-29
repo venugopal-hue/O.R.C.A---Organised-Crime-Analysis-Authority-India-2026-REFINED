@@ -37,13 +37,9 @@ const isMissingTable = (err: any): boolean => {
 const unwrap = (row: any, table: string) => (row && row[table]) || row || {};
 const str = (v: any) => (v === null || v === undefined ? "" : String(v));
 
-/** Catalyst datetime wants `YYYY-MM-DD HH:MM:SS`, not an ISO string with a T. */
+/** Catalyst datetime wants UTC `YYYY-MM-DD HH:MM:SS`, not an ISO string with a T. */
 export function catalystDate(d: Date = new Date()): string {
-  const p = (n: number) => String(n).padStart(2, "0");
-  return (
-    `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
-    `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
-  );
+  return d.toISOString().slice(0, 19).replace("T", " ");
 }
 
 async function rowsFor(table: string, firebaseUid: string): Promise<any[]> {
@@ -96,14 +92,25 @@ export const SESSION_STALE_AFTER_MS = 16 * 60 * 60 * 1000;
 export async function listSessions(firebaseUid: string, limit = 50): Promise<OfficerSession[]> {
   const rows = await rowsFor(SESSION_TABLE, firebaseUid);
   const now = Date.now();
+  const startedTimes = rows
+    .map((r) => {
+      const s = unwrap(r, SESSION_TABLE);
+      const startedMs = s.LoginAt ? new Date(String(s.LoginAt).replace(" ", "T")).getTime() : NaN;
+      return Number.isFinite(startedMs) ? startedMs : null;
+    })
+    .filter((v): v is number => v !== null);
   return rows
     .map((r) => {
       const s = unwrap(r, SESSION_TABLE);
       const startedMs = s.LoginAt ? new Date(String(s.LoginAt).replace(" ", "T")).getTime() : NaN;
       const isOpen = str(s.SessionStatus) === "ACTIVE" && !str(s.LogoutAt);
+      const hasNewerSession =
+        isOpen && Number.isFinite(startedMs) && startedTimes.some((other) => other > startedMs);
       return {
         abandoned:
-          isOpen && Number.isFinite(startedMs) && now - startedMs > SESSION_STALE_AFTER_MS,
+          isOpen &&
+          Number.isFinite(startedMs) &&
+          (hasNewerSession || now - startedMs > SESSION_STALE_AFTER_MS),
         sessionId: s.SessionID != null ? Number(s.SessionID) : null,
         rowId: str(s.ROWID),
         loginAt: str(s.LoginAt),
@@ -139,10 +146,34 @@ export async function startSession(
   firebaseUid: string,
   meta: { ipAddress?: string; userAgent?: string } = {}
 ): Promise<{ rowId: string; sessionId: number; loginAt: string }> {
+  const now = new Date();
+  const existingRows = await rowsFor(SESSION_TABLE, firebaseUid);
+  const openPatches = existingRows
+    .map((r) => unwrap(r, SESSION_TABLE))
+    .filter((s) => str(s.SessionStatus) === "ACTIVE" && !str(s.LogoutAt) && str(s.ROWID))
+    .map((s) => {
+      const started = s.LoginAt ? new Date(String(s.LoginAt).replace(" ", "T")) : null;
+      const duration =
+        started && !Number.isNaN(started.getTime())
+          ? Math.max(0, Math.floor((now.getTime() - started.getTime()) / 1000))
+          : null;
+      return {
+        ROWID: s.ROWID,
+        LogoutAt: catalystDate(now),
+        DurationSeconds: duration,
+        SessionStatus: "SUPERSEDED_BY_NEW_LOGIN",
+        EndReason: "NEW_LOGIN",
+      };
+    });
+
+  if (openPatches.length) {
+    await updateRows(SESSION_TABLE, openPatches);
+  }
+
   const sessionId = await nextId(SESSION_TABLE, "SessionID");
   // Returned to the caller so the client can show session duration without
   // re-reading the table on every fresh tab.
-  const loginAt = catalystDate();
+  const loginAt = catalystDate(now);
   const created = await insertRows(SESSION_TABLE, [
     {
       SessionID: sessionId,

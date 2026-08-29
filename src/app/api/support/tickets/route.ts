@@ -45,6 +45,12 @@ const TABLE = "SupportTicket";
 const EVENT_TABLE = "SupportTicketEvent";
 
 export async function POST(req: NextRequest) {
+  const officer = await verifyOfficerRequest(req);
+  if (officer) {
+    const denied = denyWrite(officer, "operational");
+    if (denied) return denied;
+  }
+
   let body: Record<string, unknown>;
   try {
     body = (await req.json()) as Record<string, unknown>;

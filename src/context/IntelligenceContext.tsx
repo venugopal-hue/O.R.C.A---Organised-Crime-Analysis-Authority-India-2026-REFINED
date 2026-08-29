@@ -8,6 +8,7 @@ import {
   TelemetryLogEntry,
 } from "@/lib/intelligenceTypes";
 import { useAuth } from "./AuthContext";
+import { writeAccessOf } from "@/lib/rbac";
 import { 
   AttachmentFile, 
   ChatMessage, 
@@ -100,8 +101,9 @@ interface IntelligenceContextType {
 const IntelligenceContext = createContext<IntelligenceContextType | undefined>(undefined);
 
 export const IntelligenceProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { user, login, logout } = useAuth();
+  const { user, login, logout, dashboardRole, loading } = useAuth();
   const isLoggedIn = !!user;
+  const canPersistPersonalData = !loading && writeAccessOf(dashboardRole) !== "none";
   const setIsLoggedIn = (val: boolean) => {}; // no-op backward compatibility wrapper
 
   const [activeTab, setActiveTab] = useState("reports");
@@ -208,6 +210,7 @@ export const IntelligenceProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
   useEffect(() => {
     const loadChats = async () => {
+      if (loading) return;
       if (user?.uid) {
         const list = await dbLoadConversations(user.uid);
         setConversations(list);
@@ -226,7 +229,9 @@ export const IntelligenceProvider: React.FC<{ children: React.ReactNode }> = ({ 
           };
           setConversations([initialConv]);
           setActiveConvId(newId);
-          await dbSaveConversation(user.uid, initialConv);
+          if (canPersistPersonalData) {
+            await dbSaveConversation(user.uid, initialConv).catch(() => {});
+          }
         }
       } else {
         setConversations([]);
@@ -234,7 +239,7 @@ export const IntelligenceProvider: React.FC<{ children: React.ReactNode }> = ({ 
       }
     };
     loadChats();
-  }, [user]);
+  }, [user, canPersistPersonalData]);
 
   const createConversation = (title?: string) => {
     const newId = `conv-${Date.now()}`;
@@ -248,8 +253,8 @@ export const IntelligenceProvider: React.FC<{ children: React.ReactNode }> = ({ 
     };
     setConversations(prev => [newConv, ...prev]);
     setActiveConvId(newId);
-    if (user?.uid) {
-      dbSaveConversation(user.uid, newConv);
+    if (user?.uid && canPersistPersonalData) {
+      void dbSaveConversation(user.uid, newConv).catch(() => {});
     }
     return newId;
   };
@@ -293,8 +298,8 @@ export const IntelligenceProvider: React.FC<{ children: React.ReactNode }> = ({ 
             messages: [...c.messages, newMsg],
             moduleContext: activeTab
           };
-          if (user?.uid) {
-            dbSaveConversation(user.uid, updatedConv);
+          if (user?.uid && canPersistPersonalData) {
+            void dbSaveConversation(user.uid, updatedConv).catch(() => {});
           }
           return updatedConv;
         }
@@ -318,7 +323,7 @@ export const IntelligenceProvider: React.FC<{ children: React.ReactNode }> = ({ 
       }
       return filtered;
     });
-    if (user?.uid) {
+    if (user?.uid && canPersistPersonalData) {
       await dbDeleteConversation(user.uid, id);
     }
   };
@@ -328,8 +333,8 @@ export const IntelligenceProvider: React.FC<{ children: React.ReactNode }> = ({ 
       return prev.map(c => {
         if (c.id === id) {
           const updated = { ...c, title };
-          if (user?.uid) {
-            dbSaveConversation(user.uid, updated);
+          if (user?.uid && canPersistPersonalData) {
+            void dbSaveConversation(user.uid, updated).catch(() => {});
           }
           return updated;
         }
@@ -343,8 +348,8 @@ export const IntelligenceProvider: React.FC<{ children: React.ReactNode }> = ({ 
       const updated = prev.map(c => {
         if (c.id === id) {
           const u = { ...c, pinned };
-          if (user?.uid) {
-            dbSaveConversation(user.uid, u);
+          if (user?.uid && canPersistPersonalData) {
+            void dbSaveConversation(user.uid, u).catch(() => {});
           }
           return u;
         }

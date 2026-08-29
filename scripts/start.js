@@ -24,7 +24,7 @@ const port =
   process.env.X_ZOHO_CATALYST_LISTEN_PORT ||
   process.env.X_ZOHO_CATALYST_SERVER_LISTEN_PORT ||
   process.env.PORT ||
-  "3000";
+  "9000";
 
 // Bind all interfaces: the container's health check does not come from
 // localhost, and a server bound to 127.0.0.1 is invisible to it.

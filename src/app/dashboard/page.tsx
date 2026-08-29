@@ -308,6 +308,24 @@ const MainContent: React.FC = () => {
     return `${String(h).padStart(2, "0")}h ${String(m).padStart(2, "0")}m ${String(sec).padStart(2, "0")}s`;
   };
 
+  const formatCatalystUtcAsIst = (value: string): string => {
+    if (!value) return "—";
+    const ms = new Date(`${String(value).replace(" ", "T")}Z`).getTime();
+    if (!Number.isFinite(ms)) return value;
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Kolkata",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).formatToParts(new Date(ms));
+    const part = (type: string) => parts.find((p) => p.type === type)?.value || "";
+    return `${part("year")}-${part("month")}-${part("day")} ${part("hour")}:${part("minute")}:${part("second")}`;
+  };
+
   // The audit_logs snapshot listener that used to live here fed the old Login
   // History tab. That tab now reads the officer's own sessions from Catalyst
   // (OfficerSession), and the listener additionally pulled EVERY officer's
@@ -567,9 +585,8 @@ const MainContent: React.FC = () => {
     flexDirection: "column"
   };
 
-  // 3. Check for valid dashboardRole from custom claims
-  const validRoles = ["admin_full", "scrb_officer", "admin_scrb", "admin_verification", "investigation_l2", "investigation_l1", "command_admin", "verification_admin", "it_admin", "field_officer"];
-  if (!dashboardRole || !validRoles.includes(dashboardRole)) {
+  // 3. Check for valid dashboardRole — use getRoleConfig as the single source of truth
+  if (!dashboardRole || !getRoleConfig(dashboardRole)) {
     return (
       <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 32, background: ORCA.offWhite }}>
         <div style={{ maxWidth: 460, background: "white", border: `1px solid ${ORCA.border}`, padding: 36, borderRadius: 8, textAlign: "center", boxShadow: ORCA.shadowMd }}>
@@ -2007,14 +2024,14 @@ const MainContent: React.FC = () => {
                                 </tr>
                               ) : telemetry.sessions.map((sess: any, idx: number) => {
                                 // `abandoned` is derived at read time: the row is
-                                // still ACTIVE because nothing closed it, but it
-                                // is far too old to be a live sign-in.
+                                // still ACTIVE because nothing closed it, or it
+                                // was superseded by a later sign-in.
                                 const isOpen = sess.status === "ACTIVE" && !sess.abandoned;
                                 const forced = sess.status === "VPN_FORCED_LOCKDOWN";
                                 return (
                                   <tr key={sess.rowId || idx} style={{ borderBottom: `1px solid ${ORCA.border}` }}>
-                                    <td style={{ padding: "10px 12px", color: ORCA.navy, fontWeight: 500 }}>{sess.loginAt || "—"}</td>
-                                    <td style={{ padding: "10px 12px", color: ORCA.textGray }}>{sess.logoutAt || (isOpen ? "Session open" : sess.abandoned ? "No sign-out recorded" : "—")}</td>
+                                    <td style={{ padding: "10px 12px", color: ORCA.navy, fontWeight: 500 }}>{formatCatalystUtcAsIst(sess.loginAt)}</td>
+                                    <td style={{ padding: "10px 12px", color: ORCA.textGray }}>{sess.logoutAt ? formatCatalystUtcAsIst(sess.logoutAt) : (isOpen ? "Session open" : sess.abandoned ? "No sign-out recorded" : "—")}</td>
                                     <td style={{ padding: "10px 12px", color: ORCA.textMuted, fontFamily: "JetBrains Mono, monospace", fontSize: 11.5 }}>
                                       {isOpen ? "—" : formatDuration(sess.durationSeconds)}
                                     </td>
@@ -2033,7 +2050,7 @@ const MainContent: React.FC = () => {
                                           : isOpen
                                           ? "ACTIVE"
                                           : sess.abandoned
-                                          ? "NOT SIGNED OUT"
+                                          ? "STALE"
                                           : "CLOSED"}
                                       </span>
                                       {sess.endReason ? (
@@ -2194,7 +2211,7 @@ const MainContent: React.FC = () => {
                                 return (
                                   <tr key={sess.rowId || idx} style={{ borderBottom: `1px solid ${ORCA.border}` }}>
                                     <td style={{ padding: "10px 12px", color: ORCA.navy, fontWeight: 700, fontFamily: "JetBrains Mono" }}>{sess.sessionId ?? "—"}</td>
-                                    <td style={{ padding: "10px 12px", color: ORCA.textGray }}>{sess.loginAt || "—"}</td>
+                                    <td style={{ padding: "10px 12px", color: ORCA.textGray }}>{formatCatalystUtcAsIst(sess.loginAt)}</td>
                                     <td style={{ padding: "10px 12px", color: ORCA.textMuted, fontFamily: "JetBrains Mono", fontSize: 11.5 }}>{sess.ipAddress || "—"}</td>
                                     <td style={{ padding: "10px 12px", color: ORCA.textMuted, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={sess.userAgent}>
                                       {sess.userAgent || "—"}
@@ -2204,7 +2221,7 @@ const MainContent: React.FC = () => {
                                         {isOpen
                                           ? "Open"
                                           : sess.abandoned
-                                          ? "Not signed out"
+                                          ? "Stale"
                                           : `Closed · ${formatDuration(sess.durationSeconds)}`}
                                       </span>
                                     </td>

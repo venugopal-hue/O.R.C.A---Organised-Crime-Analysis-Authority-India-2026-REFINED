@@ -21,6 +21,7 @@ import {
 import { auth } from "@/lib/firebase";
 import { IsdLevel, DashboardRole, RANK_DEFAULTS, Rank } from "@/lib/permissions";
 import { clearanceForRole } from "@/lib/rbac";
+import { clearTelemetryCache } from "@/lib/officerTelemetryClient";
 
 export interface OfficerProfile {
   uid: string;
@@ -64,6 +65,28 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+const SESSION_EVENT = "orca-session-updated";
+const SESSION_KEYS = [
+  "orca_session_start",
+  "orca_session_id",
+  "orca_session_rowid",
+  "orca_session_login_at",
+  "orca_login_time",
+];
+
+function notifySessionChanged() {
+  clearTelemetryCache();
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(SESSION_EVENT));
+  }
+}
+
+function clearCurrentSessionTracking(emit = true) {
+  if (typeof window === "undefined") return;
+  SESSION_KEYS.forEach((key) => sessionStorage.removeItem(key));
+  if (emit) notifySessionChanged();
+}
 
 
 /**
@@ -375,6 +398,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const email = mapBadgeToEmail(trimmedBadge);
 
     try {
+      if (typeof window !== "undefined") {
+        clearCurrentSessionTracking(false);
+        sessionStorage.setItem("orca_session_start_pending", "1");
+        notifySessionChanged();
+      }
       const userCredential = await signInWithEmailAndPassword(auth, email, trimmedPin);
 
       /**
@@ -414,6 +442,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
 
         document.cookie = "authToken=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
+        if (typeof window !== "undefined") {
+          sessionStorage.removeItem("orca_session_start_pending");
+          notifySessionChanged();
+        }
         await signOut(auth);
 
         if (applicationStatus === "rejected") {
@@ -458,6 +490,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             // Server-authored sign-in time; useActiveSession reads this instead
             // of reading the session table on every fresh tab.
             if (data.loginAt) sessionStorage.setItem("orca_session_login_at", data.loginAt);
+            notifySessionChanged();
+          })
+          .finally(() => {
+            sessionStorage.removeItem("orca_session_start_pending");
+            notifySessionChanged();
           })
           .catch(e => console.error("Session start log failed", e));
       }
@@ -480,6 +517,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       return { user: userCredential.user, dashboardRole: role };
     } catch (error: any) {
+      if (typeof window !== "undefined") {
+        sessionStorage.removeItem("orca_session_start_pending");
+        notifySessionChanged();
+      }
       setLoading(false);
       console.warn("[Firebase Auth Error]:", error.code, error.message);
 
@@ -522,6 +563,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const ensureSessionRecorded = async (currentUser: User) => {
     if (typeof window === "undefined") return;
     if (sessionStorage.getItem("orca_session_rowid")) return;
+    if (sessionStorage.getItem("orca_session_start_pending")) return;
 
     try {
       const idToken = await getIdToken(currentUser);
@@ -539,9 +581,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (data?.loginAt) {
         sessionStorage.setItem("orca_session_login_at", data.loginAt);
         if (!sessionStorage.getItem("orca_login_time")) {
-          sessionStorage.setItem("orca_login_time", new Date(data.loginAt.replace(" ", "T")).toISOString());
+          sessionStorage.setItem("orca_login_time", new Date(`${data.loginAt.replace(" ", "T")}Z`).toISOString());
         }
       }
+      if (data?.rowId || data?.loginAt) notifySessionChanged();
     } catch {
       // A telemetry outage must never affect whether the officer can work.
     }
@@ -573,11 +616,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           })
         }).catch(() => {});
 
-        sessionStorage.removeItem("orca_session_start");
-        sessionStorage.removeItem("orca_session_id");
-        sessionStorage.removeItem("orca_session_rowid");
-        sessionStorage.removeItem("orca_session_login_at");
-        sessionStorage.removeItem("orca_login_time");
+        clearCurrentSessionTracking();
       }
       await signOut(auth);
       await syncCookie(null);

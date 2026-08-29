@@ -1,8 +1,8 @@
 {
   "appsail": [
     {
-      "source": ".",
-      "name": "orca-dashboard"
+      "source": ".next/standalone",
+      "name": "orca-refined-new"
     }
   ]
 }

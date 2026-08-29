@@ -32,6 +32,16 @@ function normalisePrivateKey(key: unknown): string {
     .replace(/\\n/g, "\n");
 }
 
+function unwrapQuotedEnv(value: string): string {
+  const trimmed = value.trim();
+  const first = trimmed[0];
+  const last = trimmed[trimmed.length - 1];
+  if ((first === "'" && last === "'") || (first === '"' && last === '"')) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
 let adminApp: any = null;
 
 function initAdminApp(): any {
@@ -40,10 +50,11 @@ function initAdminApp(): any {
 
   const projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || "orca-india2026";
   const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+  const serviceAccountValue = serviceAccountJson ? unwrapQuotedEnv(serviceAccountJson) : "";
 
-  if (serviceAccountJson && serviceAccountJson.trim().startsWith("{")) {
+  if (serviceAccountValue.startsWith("{")) {
     try {
-      const serviceAccount = JSON.parse(serviceAccountJson);
+      const serviceAccount = JSON.parse(serviceAccountValue);
       serviceAccount.private_key = normalisePrivateKey(serviceAccount.private_key);
       return admin.initializeApp({ credential: admin.cert(serviceAccount) });
     } catch (err) {

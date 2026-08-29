@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { adminAuth } from "@/lib/firebaseAdmin";
+import { adminAuth, verifyOfficerRequest } from "@/lib/firebaseAdmin";
 import { upsertApplication, listApplications, catalystNow } from "@/lib/adminData";
 import { isCatalystConfigured } from "@/lib/catalyst";
+import { denyWrite } from "@/lib/writeGuard";
 
 /**
  * An officer's own registration application.
@@ -44,6 +45,12 @@ async function callerFromToken(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  const officer = await verifyOfficerRequest(req);
+  if (officer) {
+    const denied = denyWrite(officer, "operational");
+    if (denied) return denied;
+  }
+
   const caller = await callerFromToken(req);
   if (!caller) {
     return NextResponse.json(
