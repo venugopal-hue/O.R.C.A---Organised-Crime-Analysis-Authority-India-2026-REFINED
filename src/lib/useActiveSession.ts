@@ -72,6 +72,10 @@ export function useActiveSession(): ActiveSession {
 
       if (cachedMs) setStartMs(cachedMs);
 
+      if (cachedRowId && cachedMs) {
+        return;
+      }
+
       try {
         // Shared with the settings screen's own read - this used to be a second
         // independent request, and each one scanned two tables server-side.

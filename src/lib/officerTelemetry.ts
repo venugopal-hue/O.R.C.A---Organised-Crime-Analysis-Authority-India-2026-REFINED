@@ -36,6 +36,11 @@ const isMissingTable = (err: any): boolean => {
 
 const unwrap = (row: any, table: string) => (row && row[table]) || row || {};
 const str = (v: any) => (v === null || v === undefined ? "" : String(v));
+const parseCatalystUtc = (value: any): number => {
+  const raw = str(value);
+  if (!raw) return NaN;
+  return new Date(`${raw.replace(" ", "T")}Z`).getTime();
+};
 
 /** Catalyst datetime wants UTC `YYYY-MM-DD HH:MM:SS`, not an ISO string with a T. */
 export function catalystDate(d: Date = new Date()): string {
@@ -95,14 +100,14 @@ export async function listSessions(firebaseUid: string, limit = 50): Promise<Off
   const startedTimes = rows
     .map((r) => {
       const s = unwrap(r, SESSION_TABLE);
-      const startedMs = s.LoginAt ? new Date(String(s.LoginAt).replace(" ", "T")).getTime() : NaN;
+      const startedMs = parseCatalystUtc(s.LoginAt);
       return Number.isFinite(startedMs) ? startedMs : null;
     })
     .filter((v): v is number => v !== null);
   return rows
     .map((r) => {
       const s = unwrap(r, SESSION_TABLE);
-      const startedMs = s.LoginAt ? new Date(String(s.LoginAt).replace(" ", "T")).getTime() : NaN;
+      const startedMs = parseCatalystUtc(s.LoginAt);
       const isOpen = str(s.SessionStatus) === "ACTIVE" && !str(s.LogoutAt);
       const hasNewerSession =
         isOpen && Number.isFinite(startedMs) && startedTimes.some((other) => other > startedMs);
@@ -152,10 +157,10 @@ export async function startSession(
     .map((r) => unwrap(r, SESSION_TABLE))
     .filter((s) => str(s.SessionStatus) === "ACTIVE" && !str(s.LogoutAt) && str(s.ROWID))
     .map((s) => {
-      const started = s.LoginAt ? new Date(String(s.LoginAt).replace(" ", "T")) : null;
+      const startedMs = parseCatalystUtc(s.LoginAt);
       const duration =
-        started && !Number.isNaN(started.getTime())
-          ? Math.max(0, Math.floor((now.getTime() - started.getTime()) / 1000))
+        !Number.isNaN(startedMs)
+          ? Math.max(0, Math.floor((now.getTime() - startedMs) / 1000))
           : null;
       return {
         ROWID: s.ROWID,
@@ -202,10 +207,10 @@ export async function endSession(
 
   const s = unwrap(match, SESSION_TABLE);
   const now = new Date();
-  const started = s.LoginAt ? new Date(String(s.LoginAt).replace(" ", "T")) : null;
+  const startedMs = parseCatalystUtc(s.LoginAt);
   const duration =
-    started && !Number.isNaN(started.getTime())
-      ? Math.max(0, Math.floor((now.getTime() - started.getTime()) / 1000))
+    !Number.isNaN(startedMs)
+      ? Math.max(0, Math.floor((now.getTime() - startedMs) / 1000))
       : null;
 
   await updateRows(SESSION_TABLE, [

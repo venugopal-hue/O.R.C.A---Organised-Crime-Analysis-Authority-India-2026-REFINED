@@ -27,6 +27,67 @@ const LOOKUPS: [string, string, string][] = [
   ["CasteMaster", "caste_master_id", "caste_master_name"],
 ];
 
+type MasterOption = { id: string; label: string; extra: any };
+
+const str = (v: any) => String(v ?? "").trim();
+const num = (v: any) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+};
+
+function optionLabel(table: string, rec: any, idCol: string, labelCol: string): string {
+  if (table === "Employee") {
+    const name = str(rec.FirstName);
+    const kgid = str(rec.KGID);
+    return [name || str(rec[idCol]), kgid ? `KGID ${kgid}` : ""]
+      .filter(Boolean)
+      .join(" - ");
+  }
+  return String(rec[labelCol] ?? rec[idCol] ?? "");
+}
+
+function isActiveAccount(rec: any): boolean {
+  const active = String(rec.Active ?? "").toLowerCase();
+  const status = String(rec.AccountStatus ?? rec.Status ?? "").toLowerCase();
+  return (active === "true" || active === "1") && (!status || status === "active");
+}
+
+async function activeEmployeeIds(): Promise<Set<string>> {
+  try {
+    const accounts = await getAllRows("OfficerAccount");
+    return new Set(
+      accounts
+        .map((r: any) => r.OfficerAccount || r)
+        .filter(isActiveAccount)
+        .map((a: any) => str(a.EmployeeID))
+        .filter(Boolean)
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+function dedupeEmployees(options: MasterOption[], linkedIds: Set<string>): MasterOption[] {
+  const groups = new Map<string, MasterOption[]>();
+
+  for (const option of options) {
+    const kgid = str(option.extra?.KGID).toLowerCase();
+    const key = kgid ? `kgid:${kgid}` : `employee:${option.id}`;
+    groups.set(key, [...(groups.get(key) || []), option]);
+  }
+
+  return [...groups.values()]
+    .map((group) =>
+      group.sort((a, b) => {
+        const aLinked = linkedIds.has(a.id) ? 1 : 0;
+        const bLinked = linkedIds.has(b.id) ? 1 : 0;
+        if (aLinked !== bLinked) return bLinked - aLinked;
+        return num(b.extra?.EmployeeID ?? b.id) - num(a.extra?.EmployeeID ?? a.id);
+      })[0]
+    )
+    .sort((a, b) => a.label.localeCompare(b.label));
+}
+
 export async function GET(req: NextRequest) {
   const officer = await verifyOfficerRequest(req);
   if (!officer) {
@@ -52,19 +113,23 @@ export async function GET(req: NextRequest) {
   const loadOne = async ([table, idCol, labelCol]: [string, string, string]) => {
     try {
       const rows = await getAllRows(table);
-      masters[table] = {
-        options: rows
-          .map((r: any) => {
-            const rec = r[table] || r;
-            return {
-              id: String(rec[idCol] ?? ""),
-              label: String(rec[labelCol] ?? rec[idCol] ?? ""),
-              extra: rec,
-            };
-          })
-          .filter((o) => o.id !== "")
-          .sort((a, b) => a.label.localeCompare(b.label)),
-      };
+      let options = rows
+        .map((r: any) => {
+          const rec = r[table] || r;
+          return {
+            id: String(rec[idCol] ?? ""),
+            label: optionLabel(table, rec, idCol, labelCol),
+            extra: rec,
+          };
+        })
+        .filter((o) => o.id !== "")
+        .sort((a, b) => a.label.localeCompare(b.label));
+
+      if (table === "Employee") {
+        options = dedupeEmployees(options, await activeEmployeeIds());
+      }
+
+      masters[table] = { options };
     } catch (err: any) {
       masters[table] = { options: [], error: err.message };
     }

@@ -324,6 +324,14 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
     if (adminTab === "admin-warnings" && !warnData) void loadWarnings();
   }, [adminTab, warnData, loadWarnings]);
 
+  useEffect(() => {
+    if (adminTab !== "admin-warnings") return;
+    const id = window.setInterval(() => {
+      void loadWarnings();
+    }, 15000);
+    return () => window.clearInterval(id);
+  }, [adminTab, loadWarnings]);
+
   const acknowledgeWarning = async (rowId: string) => {
     try {
       const res = await fetch("/api/admin/security-alerts", {
@@ -334,8 +342,7 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
       const j = await res.json();
       if (!res.ok || !j.success) throw new Error(j.error || "Could not update the alert.");
       setAdminNotice({ kind: "success", text: j.message });
-      // Re-read rather than patching locally: the server stamps who and when.
-      setWarnData(null);
+      await loadWarnings();
     } catch (e: any) {
       setAdminNotice({ kind: "error", text: e?.message || "Could not update the alert." });
     }
@@ -347,6 +354,8 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
     if (warnFilter === "WARNED") return a.outcome === "WARNED";
     return true;
   });
+  const formatCatalystUtc = (value: string) =>
+    value ? new Date(`${String(value).replace(" ", "T")}Z`).toLocaleString() : "—";
 
   const [modelInfo, setModelInfo] = useState<any | null>(null);
   const [modelsLoading, setModelsLoading] = useState(false);
@@ -4251,14 +4260,14 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
                     {a.acknowledgedAt && (
                       <div style={{ fontSize: 10.5, color: ADMIN_THEME.green, marginTop: 4 }}>
                         Reviewed by {a.acknowledgedBy} on{" "}
-                        {new Date(a.acknowledgedAt.replace(" ", "T")).toLocaleString()}
+                        {formatCatalystUtc(a.acknowledgedAt)}
                       </div>
                     )}
                   </div>
 
                   <div style={{ textAlign: "right", flexShrink: 0 }}>
                     <div style={{ fontSize: 10.5, color: ADMIN_THEME.textMuted, whiteSpace: "nowrap" }}>
-                      {a.detectedAt ? new Date(a.detectedAt.replace(" ", "T")).toLocaleString() : "—"}
+                      {formatCatalystUtc(a.detectedAt)}
                     </div>
                     {!a.acknowledgedAt && (
                       <button

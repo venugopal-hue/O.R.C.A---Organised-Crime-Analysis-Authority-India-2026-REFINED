@@ -306,6 +306,13 @@ export const CaseRegistration: React.FC = () => {
     );
   }, [masters, caseData.CrimeMajorHeadID]);
 
+  // Police stations/units belong to the selected district.
+  const stationOptions = useMemo(() => {
+    const all = masters["Unit"]?.options || [];
+    if (!caseData.DistrictID) return all;
+    return all.filter((o) => String(o.extra?.DistrictID ?? "") === String(caseData.DistrictID));
+  }, [masters, caseData.DistrictID]);
+
   /**
    * Sections belong to the act chosen on that row.
    *
@@ -339,6 +346,19 @@ export const CaseRegistration: React.FC = () => {
   }, [caseData.CaseCategoryID, caseData.DistrictID, caseData.PoliceStationID, caseData.CrimeRegisteredDate]);
 
   const set = (k: string, v: string) => setCaseData((p) => ({ ...p, [k]: v }));
+  const setDistrict = (districtId: string) =>
+    setCaseData((p) => {
+      const selectedStation = masters["Unit"]?.options.find((o) => o.id === p.PoliceStationID);
+      const stationStillValid =
+        !selectedStation ||
+        !districtId ||
+        String(selectedStation.extra?.DistrictID ?? "") === String(districtId);
+      return {
+        ...p,
+        DistrictID: districtId,
+        PoliceStationID: stationStillValid ? p.PoliceStationID : "",
+      };
+    });
 
   // ── Submit ───────────────────────────────────────────────────────────────
   const handleSubmit = async () => {
@@ -600,8 +620,8 @@ export const CaseRegistration: React.FC = () => {
               style={inputStyle}
             />
           </div>
-          <LookupSelect label="District" table="District" value={caseData.DistrictID} onChange={(v) => set("DistrictID", v)} options={opts("District")} />
-          <LookupSelect label="Police Station / Unit" table="Unit" value={caseData.PoliceStationID} onChange={(v) => set("PoliceStationID", v)} options={opts("Unit")} required />
+          <LookupSelect label="District" table="District" value={caseData.DistrictID} onChange={setDistrict} options={opts("District")} />
+          <LookupSelect label="Police Station / Unit" table="Unit" value={caseData.PoliceStationID} onChange={(v) => set("PoliceStationID", v)} options={stationOptions} required />
           <LookupSelect label="Registering Officer" table="Employee" value={caseData.PolicePersonID} onChange={(v) => set("PolicePersonID", v)} options={opts("Employee")} />
           <LookupSelect label="Gravity of Offence" table="GravityOffence" value={caseData.GravityOffenceID} onChange={(v) => set("GravityOffenceID", v)} options={opts("GravityOffence")} />
           <LookupSelect label="Major Crime Head" table="CrimeHead" value={caseData.CrimeMajorHeadID} onChange={(v) => set("CrimeMajorHeadID", v)} options={opts("CrimeHead")} />

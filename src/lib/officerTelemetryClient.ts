@@ -80,7 +80,7 @@ export function fetchTelemetry(force = false): Promise<TelemetrySnapshot> {
   if (!force && cached && Date.now() - cached.at < FRESH_MS) {
     return Promise.resolve(cached.value);
   }
-  if (inFlight) return inFlight;
+  if (!force && inFlight) return inFlight;
 
   inFlight = load()
     .catch(() => EMPTY)
