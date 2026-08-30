@@ -151,6 +151,154 @@ const REASONING_HEADROOM = 512;
 
 const s = (v: unknown) => String(v ?? "").trim();
 
+const IPV4_RE = /\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b/;
+const DOMAIN_RE = /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\b/i;
+
+function osintTarget(question: string): { kind: "ip" | "domain"; value: string } | null {
+  const lower = question.toLowerCase();
+  const intent =
+    /\b(osint|reputation|malicious|blacklist|threat|abuse|phishing|scam|proxy|vpn|botnet|c2|ioc|indicator|domain|ip address|ip)\b/.test(lower);
+  if (!intent) return null;
+
+  const ip = question.match(IPV4_RE)?.[0];
+  if (ip) return { kind: "ip", value: ip };
+
+  const domain = question.match(DOMAIN_RE)?.[0];
+  if (domain) return { kind: "domain", value: domain.toLowerCase() };
+
+  return null;
+}
+
+async function jsonFetch(url: string, init: RequestInit = {}, timeoutMs = 8000): Promise<any | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...init, cache: "no-store", signal: controller.signal });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function urlhausHost(host: string): Promise<any | null> {
+  return jsonFetch(
+    "https://urlhaus-api.abuse.ch/v1/host/",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ host }).toString(),
+    },
+    8000
+  );
+}
+
+function envAny(...names: string[]): string {
+  for (const name of names) {
+    const value = s(process.env[name]);
+    if (value) return value;
+  }
+  return "";
+}
+
+async function publicOsintBlock(target: { kind: "ip" | "domain"; value: string }): Promise<string> {
+  const lines: string[] = [
+    "--- PUBLIC OSINT LOOKUP (facts from live public sources) ---",
+    `Target type: ${target.kind}`,
+    `Target: ${target.value}`,
+  ];
+
+  if (target.kind === "ip") {
+    const abuseIpDbKey = envAny("ABUSEIPDB_API_KEY", "NEXT_ABUSEIPDB_API_KEY");
+    const [geo, rdap, abuse, abuseIpDb] = await Promise.all([
+      jsonFetch(
+        `http://ip-api.com/json/${encodeURIComponent(target.value)}?fields=status,message,query,country,countryCode,regionName,city,isp,org,as,asname,proxy,hosting,mobile`
+      ),
+      jsonFetch(`https://rdap.org/ip/${encodeURIComponent(target.value)}`),
+      urlhausHost(target.value),
+      abuseIpDbKey
+        ? jsonFetch(`https://api.abuseipdb.com/api/v2/check?ipAddress=${encodeURIComponent(target.value)}&maxAgeInDays=90&verbose`, {
+            headers: { Key: abuseIpDbKey, Accept: "application/json" },
+          })
+        : Promise.resolve(null),
+    ]);
+
+    lines.push(
+      `Sources queried: ip-api.com, rdap.org, URLhaus by abuse.ch${abuseIpDbKey ? ", AbuseIPDB" : ""}.`
+    );
+    if (geo?.status === "success") {
+      const proxy = Boolean(geo.proxy);
+      const hosting = Boolean(geo.hosting);
+      const riskFlags = [
+        proxy ? "anonymising proxy/VPN flag" : "",
+        hosting ? "hosting/datacenter flag" : "",
+      ].filter(Boolean);
+      lines.push(`ip-api: country=${s(geo.country)} (${s(geo.countryCode)}), region=${s(geo.regionName)}, city=${s(geo.city)}.`);
+      lines.push(`ip-api: ISP=${s(geo.isp)}, org=${s(geo.org)}, ASN=${s(geo.as)} ${s(geo.asname)}.`);
+      lines.push(`ip-api: proxy=${proxy}, hosting=${hosting}, mobile=${Boolean(geo.mobile)}.`);
+      lines.push(
+        riskFlags.length
+          ? `Risk indicators present: ${riskFlags.join(", ")}. Treat this as suspicious infrastructure, not as proof of malware or criminal use.`
+          : "Risk indicators present: none from ip-api proxy/hosting/mobile flags."
+      );
+    } else if (geo?.message) {
+      lines.push(`ip-api: unavailable (${s(geo.message)}).`);
+    }
+    if (rdap) {
+      lines.push(`RDAP ownership: name=${s(rdap.name) || "not listed"}, handle=${s(rdap.handle) || "not listed"}.`);
+      const entity = Array.isArray(rdap.entities) ? rdap.entities[0] : null;
+      if (entity?.vcardArray?.[1]) {
+        const fn = entity.vcardArray[1].find((x: any[]) => x?.[0] === "fn")?.[3];
+        if (fn) lines.push(`RDAP ownership entity: ${s(fn)}.`);
+      }
+    }
+    if (abuse?.query_status) {
+      const urlCount = Array.isArray(abuse.urls) ? abuse.urls.length : 0;
+      lines.push(`URLhaus malware URL listing: status=${s(abuse.query_status)}, listed URLs=${urlCount}.`);
+      if (Array.isArray(abuse.urls) && abuse.urls[0]) {
+        lines.push(`URLhaus latest sample: ${s(abuse.urls[0].url).slice(0, 300)}.`);
+      }
+    }
+    if (abuseIpDb?.data) {
+      const d = abuseIpDb.data;
+      lines.push(
+        `AbuseIPDB: abuse confidence=${Number(d.abuseConfidenceScore ?? 0)}/100, total reports=${Number(d.totalReports ?? 0)}, usage=${s(d.usageType) || "not listed"}.`
+      );
+    } else if (!abuseIpDbKey) {
+      lines.push("AbuseIPDB: not checked because ABUSEIPDB_API_KEY is not configured.");
+    }
+  } else {
+    const [dns, abuse] = await Promise.all([
+      jsonFetch(`https://dns.google/resolve?name=${encodeURIComponent(target.value)}&type=A`),
+      urlhausHost(target.value),
+    ]);
+
+    lines.push("Sources queried: Google Public DNS, URLhaus by abuse.ch.");
+    const ips = Array.isArray(dns?.Answer)
+      ? dns.Answer.filter((a: any) => a?.type === 1).map((a: any) => s(a.data)).filter(Boolean)
+      : [];
+    lines.push(`DNS A records: ${ips.length ? ips.join(", ") : "none returned"}.`);
+    if (abuse?.query_status) {
+      lines.push(`URLhaus malware URL listing: status=${s(abuse.query_status)}, listed URLs=${Array.isArray(abuse.urls) ? abuse.urls.length : 0}.`);
+      if (Array.isArray(abuse.urls) && abuse.urls[0]) {
+        lines.push(`URLhaus latest sample: ${s(abuse.urls[0].url).slice(0, 300)}.`);
+      }
+    }
+  }
+
+  lines.push(
+    "Grounding rule: use this block only for the target's live network/OSINT facts. " +
+    "You may still answer the officer's wider question normally, but do not invent source results. " +
+    "If proxy or hosting is true, call it suspicious infrastructure and recommend caution/escalation, " +
+    "but do not say it proves malicious activity. If URLhaus has no entries, say only that URLhaus did not list malware URLs for the target. " +
+    "Do not claim VirusTotal, MaxMind, Shodan, AbuseIPDB, or any other source was checked unless it appears above."
+  );
+  lines.push("--- end public OSINT lookup ---\n\n");
+  return lines.join("\n");
+}
+
 
 /**
  * Pull the first balanced JSON object out of a model reply.
@@ -513,6 +661,14 @@ export async function POST(req: NextRequest) {
      * standing no-database rule; the evidence goes where evidence is used.
      */
     let groundingBlock = "";
+    let osintBlock = "";
+    const osint = !hasImages ? osintTarget(String(prompt || "")) : null;
+
+    if (osint) {
+      osintBlock = await publicOsintBlock(osint).catch(() =>
+        "PUBLIC OSINT LOOKUP UNAVAILABLE: live source lookups failed. Tell the officer this plainly and continue with non-source-dependent guidance only.\n\n"
+      );
+    }
 
     if (retrieval) {
       groundingBlock =
@@ -556,7 +712,7 @@ export async function POST(req: NextRequest) {
         role: msg.sender === "user" ? "user" : "assistant",
         content: msg.text
       })),
-      { role: "user", content: groundingBlock + (prompt || "") + imageText },
+      { role: "user", content: osintBlock + groundingBlock + (prompt || "") + imageText },
     ];
 
     /**
@@ -667,6 +823,7 @@ export async function POST(req: NextRequest) {
         retrieval
           ? `Records consulted: ${retrieval.tool}(${JSON.stringify(retrieval.args)}) → ${retrieval.matched} match(es)`
           : "",
+        osint ? `Public OSINT consulted: ${osint.kind} ${osint.value}` : "",
         retrievalError ? `Records lookup FAILED: ${retrievalError}` : "",
         // Named only when it is NOT the primary, so a degraded provider shows
         // up in the audit trail instead of passing as a normal answer.
