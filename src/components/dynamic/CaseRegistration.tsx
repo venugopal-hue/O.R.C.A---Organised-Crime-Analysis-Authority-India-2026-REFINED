@@ -482,7 +482,17 @@ export const CaseRegistration: React.FC = () => {
       type={type}
       value={row[field] || ""}
       placeholder={ph}
-      onChange={(e) => update(field, e.target.value)}
+      min={field === "AgeYear" ? 1 : undefined}
+      step={field === "AgeYear" ? 1 : undefined}
+      inputMode={field === "AgeYear" ? "numeric" : undefined}
+      onChange={(e) => {
+        if (field !== "AgeYear") {
+          update(field, e.target.value);
+          return;
+        }
+        const value = e.target.value;
+        if (value === "" || /^[1-9]\d{0,2}$/.test(value)) update(field, value);
+      }}
       style={inputStyle}
     />
   );

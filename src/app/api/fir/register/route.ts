@@ -118,6 +118,14 @@ export async function POST(req: NextRequest) {
     const caseMasterId = await nextId("CaseMaster", "CaseMasterID");
 
     const num = (v: any) => (v === "" || v === null || v === undefined ? null : Number(v));
+    const age = (v: any, label: string) => {
+      if (v === "" || v === null || v === undefined) return null;
+      const n = Number(v);
+      if (!Number.isInteger(n) || n <= 0 || n > 125) {
+        throw new Error(`${label} age must be a whole number between 1 and 125.`);
+      }
+      return n;
+    };
 
     /**
      * Catalyst DateTime columns want "YYYY-MM-DD HH:MM:SS".
@@ -166,11 +174,11 @@ export async function POST(req: NextRequest) {
       let id = await nextId("ComplainantDetails", "ComplainantID");
       await insertRows(
         "ComplainantDetails",
-        complainants.map((x: any) => ({
+        complainants.map((x: any, i: number) => ({
           ComplainantID: id++,
           CaseMasterID: caseMasterId,
           ComplainantName: x.ComplainantName,
-          AgeYear: num(x.AgeYear),
+          AgeYear: age(x.AgeYear, `Complainant ${i + 1}`),
           OccupationID: num(x.OccupationID),
           ReligionID: num(x.ReligionID),
           CasteID: num(x.CasteID),
@@ -185,11 +193,11 @@ export async function POST(req: NextRequest) {
       let id = await nextId("Victim", "VictimMasterID");
       await insertRows(
         "Victim",
-        victims.map((x: any) => ({
+        victims.map((x: any, i: number) => ({
           VictimMasterID: id++,
           CaseMasterID: caseMasterId,
           VictimName: x.VictimName,
-          AgeYear: num(x.AgeYear),
+          AgeYear: age(x.AgeYear, `Victim ${i + 1}`),
           GenderID: num(x.GenderID),
           VictimPolice: x.VictimPolice || "0",
         }))
@@ -206,7 +214,7 @@ export async function POST(req: NextRequest) {
           AccusedMasterID: id++,
           CaseMasterID: caseMasterId,
           AccusedName: x.AccusedName,
-          AgeYear: num(x.AgeYear),
+          AgeYear: age(x.AgeYear, `Accused ${i + 1}`),
           GenderID: x.GenderID || "",       // holds M/F/T, hence text
           PersonID: x.PersonID || `A${i + 1}`,
         }))
