@@ -8,6 +8,7 @@ import {
   deniesRecords,
   directPlan,
   executePlan,
+  osintCatalystLink,
   supportedTokens,
   looksLikeRecordsQuestion,
   toolCatalogue,
@@ -1013,9 +1014,30 @@ export async function POST(req: NextRequest) {
     const osint = !hasImages ? osintTarget(String(prompt || "")) : null;
 
     if (osint) {
-      osintBlock = await publicOsintBlock(osint).catch(() =>
-        "PUBLIC OSINT LOOKUP UNAVAILABLE: live source lookups failed. Tell the officer this plainly and continue with non-source-dependent guidance only.\n\n"
-      );
+      // OSINT public sources + Catalyst internal link run in parallel so neither
+      // waits on the other — Catalyst can be slow and external APIs can too.
+      const scope = await resolveScope({
+        employeeId: (officer as any).employeeId ?? null,
+        kgid: (officer as any).badgeId ?? null,
+        dashboardRole: officer.dashboardRole,
+      }).catch(() => ({ statewide: false, unitIds: [] as number[], districtIds: [] as number[], employee: null, basis: "scope resolution failed" }));
+
+      const [publicOsint, catalystLink] = await Promise.all([
+        publicOsintBlock(osint).catch(() =>
+          "PUBLIC OSINT LOOKUP UNAVAILABLE: live source lookups failed. Tell the officer this plainly and continue with non-source-dependent guidance only.\n\n"
+        ),
+        osintCatalystLink(osint, scope).catch(() => ""),
+      ]);
+
+      osintBlock = publicOsint;
+      if (catalystLink) {
+        // Splice the Catalyst link result into the OSINT block just before the
+        // closing line so the model sees it as part of the same evidence set.
+        osintBlock = osintBlock.replace(
+          "--- end public OSINT lookup ---",
+          catalystLink + "\n--- end public OSINT lookup ---"
+        );
+      }
     }
 
     if (retrieval) {

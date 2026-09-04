@@ -997,6 +997,116 @@ async function propertySearch(
   };
 }
 
+/* ── OSINT → Catalyst cross-link ────────────────────────────────────────── */
+
+/**
+ * Given an OSINT target (IP, domain, email, or phone) check whether it
+ * appears anywhere in the crime register within the officer's jurisdiction.
+ *
+ * Phone numbers are matched against MobileNo / PhoneNo / ContactNo columns
+ * on Accused, Victim and ComplainantDetails after normalising both sides
+ * (strip country code, spaces, dashes).
+ *
+ * IPs, domains and emails are matched as substrings of BriefFacts — the only
+ * free-text field in CaseMaster that would realistically carry them.
+ *
+ * Nothing here reaches the AI model directly; the caller decides what to
+ * prepend to the OSINT block. A Catalyst failure is returned as a message
+ * rather than thrown, so one unavailable table does not crash the OSINT reply.
+ */
+export async function osintCatalystLink(
+  target: { kind: string; value: string },
+  scope: Scope
+): Promise<string> {
+  const val = s(target.value);
+  if (!val) return "";
+
+  const lines: string[] = [
+    `Catalyst internal link check for ${target.kind} "${val}":`,
+  ];
+
+  try {
+    if (target.kind === "phone") {
+      const normalizePhone = (v: string) =>
+        s(v).replace(/[\s\-().+]/g, "").replace(/^91/, "").replace(/^0/, "");
+      const normTarget = normalizePhone(val);
+      if (!normTarget || normTarget.length < 7) {
+        lines.push("  phone too short to search.");
+        return lines.join("\n");
+      }
+
+      const phoneMatch = (raw: string) => {
+        const n = normalizePhone(raw);
+        return !!n && (n === normTarget || n.includes(normTarget) || normTarget.includes(n));
+      };
+
+      const [accused, victims, complainants] = await Promise.all([
+        getAllRows("Accused"),
+        getAllRows("Victim"),
+        getAllRows("ComplainantDetails"),
+      ]);
+
+      const hits: string[] = [];
+      for (const r of accused) {
+        const a = unwrap(r, "Accused");
+        const phones = [a.MobileNo, a.PhoneNo, a.ContactNo, a.Mobile].map(s).filter(Boolean);
+        if (phones.some(phoneMatch)) {
+          hits.push(`  Accused: ${s(a.AccusedName) || "unnamed"} on case ${s(a.CaseMasterID)} (${phones.find(phoneMatch)})`);
+        }
+      }
+      for (const r of victims) {
+        const v = unwrap(r, "Victim");
+        const phones = [v.MobileNo, v.PhoneNo, v.ContactNo, v.Mobile].map(s).filter(Boolean);
+        if (phones.some(phoneMatch)) {
+          hits.push(`  Victim: ${s(v.VictimName) || "unnamed"} on case ${s(v.CaseMasterID)} (${phones.find(phoneMatch)})`);
+        }
+      }
+      for (const r of complainants) {
+        const c = unwrap(r, "ComplainantDetails");
+        const phones = [c.MobileNo, c.PhoneNo, c.ContactNo, c.Mobile].map(s).filter(Boolean);
+        if (phones.some(phoneMatch)) {
+          hits.push(`  Complainant: ${s(c.ComplainantName) || "unnamed"} on case ${s(c.CaseMasterID)} (${phones.find(phoneMatch)})`);
+        }
+      }
+
+      if (!hits.length) {
+        lines.push("  No accused, victim or complainant record holds this phone number.");
+      } else {
+        lines.push(`  ${hits.length} record(s) found with this phone number:`);
+        lines.push(...hits.slice(0, 10));
+        if (hits.length > 10) lines.push(`  … and ${hits.length - 10} more.`);
+      }
+    } else {
+      // IP, domain, email — search BriefFacts as free text
+      const refs = await loadRefs();
+      const all = await loadCases(refs);
+      const allowedUnits = scope.statewide ? null : new Set(scope.unitIds);
+      const visible = allowedUnits
+        ? all.filter((c) => c.stationId !== null && allowedUnits.has(c.stationId))
+        : all;
+
+      const searchVal = val.toLowerCase();
+      const matched = visible.filter((c) => c.briefFacts.toLowerCase().includes(searchVal));
+
+      if (!matched.length) {
+        lines.push(`  Not found in brief facts of any case within this officer's jurisdiction.`);
+      } else {
+        lines.push(`  Appears in brief facts of ${matched.length} case(s):`);
+        for (const c of matched.slice(0, 8)) {
+          lines.push(
+            `  - FIR ${c.crimeNo || c.caseMasterId} | ${c.stationName || "station not recorded"} | ${c.registeredDate} | ${c.statusName}`
+          );
+        }
+        if (matched.length > 8) lines.push(`  … and ${matched.length - 8} more.`);
+      }
+    }
+  } catch (e: any) {
+    lines.push(`  Catalyst search failed: ${e?.message || "database unavailable"}.`);
+  }
+
+  return lines.join("\n");
+}
+
 /* ── Guarding the answer ─────────────────────────────────────────────────── */
 
 /**
