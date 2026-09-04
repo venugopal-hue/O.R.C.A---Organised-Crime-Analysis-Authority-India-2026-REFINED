@@ -499,7 +499,6 @@ export const MapGrid: React.FC = () => {
                     }}
                   >
                     {value}
-                    {row?.threat.provisional && row.total > 0 ? "*" : ""}
                   </text>
                 </g>
               );
@@ -510,8 +509,8 @@ export const MapGrid: React.FC = () => {
 
       {/* ODbL requires the boundary source to be credited wherever it is shown. */}
       <div style={{
-        position: "absolute", bottom: 6, left: 12, zIndex: 20,
-        fontSize: 10, fontFamily: "JetBrains Mono, monospace", color: "#b6c2d1",
+        position: "absolute", bottom: 4, left: 8, zIndex: 20,
+        fontSize: 8, fontFamily: "JetBrains Mono, monospace", color: "#b6c2d1", opacity: 0.45,
       }}>
         {geo?.attribution}
       </div>

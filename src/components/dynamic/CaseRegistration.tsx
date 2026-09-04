@@ -19,11 +19,10 @@ import {
   ShieldAlert,
   FileText,
   ListOrdered,
-  Database as DatabaseIcon,
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
+import { OrcaLoader } from "@/components/dynamic/OrcaLoader";
 import { CaseLedger } from "@/components/dynamic/CaseLedger";
-import { ReferenceDataLoader } from "@/components/dynamic/ReferenceDataLoader";
 import { SearchableSelect } from "@/components/dynamic/SearchableSelect";
 import { FIRLetterhead, FIRDocumentData } from "@/components/dynamic/FIRLetterhead";
 import { PageHeader, HeaderChip } from "@/components/layout/PageHeader";
@@ -222,7 +221,7 @@ const emptySection = () => ({ ActID: "", SectionID: "" });
 export const CaseRegistration: React.FC = () => {
   const { officerProfile } = useAuth();
 
-  const [subTab, setSubTab] = useState<"new" | "ledger" | "reference">("new");
+  const [subTab, setSubTab] = useState<"new" | "ledger">("new");
   const [masters, setMasters] = useState<Record<string, MasterList>>({});
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [loadError, setLoadError] = useState("");
@@ -312,6 +311,27 @@ export const CaseRegistration: React.FC = () => {
     if (!caseData.DistrictID) return all;
     return all.filter((o) => String(o.extra?.DistrictID ?? "") === String(caseData.DistrictID));
   }, [masters, caseData.DistrictID]);
+
+  // Castes that are valid for a given religion (IDs match seeded ReligionMaster / CasteMaster).
+  // Empty allowed list means "show all" (used for Not Stated).
+  const RELIGION_CASTE_MAP: Record<string, string[]> = {
+    "1":  ["1","2","3","4","6","7","8","9","10","11","15"], // Hindu
+    "2":  ["1","4","12","14","15"],                         // Muslim
+    "3":  ["1","4","5","13","14","15"],                     // Christian
+    "4":  ["1","2","3","4","15"],                           // Sikh
+    "5":  ["1","3","4","15"],                               // Buddhist
+    "6":  ["1","2","15"],                                   // Jain
+    "7":  ["1","14","15"],                                  // Zoroastrian / Parsi
+    "8":  ["1","14","15"],                                  // Jewish
+    "9":  ["1","2","3","4","14","15"],                      // Other
+  };
+  const casteOptsFor = (religionId: string) => {
+    const all = opts("CasteMaster").map((o) => ({ id: o.id, label: o.label }));
+    const allowed = RELIGION_CASTE_MAP[religionId];
+    if (!religionId || !allowed) return all;
+    const s = new Set(allowed);
+    return all.filter((o) => s.has(o.id));
+  };
 
   /**
    * Sections belong to the act chosen on that row.
@@ -574,19 +594,13 @@ export const CaseRegistration: React.FC = () => {
         </div>
       )}
 
-      {loadingMasters && (
-        <div style={{ display: "flex", alignItems: "center", gap: 9, fontSize: 12, color: MUTED, padding: "6px 2px" }}>
-          <Loader2 style={{ width: 15, height: 15, animation: "spin 1s linear infinite" }} />
-          Loading reference data from Catalyst…
-        </div>
-      )}
+      {loadingMasters && <OrcaLoader padding="6px 2px" />}
 
       {/* ── Sub-tab bar ────────────────────────────────────────────────── */}
       <div style={{ display: "flex", gap: 4, borderBottom: `1px solid ${BORDER}` }}>
         {([
           ["new", "New Registration", <FilePlus2 key="a" style={{ width: 14, height: 14 }} />],
           ["ledger", "Registered Cases", <ListOrdered key="b" style={{ width: 14, height: 14 }} />],
-          ["reference", "Reference Data", <DatabaseIcon key="c" style={{ width: 14, height: 14 }} />],
         ] as const).map(([id, label, icon]) => (
           <button
             key={id}
@@ -607,7 +621,7 @@ export const CaseRegistration: React.FC = () => {
       </div>
 
       {subTab === "ledger" && <CaseLedger labelFor={labelFor} opts={opts} />}
-      {subTab === "reference" && <ReferenceDataLoader onLoaded={loadMasters} />}
+
 
       {subTab === "new" && (<>
 
@@ -746,7 +760,12 @@ export const CaseRegistration: React.FC = () => {
                 <SearchableSelect
                   label="Religion"
                   value={row.ReligionID || ""}
-                  onChange={(v) => update("ReligionID", v)}
+                  onChange={(v) => {
+                    update("ReligionID", v);
+                    if (row.CasteID && !casteOptsFor(v).some((o) => o.id === row.CasteID)) {
+                      update("CasteID", "");
+                    }
+                  }}
                   options={opts("ReligionMaster").map((o) => ({ id: o.id, label: o.label }))}
                   emptyMessage="— no reference data —"
                   placeholder="— Select —"
@@ -757,7 +776,7 @@ export const CaseRegistration: React.FC = () => {
                   label="Caste"
                   value={row.CasteID || ""}
                   onChange={(v) => update("CasteID", v)}
-                  options={opts("CasteMaster").map((o) => ({ id: o.id, label: o.label }))}
+                  options={casteOptsFor(row.ReligionID || "")}
                   emptyMessage="— no reference data —"
                   placeholder="— Select —"
                 />

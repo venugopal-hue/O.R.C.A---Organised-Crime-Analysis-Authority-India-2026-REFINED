@@ -1,25 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyOfficerRequest } from "@/lib/firebaseAdmin";
 import { loadSettings } from "@/lib/systemSettings";
-import { sarvamStt, SarvamAllKeysSpentError } from "@/lib/sarvam";
+import { ziaStt } from "@/lib/ziaNlp";
 
 /**
- * POST /api/voice/stt — transcribe dictated audio through Sarvam.
+ * POST /api/voice/stt — transcribe dictated audio through Zia NLP (Catalyst).
  *
- * The private alternative to the browser's own recogniser, which streams the
- * officer's audio to Google. Sarvam is Indian-hosted. Multipart body carrying
- * one `file`, exactly as the browser's MediaRecorder produces it.
+ * Replaces Sarvam. Auth is the same Catalyst OAuth token used for all data
+ * operations — no separate credentials needed.
  *
  * TWO GATES, BOTH REQUIRED:
  *   - `voice.inputEnabled` — dictation is permitted at all;
- *   - `voice.sarvamStt`   — and the Sarvam route specifically is chosen.
- * With the first off, no dictation happens anywhere. With the second off, the
- * client uses the browser recogniser and never reaches here.
- *
- * Billed per hour of audio, so this is never the silent default.
+ *   - `voice.sarvamStt`   — and the cloud STT route is chosen
+ *     (setting key kept for backwards compatibility).
  */
 
-/** A dictated question is seconds long; anything large is not dictation. */
 const MAX_BYTES = 8 * 1024 * 1024;
 
 export async function POST(req: NextRequest) {
@@ -65,19 +60,13 @@ export async function POST(req: NextRequest) {
 
   try {
     const buffer = Buffer.from(await file.arrayBuffer());
-    const result = await sarvamStt(buffer, filename, languageCode);
+    const result = await ziaStt(buffer, filename, languageCode);
     return NextResponse.json({
       success: true,
       transcript: result.transcript,
       languageCode: result.languageCode,
     });
   } catch (error: any) {
-    if (error instanceof SarvamAllKeysSpentError) {
-      return NextResponse.json(
-        { success: false, error: "Dictation credits are exhausted.", spent: true },
-        { status: 402 }
-      );
-    }
     console.error("[voice/stt]", error?.message);
     return NextResponse.json(
       { success: false, error: error?.message || "Could not transcribe the audio." },

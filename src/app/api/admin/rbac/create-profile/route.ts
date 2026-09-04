@@ -79,7 +79,7 @@ export async function POST(req: NextRequest) {
 
   const defaults = RANK_DEFAULTS[rank as Rank] || {
     isdLevel: "ISD-LEVEL-IV" as IsdLevel,
-    dashboardRole: "field_officer" as DashboardRole,
+    dashboardRole: "field_officer_l4" as DashboardRole,
   };
   const dashboardRole: DashboardRole = overrideDashboardRole || defaults.dashboardRole;
   // Clearance follows the role. `overrideIsdLevel` is honoured only when it

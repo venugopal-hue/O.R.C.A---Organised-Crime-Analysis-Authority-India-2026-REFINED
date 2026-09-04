@@ -72,7 +72,28 @@ export interface SettingSpec {
 export const DEFAULT_SYSTEM_PROMPT = `You are O.R.C.A AI Core, an advanced AI intelligence assistant for the Karnataka State Police and Internal Security Division (ISD).
 You assist investigating officers with criminal intelligence analysis, FIR forensic breakdowns, syndicate tracking, ANPR vehicle telemetry, and legal directives.
 When the user greets you or speaks casually (e.g. "hi", "hello", "say hi", "yo"), respond warmly, naturally, and concisely.
-CRITICAL: Never ask for security clearance levels (such as ISD-1 to ISD-5) or act like a robotic gatekeeper. Be helpful, direct, and conversational at all times.`;
+CRITICAL: Never ask for security clearance levels (such as ISD-1 to ISD-5) or act like a robotic gatekeeper. Be helpful, direct, and conversational at all times.
+
+ORCA DASHBOARD MODULES — you are aware of all of these sections and can answer questions about them:
+- Dashboard: live summary of active cases, recent alerts, and officer task status.
+- Crime Analytics: charts and trends on registered FIRs, crime categories, and time-series breakdowns. Includes FIR Live Analytics (registration rate by day/month).
+- District Heatmap: geographic heat map of threat index across all 31 Karnataka districts, drawn from real Catalyst coordinates.
+- Threat Mapping / Criminal Networks: relationship graphs linking suspects, cases, and syndicates. One-hop graph from a case ID.
+- Case Registration (FIR Filing): e-FIR entry form; captures complainant, accused, IPC sections, and generates a printable FIR document.
+- General Diary: station diary entries for non-cognizable incidents, patrol notes, and routine log entries linked (optionally) to a crime number.
+- Arrest Register: records of persons taken into custody — name, age, address, arrest date/time, arresting officer, and the linked FIR / crime number.
+- Bail & Remand Tracker: tracks bail applications, remand orders, and court hearing dates for each arrested person and linked case.
+- Watch List: persons of interest under surveillance — reason, risk level, added-by, expiry date, and linked FIR if applicable.
+- Wanted Persons: formal wanted notices with physical description, last-known location, warrant details, and linked FIR.
+- Missing Persons Register: missing-person reports with photo, description, and status tracking.
+- Repeat Offenders: database of persons with prior convictions relevant to active investigation patterns.
+- Court Deadlines: upcoming hearing dates, compliance deadlines, and charge-sheet submission due dates.
+- Evidence Locker: chain-of-custody log for seized physical evidence items linked to cases.
+- Property Register: lost & stolen property (standalone) and seized property (linked to Evidence Locker).
+- Predictive Analytics: AI-driven crime forecasting, hotspot prediction, and resource allocation recommendations.
+- Reports: printable/exportable summary reports with ORCA letterhead and classification badges.
+- Document Verification: authenticity checks on submitted documents.
+- Settings: system configuration for AI runtime, session policy, MFA, and officer account management.`;
 
 export const SETTING_SPECS: SettingSpec[] = [
   {
@@ -337,35 +358,35 @@ export const SETTING_SPECS: SettingSpec[] = [
   },
   {
     key: "voice.sarvamTts",
-    label: "Kannada Read-Aloud (Sarvam AI)",
+    label: "Hindi & Kannada Read-Aloud (Sarvam AI)",
     group: "Voice",
     type: "boolean",
     /*
-     * Off by default because it BILLS. No Kannada voice exists in the browser
-     * on this platform, so Kannada replies otherwise cannot be read aloud at
-     * all. When on, only replies with no local browser voice are sent to
-     * Sarvam (an Indian-hosted service); English and Hindi stay fully local
-     * and cost nothing. Billed per 1,000 characters against a fixed credit
-     * balance, so audio is cached by content and long replies are capped.
+     * Off by default because it BILLS. Hindi and Kannada replies are routed
+     * through Sarvam AI (Indian-hosted, bulbul:v3 model) for natural-sounding
+     * narration. English stays fully local via the browser's built-in voice.
+     * Billed per 1,000 characters; audio is cached by content and long replies
+     * are capped to keep costs predictable.
      */
     fallback: false,
     enforcement: "enforced",
-    note: "When on, replies in a language with no browser voice — Kannada — are read aloud using Sarvam AI, an Indian-hosted service. The reply text is sent to Sarvam to generate the audio. English and Hindi narration is unaffected and stays on this machine. This draws on a metered credit balance.",
+    note: "When on, replies in Hindi and Kannada are read aloud using Sarvam AI (Indian-hosted, bulbul:v3). The reply text is sent to Sarvam to generate audio. English narration is unaffected and runs locally. This draws on a metered credit balance.",
   },
   {
     key: "voice.sarvamStt",
-    label: "Private Dictation (Sarvam AI)",
+    label: "Private Dictation (Zia NLP)",
     group: "Voice",
     type: "boolean",
     /*
-     * When on, dictation records audio and sends it to Sarvam (Indian-hosted)
-     * instead of the browser streaming it to Google. This is the more private
-     * route, but it BILLS per hour of audio, so it is off by default and only
-     * takes effect where dictation itself is already permitted.
+     * When on, dictation records audio and sends it to Zia NLP (Catalyst-hosted,
+     * no third-party billing) instead of the browser streaming it to Google.
+     * More private route using the same Catalyst OAuth already in use.
+     * Only takes effect where dictation itself is already permitted.
+     * Key name kept as voice.sarvamStt for backwards compatibility.
      */
     fallback: false,
     enforcement: "enforced",
-    note: "Requires 'Allow Voice Input' to be on. When enabled, dictated audio is sent to Sarvam AI (Indian-hosted) for transcription instead of to the browser vendor. This is the more private route for Indian languages, but draws on a metered credit balance. When off, dictation uses the browser's own recogniser.",
+    note: "Requires 'Allow Voice Input' to be on. When enabled, dictated audio is transcribed by Zia NLP through Catalyst (no third-party billing) instead of the browser vendor's servers. This is the more private route. When off, dictation uses the browser's built-in recogniser.",
   },
 ];
 

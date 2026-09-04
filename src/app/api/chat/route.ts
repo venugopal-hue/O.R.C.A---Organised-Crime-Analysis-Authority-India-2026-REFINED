@@ -152,21 +152,212 @@ const REASONING_HEADROOM = 512;
 const s = (v: unknown) => String(v ?? "").trim();
 
 const IPV4_RE = /\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b/;
+const IPV6_RE =
+  /(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|(?:[0-9a-fA-F]{1,4}:){1,7}:|(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|(?:[0-9a-fA-F]{1,4}:){1,5}(?::[0-9a-fA-F]{1,4}){1,2}|(?:[0-9a-fA-F]{1,4}:){1,4}(?::[0-9a-fA-F]{1,4}){1,3}|(?:[0-9a-fA-F]{1,4}:){1,3}(?::[0-9a-fA-F]{1,4}){1,4}|(?:[0-9a-fA-F]{1,4}:){1,2}(?::[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:(?::[0-9a-fA-F]{1,4}){1,6}|:(?::[0-9a-fA-F]{1,4}){1,7}|::(?:[fF]{4}(?::0{1,4})?:)?(?:(?:25[0-5]|(?:2[0-4]|1\d|[1-9])?\d)\.){3}(?:25[0-5]|(?:2[0-4]|1\d|[1-9])?\d)|(?:[0-9a-fA-F]{1,4}:){1,4}:(?:(?:25[0-5]|(?:2[0-4]|1\d|[1-9])?\d)\.){3}(?:25[0-5]|(?:2[0-4]|1\d|[1-9])?\d)/;
 const DOMAIN_RE = /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\b/i;
+const EMAIL_RE = /\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b/;
+// Matches India-style (+91 or 0-prefix) and generic international numbers (7–15 digits)
+const PHONE_RE = /(?:\+91[\s\-]?)?(?:\+?[1-9]\d{0,2}[\s\-]?)?(?:\(?\d{2,4}\)?[\s\-]?)?\d{6,10}\b/;
 
-function osintTarget(question: string): { kind: "ip" | "domain"; value: string } | null {
+type OsintKind = "ip" | "domain" | "email" | "phone";
+
+function osintTarget(question: string): { kind: OsintKind; value: string } | null {
   const lower = question.toLowerCase();
   const intent =
-    /\b(osint|reputation|malicious|blacklist|threat|abuse|phishing|scam|proxy|vpn|botnet|c2|ioc|indicator|domain|ip address|ip)\b/.test(lower);
+    /\b(osint|reputation|malicious|blacklist|threat|abuse|phishing|scam|proxy|vpn|botnet|c2|ioc|indicator|domain|ip address|ip|email|breach|leaked|compromised|phone|mobile|carrier|number)\b/.test(lower);
   if (!intent) return null;
 
-  const ip = question.match(IPV4_RE)?.[0];
-  if (ip) return { kind: "ip", value: ip };
+  const email = question.match(EMAIL_RE)?.[0];
+  if (email) return { kind: "email", value: email.toLowerCase() };
+
+  const ip4 = question.match(IPV4_RE)?.[0];
+  if (ip4) return { kind: "ip", value: ip4 };
+
+  const ip6 = question.match(IPV6_RE)?.[0];
+  if (ip6) return { kind: "ip", value: ip6 };
 
   const domain = question.match(DOMAIN_RE)?.[0];
   if (domain) return { kind: "domain", value: domain.toLowerCase() };
 
+  // Phone is last — the regex is broad and overlaps with case/FIR numbers
+  if (/\b(phone|mobile|number|carrier)\b/.test(lower)) {
+    const phone = question.match(PHONE_RE)?.[0]?.replace(/[\s\-()]/g, "");
+    if (phone && phone.length >= 7) return { kind: "phone", value: phone };
+  }
+
   return null;
+}
+
+/* ── VirusTotal ──────────────────────────────────────────────────────────── */
+
+async function vtLookup(kind: "ip" | "domain", value: string, key: string): Promise<string | null> {
+  const endpoint = kind === "ip"
+    ? `https://www.virustotal.com/api/v3/ip_addresses/${encodeURIComponent(value)}`
+    : `https://www.virustotal.com/api/v3/domains/${encodeURIComponent(value)}`;
+  const data = await jsonFetch(endpoint, { headers: { "x-apikey": key } }, 10_000);
+  if (!data?.data?.attributes) return null;
+  const a = data.data.attributes;
+  const stats = a.last_analysis_stats ?? {};
+  const total = Object.values(stats as Record<string, number>).reduce((acc: number, v) => acc + (Number(v) || 0), 0);
+  const malicious = Number(stats.malicious ?? 0);
+  const suspicious = Number(stats.suspicious ?? 0);
+  const reputation = Number(a.reputation ?? 0);
+  const categories = a.categories
+    ? Object.values(a.categories as Record<string, string>).slice(0, 4).join(", ")
+    : "";
+  const lines: string[] = [
+    `VirusTotal: ${malicious}/${total} engines flagged malicious, ${suspicious} flagged suspicious.`,
+    `VirusTotal reputation score: ${reputation} (negative = bad actor).`,
+  ];
+  if (categories) lines.push(`VirusTotal categories: ${categories}.`);
+  if (a.as_owner) lines.push(`VirusTotal AS owner: ${s(a.as_owner)}.`);
+  if (a.country) lines.push(`VirusTotal registered country: ${s(a.country)}.`);
+  return lines.join("\n");
+}
+
+/* ── Shodan ──────────────────────────────────────────────────────────────── */
+
+async function shodanHost(ip: string, key: string): Promise<string | null> {
+  const data = await jsonFetch(
+    `https://api.shodan.io/shodan/host/${encodeURIComponent(ip)}?key=${encodeURIComponent(key)}`,
+    {},
+    12_000
+  );
+  if (!data || data.error) return null;
+  const lines: string[] = [];
+  const org = s(data.org || data.isp);
+  if (org) lines.push(`Shodan org/ISP: ${org}.`);
+  const os = s(data.os);
+  if (os) lines.push(`Shodan OS: ${os}.`);
+  if (Array.isArray(data.ports) && data.ports.length) {
+    lines.push(`Shodan open ports: ${data.ports.slice(0, 20).join(", ")}.`);
+  }
+  if (Array.isArray(data.vulns) && data.vulns.length) {
+    lines.push(`Shodan known CVEs: ${(data.vulns as string[]).slice(0, 10).join(", ")} — verify before treating as confirmed.`);
+  }
+  if (Array.isArray(data.hostnames) && data.hostnames.length) {
+    lines.push(`Shodan hostnames: ${(data.hostnames as string[]).slice(0, 6).join(", ")}.`);
+  }
+  if (Array.isArray(data.tags) && data.tags.length) {
+    lines.push(`Shodan tags: ${(data.tags as string[]).join(", ")}.`);
+  }
+  return lines.length ? lines.join("\n") : null;
+}
+
+/* ── LeakCheck email breach lookup ──────────────────────────────────────── */
+
+// Well-known disposable email domains — sampled list, not exhaustive
+const DISPOSABLE_DOMAINS = new Set([
+  "mailinator.com","guerrillamail.com","10minutemail.com","tempmail.com","throwaway.email",
+  "yopmail.com","sharklasers.com","guerrillamailblock.com","grr.la","guerrillamail.info",
+  "spam4.me","trashmail.com","trashmail.me","dispostable.com","fakeinbox.com",
+  "maildrop.cc","mailnull.com","spamgourmet.com","spamgourmet.net","discard.email",
+  "mailnesia.com","mintemail.com","mt2015.com",
+]);
+
+async function leakCheckLookup(email: string, key: string): Promise<string | null> {
+  const domain = email.split("@")[1] ?? "";
+  const isDisposable = DISPOSABLE_DOMAINS.has(domain.toLowerCase());
+  const data = await jsonFetch(
+    `https://leakcheck.io/api/v2/query/${encodeURIComponent(email)}`,
+    { headers: { "X-API-Key": key } },
+    10_000
+  );
+  const lines: string[] = [];
+  lines.push(`Disposable/throwaway domain check: ${isDisposable ? "YES — known disposable provider" : "not in disposable-domain list"}.`);
+  if (!data || data.success === false) {
+    lines.push("LeakCheck: lookup failed or returned an error.");
+    return lines.join("\n");
+  }
+  const found = Number(data.found ?? 0);
+  if (found === 0) {
+    lines.push("LeakCheck: no known data breaches found for this email address.");
+  } else {
+    lines.push(`LeakCheck: found in ${found} breach source(s).`);
+    if (Array.isArray(data.sources) && data.sources.length) {
+      const names = (data.sources as any[]).slice(0, 8).map((src: any) =>
+        `${s(src.name)}${src.date ? ` (${s(src.date)})` : ""}`
+      );
+      lines.push(`Sources: ${names.join("; ")}.`);
+    }
+    if (Array.isArray(data.fields) && data.fields.length) {
+      lines.push(`Data fields exposed: ${(data.fields as string[]).slice(0, 8).join(", ")}.`);
+    }
+  }
+  return lines.join("\n");
+}
+
+/* ── numverify phone OSINT ───────────────────────────────────────────────── */
+
+async function numverifyLookup(phone: string, key: string): Promise<string | null> {
+  const data = await jsonFetch(
+    `http://apilayer.net/api/validate?access_key=${encodeURIComponent(key)}&number=${encodeURIComponent(phone)}&country_code=IN&format=1`,
+    {},
+    8_000
+  );
+  if (!data || data.error) return null;
+  const lines: string[] = [
+    `numverify: valid=${Boolean(data.valid)}, number=${s(data.international_format) || phone}.`,
+  ];
+  if (data.country_name) lines.push(`numverify: country=${s(data.country_name)} (${s(data.country_code)}).`);
+  if (data.carrier) lines.push(`numverify: carrier=${s(data.carrier)}.`);
+  if (data.line_type) lines.push(`numverify: line type=${s(data.line_type)} (mobile/landline/voip/etc).`);
+  if (data.location) lines.push(`numverify: location=${s(data.location)}.`);
+  return lines.join("\n");
+}
+
+/* ── Tor exit node cache ─────────────────────────────────────────────────── */
+
+let _torExitNodes: Set<string> | null = null;
+let _torCacheTs = 0;
+const TOR_CACHE_TTL = 6 * 60 * 60 * 1000; // 6 hours
+
+async function isTorExitNode(ip: string): Promise<boolean | null> {
+  const now = Date.now();
+  if (!_torExitNodes || now - _torCacheTs > TOR_CACHE_TTL) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10_000);
+    try {
+      const res = await fetch("https://check.torproject.org/torbulkexitlist", {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (!res.ok) return null;
+      const text = await res.text();
+      _torExitNodes = new Set(
+        text.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"))
+      );
+      _torCacheTs = now;
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return _torExitNodes ? _torExitNodes.has(ip) : null;
+}
+
+/* ── crt.sh certificate transparency ────────────────────────────────────── */
+
+async function crtShCerts(domain: string): Promise<{ count: number; earliest: string; latest: string; sample: string[] } | null> {
+  const data = await jsonFetch(
+    `https://crt.sh/?q=${encodeURIComponent(domain)}&output=json`,
+    {},
+    10_000
+  );
+  if (!Array.isArray(data) || data.length === 0) return null;
+  const sorted = [...data].sort(
+    (a, b) => new Date(b.not_before ?? 0).getTime() - new Date(a.not_before ?? 0).getTime()
+  );
+  const names = Array.from(
+    new Set(sorted.slice(0, 20).map((c: any) => String(c.name_value ?? "").split("\n")[0]).filter(Boolean))
+  ).slice(0, 6);
+  return {
+    count: data.length,
+    earliest: s(sorted[sorted.length - 1]?.not_before),
+    latest: s(sorted[0]?.not_before),
+    sample: names,
+  };
 }
 
 async function jsonFetch(url: string, init: RequestInit = {}, timeoutMs = 8000): Promise<any | null> {
@@ -203,19 +394,61 @@ function envAny(...names: string[]): string {
   return "";
 }
 
-async function publicOsintBlock(target: { kind: "ip" | "domain"; value: string }): Promise<string> {
+async function publicOsintBlock(target: { kind: OsintKind; value: string }): Promise<string> {
   const lines: string[] = [
     "--- PUBLIC OSINT LOOKUP (facts from live public sources) ---",
     `Target type: ${target.kind}`,
     `Target: ${target.value}`,
   ];
 
-  if (target.kind === "ip") {
+  /* ── Email branch ──────────────────────────────────────────────────────── */
+  if (target.kind === "email") {
+    const leakCheckKey = envAny("LEAKCHECK_API_KEY", "NEXT_LEAKCHECK_API_KEY");
+    lines.push(`Sources queried: disposable-domain list${leakCheckKey ? ", LeakCheck" : ""}.`);
+    if (leakCheckKey) {
+      const result = await leakCheckLookup(target.value, leakCheckKey).catch(() => null);
+      if (result) {
+        lines.push(result);
+      } else {
+        lines.push("LeakCheck: lookup failed or no data returned.");
+      }
+    } else {
+      // Still run the disposable check even without LeakCheck key
+      const domain = target.value.split("@")[1] ?? "";
+      const isDisposable = DISPOSABLE_DOMAINS.has(domain.toLowerCase());
+      lines.push(`Disposable/throwaway domain check: ${isDisposable ? "YES — known disposable provider" : "not in disposable-domain list"}.`);
+      lines.push("LeakCheck: not checked because LEAKCHECK_API_KEY is not configured.");
+    }
+  }
+
+  /* ── Phone branch ──────────────────────────────────────────────────────── */
+  else if (target.kind === "phone") {
+    const numKey = envAny("NUMVERIFY_API_KEY", "NEXT_NUMVERIFY_API_KEY");
+    lines.push(`Sources queried: ${numKey ? "numverify" : "(none — NUMVERIFY_API_KEY not configured)"}.`);
+    if (numKey) {
+      const result = await numverifyLookup(target.value, numKey).catch(() => null);
+      if (result) {
+        lines.push(result);
+      } else {
+        lines.push("numverify: lookup failed or returned an error.");
+      }
+    } else {
+      lines.push("numverify: not checked because NUMVERIFY_API_KEY is not configured.");
+    }
+  }
+
+  else if (target.kind === "ip") {
     const abuseIpDbKey = envAny("ABUSEIPDB_API_KEY", "NEXT_ABUSEIPDB_API_KEY");
-    const [geo, rdap, abuse, abuseIpDb] = await Promise.all([
-      jsonFetch(
-        `http://ip-api.com/json/${encodeURIComponent(target.value)}?fields=status,message,query,country,countryCode,regionName,city,isp,org,as,asname,proxy,hosting,mobile`
-      ),
+    const vtKey = envAny("VIRUSTOTAL_API_KEY", "NEXT_VIRUSTOTAL_API_KEY");
+    const shodanKey = envAny("SHODAN_API_KEY", "NEXT_SHODAN_API_KEY");
+    const isIPv6 = IPV6_RE.test(target.value);
+    const [geo, rdap, abuse, abuseIpDb, torResult, vtResult, shodanResult] = await Promise.all([
+      // ip-api does not support IPv6 on the free tier; skip gracefully
+      isIPv6
+        ? Promise.resolve(null)
+        : jsonFetch(
+            `http://ip-api.com/json/${encodeURIComponent(target.value)}?fields=status,message,query,country,countryCode,regionName,city,isp,org,as,asname,proxy,hosting,mobile`
+          ),
       jsonFetch(`https://rdap.org/ip/${encodeURIComponent(target.value)}`),
       urlhausHost(target.value),
       abuseIpDbKey
@@ -223,11 +456,23 @@ async function publicOsintBlock(target: { kind: "ip" | "domain"; value: string }
             headers: { Key: abuseIpDbKey, Accept: "application/json" },
           })
         : Promise.resolve(null),
+      isTorExitNode(target.value),
+      vtKey ? vtLookup("ip", target.value, vtKey).catch(() => null) : Promise.resolve(null),
+      shodanKey ? shodanHost(target.value, shodanKey).catch(() => null) : Promise.resolve(null),
     ]);
 
-    lines.push(
-      `Sources queried: ip-api.com, rdap.org, URLhaus by abuse.ch${abuseIpDbKey ? ", AbuseIPDB" : ""}.`
-    );
+    const sourcesQueried = [
+      isIPv6 ? null : "ip-api.com",
+      "rdap.org",
+      "URLhaus by abuse.ch",
+      "Tor Project exit list",
+      abuseIpDbKey ? "AbuseIPDB" : null,
+      vtKey ? "VirusTotal" : null,
+      shodanKey ? "Shodan" : null,
+    ].filter(Boolean).join(", ");
+    lines.push(`Sources queried: ${sourcesQueried}.`);
+    if (isIPv6) lines.push("Note: target is an IPv6 address; geolocation from ip-api.com is unavailable on the free tier.");
+
     if (geo?.status === "success") {
       const proxy = Boolean(geo.proxy);
       const hosting = Boolean(geo.hosting);
@@ -246,14 +491,43 @@ async function publicOsintBlock(target: { kind: "ip" | "domain"; value: string }
     } else if (geo?.message) {
       lines.push(`ip-api: unavailable (${s(geo.message)}).`);
     }
+
     if (rdap) {
       lines.push(`RDAP ownership: name=${s(rdap.name) || "not listed"}, handle=${s(rdap.handle) || "not listed"}.`);
+      // IP block registration details
+      if (rdap.startAddress || rdap.endAddress) {
+        lines.push(`RDAP IP range: ${s(rdap.startAddress)} – ${s(rdap.endAddress)}, type=${s(rdap.type) || "not listed"}.`);
+      }
+      // Events: registration / last changed
+      if (Array.isArray(rdap.events)) {
+        for (const ev of rdap.events) {
+          if (ev?.eventAction === "registration" || ev?.eventAction === "last changed") {
+            lines.push(`RDAP event: ${s(ev.eventAction)} on ${s(ev.eventDate)}.`);
+          }
+        }
+      }
+      // Remarks (abuse contacts, policy notes)
+      if (Array.isArray(rdap.remarks) && rdap.remarks[0]) {
+        const desc = Array.isArray(rdap.remarks[0].description) ? rdap.remarks[0].description[0] : "";
+        if (desc) lines.push(`RDAP remark: ${String(desc).slice(0, 200)}.`);
+      }
       const entity = Array.isArray(rdap.entities) ? rdap.entities[0] : null;
       if (entity?.vcardArray?.[1]) {
         const fn = entity.vcardArray[1].find((x: any[]) => x?.[0] === "fn")?.[3];
-        if (fn) lines.push(`RDAP ownership entity: ${s(fn)}.`);
+        const email = entity.vcardArray[1].find((x: any[]) => x?.[0] === "email")?.[3];
+        if (fn) lines.push(`RDAP registrant: ${s(fn)}${email ? ` <${s(email)}>` : ""}.`);
       }
     }
+
+    // Tor exit node check
+    if (torResult === true) {
+      lines.push("Tor exit node check: POSITIVE — this IP is a known Tor exit node. Traffic through it is anonymised and origin is unverifiable.");
+    } else if (torResult === false) {
+      lines.push("Tor exit node check: not listed as a known Tor exit node.");
+    } else {
+      lines.push("Tor exit node check: list unavailable (fetch failed).");
+    }
+
     if (abuse?.query_status) {
       const urlCount = Array.isArray(abuse.urls) ? abuse.urls.length : 0;
       lines.push(`URLhaus malware URL listing: status=${s(abuse.query_status)}, listed URLs=${urlCount}.`);
@@ -269,31 +543,97 @@ async function publicOsintBlock(target: { kind: "ip" | "domain"; value: string }
     } else if (!abuseIpDbKey) {
       lines.push("AbuseIPDB: not checked because ABUSEIPDB_API_KEY is not configured.");
     }
+    if (vtResult) {
+      lines.push(vtResult);
+    } else if (!vtKey) {
+      lines.push("VirusTotal: not checked because VIRUSTOTAL_API_KEY is not configured.");
+    }
+    if (shodanResult) {
+      lines.push(shodanResult);
+    } else if (!shodanKey) {
+      lines.push("Shodan: not checked because SHODAN_API_KEY is not configured.");
+    }
   } else {
-    const [dns, abuse] = await Promise.all([
+    const vtKey2 = envAny("VIRUSTOTAL_API_KEY", "NEXT_VIRUSTOTAL_API_KEY");
+    const [dns, abuse, rdap, certs, vtDomainResult] = await Promise.all([
       jsonFetch(`https://dns.google/resolve?name=${encodeURIComponent(target.value)}&type=A`),
       urlhausHost(target.value),
+      jsonFetch(`https://rdap.org/domain/${encodeURIComponent(target.value)}`),
+      crtShCerts(target.value),
+      vtKey2 ? vtLookup("domain", target.value, vtKey2).catch(() => null) : Promise.resolve(null),
     ]);
 
-    lines.push("Sources queried: Google Public DNS, URLhaus by abuse.ch.");
+    const domainSources = [
+      "Google Public DNS",
+      "URLhaus by abuse.ch",
+      "rdap.org",
+      "crt.sh (certificate transparency)",
+      vtKey2 ? "VirusTotal" : null,
+    ].filter(Boolean).join(", ");
+    lines.push(`Sources queried: ${domainSources}.`);
     const ips = Array.isArray(dns?.Answer)
       ? dns.Answer.filter((a: any) => a?.type === 1).map((a: any) => s(a.data)).filter(Boolean)
       : [];
     lines.push(`DNS A records: ${ips.length ? ips.join(", ") : "none returned"}.`);
+
+    if (rdap) {
+      lines.push(`RDAP registrar: ${s(rdap.port43) || "not listed"}.`);
+      if (Array.isArray(rdap.events)) {
+        for (const ev of rdap.events) {
+          if (["registration", "expiration", "last changed"].includes(ev?.eventAction)) {
+            lines.push(`RDAP: ${s(ev.eventAction)} on ${s(ev.eventDate)}.`);
+          }
+        }
+      }
+      if (Array.isArray(rdap.nameservers) && rdap.nameservers.length) {
+        const ns = rdap.nameservers.slice(0, 4).map((n: any) => s(n.ldhName)).filter(Boolean);
+        if (ns.length) lines.push(`RDAP nameservers: ${ns.join(", ")}.`);
+      }
+      const status = Array.isArray(rdap.status) ? rdap.status.slice(0, 3).join(", ") : "";
+      if (status) lines.push(`RDAP domain status: ${status}.`);
+      const registrant = Array.isArray(rdap.entities)
+        ? rdap.entities.find((e: any) => Array.isArray(e.roles) && e.roles.includes("registrant"))
+        : null;
+      if (registrant?.vcardArray?.[1]) {
+        const fn = registrant.vcardArray[1].find((x: any[]) => x?.[0] === "fn")?.[3];
+        if (fn) lines.push(`RDAP registrant: ${s(fn)}.`);
+      }
+    }
+
+    if (certs) {
+      lines.push(`crt.sh certificate transparency: ${certs.count} certificate(s) ever issued.`);
+      lines.push(`crt.sh: earliest cert issued ${certs.earliest || "unknown"}, most recent ${certs.latest || "unknown"}.`);
+      if (certs.sample.length) {
+        lines.push(`crt.sh: sample subject names: ${certs.sample.join(", ")}.`);
+      }
+    } else {
+      lines.push("crt.sh: no certificates found or lookup failed.");
+    }
+
     if (abuse?.query_status) {
       lines.push(`URLhaus malware URL listing: status=${s(abuse.query_status)}, listed URLs=${Array.isArray(abuse.urls) ? abuse.urls.length : 0}.`);
       if (Array.isArray(abuse.urls) && abuse.urls[0]) {
         lines.push(`URLhaus latest sample: ${s(abuse.urls[0].url).slice(0, 300)}.`);
       }
     }
+    if (vtDomainResult) {
+      lines.push(vtDomainResult);
+    } else if (!vtKey2) {
+      lines.push("VirusTotal: not checked because VIRUSTOTAL_API_KEY is not configured.");
+    }
   }
 
   lines.push(
     "Grounding rule: use this block only for the target's live network/OSINT facts. " +
     "You may still answer the officer's wider question normally, but do not invent source results. " +
-    "If proxy or hosting is true, call it suspicious infrastructure and recommend caution/escalation, " +
-    "but do not say it proves malicious activity. If URLhaus has no entries, say only that URLhaus did not list malware URLs for the target. " +
-    "Do not claim VirusTotal, MaxMind, Shodan, AbuseIPDB, or any other source was checked unless it appears above."
+    "If proxy or hosting is true, call it suspicious infrastructure and recommend caution/escalation, but do not say it proves malicious activity. " +
+    "If Tor exit node check is POSITIVE, flag it clearly — the real origin IP is unverifiable. " +
+    "If VirusTotal shows malicious detections, state the count and recommend escalation; do not conclude guilt. " +
+    "If Shodan shows open ports or CVEs, state them factually; a CVE being listed does not confirm exploitation. " +
+    "If crt.sh returned unexpected subdomains, list them and note they may indicate broader infrastructure scope. " +
+    "If LeakCheck shows breaches, list the source names and data fields, and advise the officer to treat affected credentials as compromised. " +
+    "If a phone number shows as VOIP or unknown carrier, note it may be a virtual/temporary number. " +
+    "Do not claim any source was checked unless it appears above."
   );
   lines.push("--- end public OSINT lookup ---\n\n");
   return lines.join("\n");
@@ -550,9 +890,17 @@ export async function POST(req: NextRequest) {
     let systemPrompt = ai.systemPrompt;
 
     if (speechLanguage === "hi-IN") {
-      systemPrompt += `\nCRITICAL LANGUAGE MANDATE: The user has selected Hindi (हिन्दी). You MUST write your ENTIRE response in Hindi using Devanagari script (हिंदी).`;
+      systemPrompt =
+        `ABSOLUTE RULE — HIGHEST PRIORITY: Respond ONLY in Hindi (हिन्दी) using Devanagari script. ` +
+        `Do NOT use any English words, phrases, or sentences anywhere in your response. ` +
+        `Every single word must be in Hindi. If you must name a technical term with no Hindi equivalent, transliterate it into Devanagari — never write Latin/English characters.\n\n` +
+        systemPrompt;
     } else if (speechLanguage === "kn-IN") {
-      systemPrompt += `\nCRITICAL LANGUAGE MANDATE: The user has selected Kannada (ಕನ್ನಡ). You MUST write your ENTIRE response in Kannada using Kannada script (ಕನ್ನಡ).`;
+      systemPrompt =
+        `ABSOLUTE RULE — HIGHEST PRIORITY: Respond ONLY in Kannada (ಕನ್ನಡ) using Kannada script. ` +
+        `Do NOT use any English words, phrases, or sentences anywhere in your response. ` +
+        `Every single word must be in Kannada. If you must name a technical term with no Kannada equivalent, transliterate it into Kannada script — never write Latin/English characters.\n\n` +
+        systemPrompt;
     }
 
     if (moduleContext) {

@@ -5,6 +5,7 @@ import { OrcaBrand } from "./OrcaBrand";
 import { useIntelligence } from "@/context/IntelligenceContext";
 import { Command } from "lucide-react";
 import { VoiceCommandPalette } from "@/components/dynamic/VoiceCommandPalette";
+import { NotificationBell } from "./NotificationBell";
 
 interface TourStep {
   targetId: string;
@@ -418,6 +419,8 @@ export const Topbar: React.FC = () => {
               ?
             </button>
           )}
+
+          {activeLoggedIn && <NotificationBell />}
 
           <div style={{ display: "flex", alignItems: "center", gap: 12, color: "white", textAlign: "right" }}>
             {isLoggedIn ? (

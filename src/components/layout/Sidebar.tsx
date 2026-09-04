@@ -28,7 +28,8 @@ import {
   FileCheck,
   ChevronDown,
   ChevronUp,
-  Tv, PackageSearch, LifeBuoy, Boxes, ClipboardList } from "lucide-react";
+  Tv, PackageSearch, LifeBuoy, Boxes, ClipboardList, GitBranch, Scale, Users, Activity, UserX, BookOpen,
+  Lock, Gavel, Eye, TrendingUp, UserSearch } from "lucide-react";
 
 /**
  * The admin menu. `group` decides which collapsible section renders the item.
@@ -125,17 +126,72 @@ export const Sidebar: React.FC = () => {
     }
   }, [activeTab]);
 
-  const menuItems = [
-    { id: "dashboard", label: "Command Overview", icon: LayoutDashboard, route: "/dashboard" },
-    { id: "chatbot", label: "AI Chatbot", icon: Bot, route: "/dashboard" },
-    { id: "analytics", label: "Crime Analytics", icon: BarChart3, route: "/dashboard" },
-    { id: "case-registration", label: "Case Registration", icon: FilePlus2, route: "/dashboard" },
-    { id: "evidence", label: "Evidence Management", icon: PackageSearch, route: "/dashboard" },
-    { id: "property-register", label: "Lost & Stolen Property", icon: Boxes, route: "/dashboard" },
-    { id: "tasks", label: "Task & Assignment", icon: ClipboardList, route: "/dashboard" },
-    { id: "networks", label: "Threat Mapping", icon: Network, route: "/dashboard" },
-    { id: "news", label: "State Live News", icon: Tv, route: "/dashboard" }
+  const NAV_GROUPS: { label: string; items: { id: string; label: string; icon: typeof LayoutDashboard; route: string }[] }[] = [
+    {
+      label: "COMMAND CENTER",
+      items: [
+        { id: "dashboard",  label: "Command Overview", icon: LayoutDashboard, route: "/dashboard" },
+        { id: "chatbot",    label: "AI Chatbot",        icon: Bot,             route: "/dashboard" },
+      ],
+    },
+    {
+      label: "SITUATIONAL AWARENESS",
+      items: [
+        { id: "news", label: "State Live News", icon: Tv, route: "/dashboard" },
+      ],
+    },
+    {
+      label: "CASE & INVESTIGATION",
+      items: [
+        { id: "case-registration",  label: "Case Registration",  icon: FilePlus2,  route: "/dashboard" },
+        { id: "case-timeline",      label: "Case Timeline",      icon: GitBranch,  route: "/dashboard" },
+        { id: "general-diary",      label: "General Diary",      icon: BookOpen,   route: "/dashboard" },
+        { id: "repeat-offenders",   label: "Repeat Offenders",   icon: Users,      route: "/dashboard" },
+        { id: "accused-profile",    label: "Accused Profile",    icon: UserSearch, route: "/dashboard" },
+        { id: "station-performance",label: "Station Performance",icon: Activity,   route: "/dashboard" },
+      ],
+    },
+    {
+      label: "LEGAL & COURT",
+      items: [
+        { id: "court-deadlines", label: "Court Deadlines", icon: Scale,   route: "/dashboard" },
+        { id: "arrest-register", label: "Arrest Register", icon: Lock,    route: "/dashboard" },
+        { id: "bail-remand",     label: "Bail & Remand",   icon: Gavel,   route: "/dashboard" },
+      ],
+    },
+    {
+      label: "PERSONS & WATCH",
+      items: [
+        { id: "watch-list",     label: "Watch List",     icon: Eye,       route: "/dashboard" },
+        { id: "wanted-persons", label: "Wanted Persons", icon: ShieldAlert,route: "/dashboard" },
+        { id: "missing-persons",label: "Missing Persons",icon: UserX,     route: "/dashboard" },
+      ],
+    },
+    {
+      label: "INTELLIGENCE & ANALYTICS",
+      items: [
+        { id: "analytics",            label: "Crime Analytics",      icon: BarChart3,   route: "/dashboard" },
+        { id: "predictive-analytics", label: "Predictive Analytics", icon: TrendingUp,  route: "/dashboard" },
+        { id: "networks",             label: "Threat Mapping",        icon: Network,     route: "/dashboard" },
+      ],
+    },
+    {
+      label: "EVIDENCE & PROPERTY",
+      items: [
+        { id: "evidence",         label: "Evidence Management",  icon: PackageSearch, route: "/dashboard" },
+        { id: "property-register",label: "Lost & Stolen Property",icon: Boxes,        route: "/dashboard" },
+      ],
+    },
+    {
+      label: "OPERATIONS",
+      items: [
+        { id: "tasks", label: "Task & Assignment", icon: ClipboardList, route: "/dashboard" },
+      ],
+    },
   ];
+
+  // Flat list still needed for access checks elsewhere
+  const menuItems = NAV_GROUPS.flatMap(g => g.items);
 
   const verificationItems = [
     { id: "verification-document", label: "Document Verification", icon: ShieldCheck, route: "/verification/document" }
@@ -163,6 +219,18 @@ export const Sidebar: React.FC = () => {
       analytics: "heatmaps",
       fir: "ingestion_copilot",
       "case-registration": "case_registration",
+      "case-timeline": "case_registration",
+      "court-deadlines": "case_registration",
+      "general-diary": "case_registration",
+      "arrest-register": "case_registration",
+      "bail-remand": "case_registration",
+      "watch-list": "criminal_networks",
+      "wanted-persons": "criminal_networks",
+      "predictive-analytics": "heatmaps",
+      "missing-persons": "case_registration",
+      "repeat-offenders": "criminal_networks",
+      "accused-profile": "criminal_networks",
+      "station-performance": "heatmaps",
       "property-register": "case_registration",
       tasks: "case_registration",
       networks: "criminal_networks",
@@ -588,64 +656,70 @@ export const Sidebar: React.FC = () => {
               </nav>
             </div>
 
-            {/* OPERATIONAL MODULES section */}
-            <div style={{ marginTop: 16 }}>
-              <div style={{
-                fontSize: 11,
-                fontWeight: 700,
-                color: "rgba(255,255,255,0.4)",
-                textTransform: "uppercase",
-                letterSpacing: "0.1em",
-                padding: "0 24px",
-                marginBottom: 8,
-                fontFamily: "JetBrains Mono, monospace"
-              }}>
-                COMMAND CENTER
-              </div>
-              <nav style={{ display: "flex", flexDirection: "column" }}>
-                {allowedMenuItems.map(item => {
-                  const Icon = item.icon;
-                  const isActive = activeTab === item.id;
-                  return (
-                    <a
-                      id={`nav-${item.id}`}
-                      key={item.id}
-                      onClick={() => setActiveTab(item.id)}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "12px",
-                        color: isActive ? "white" : "rgba(255,255,255,0.7)",
-                        textDecoration: "none",
-                        padding: "10px 24px",
-                        fontSize: "13.5px",
-                        fontWeight: isActive ? 600 : 500,
-                        cursor: "pointer",
-                        borderLeft: isActive ? "3px solid #FF9933" : "3px solid transparent",
-                        background: isActive ? "rgba(255,255,255,0.1)" : "transparent",
-                        transition: "0.2s",
-                        userSelect: "none"
-                      }}
-                      onMouseEnter={e => {
-                        if (!isActive) {
-                          (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.05)";
-                          (e.currentTarget as HTMLElement).style.color = "white";
-                        }
-                      }}
-                      onMouseLeave={e => {
-                        if (!isActive) {
-                          (e.currentTarget as HTMLElement).style.background = "transparent";
-                          (e.currentTarget as HTMLElement).style.color = "rgba(255,255,255,0.7)";
-                        }
-                      }}
-                    >
-                      <Icon style={{ width: 16, height: 16, opacity: isActive ? 1 : 0.7, color: isActive ? "#FF9933" : "currentColor", flexShrink: 0 }} />
-                      <span>{item.label}</span>
-                    </a>
-                  );
-                })}
-              </nav>
-            </div>
+            {/* GROUPED NAV SECTIONS */}
+            {NAV_GROUPS.map(group => {
+              const allowed = group.items.filter(item => hasAccess(item.id));
+              if (allowed.length === 0) return null;
+              return (
+                <div key={group.label} style={{ marginTop: 16 }}>
+                  <div style={{
+                    fontSize: 10,
+                    fontWeight: 700,
+                    color: "rgba(255,255,255,0.35)",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.1em",
+                    padding: "0 24px",
+                    marginBottom: 4,
+                    fontFamily: "JetBrains Mono, monospace"
+                  }}>
+                    {group.label}
+                  </div>
+                  <nav style={{ display: "flex", flexDirection: "column" }}>
+                    {allowed.map(item => {
+                      const Icon = item.icon;
+                      const isActive = activeTab === item.id;
+                      return (
+                        <a
+                          id={`nav-${item.id}`}
+                          key={item.id}
+                          onClick={() => setActiveTab(item.id)}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "12px",
+                            color: isActive ? "white" : "rgba(255,255,255,0.7)",
+                            textDecoration: "none",
+                            padding: "9px 24px",
+                            fontSize: "13px",
+                            fontWeight: isActive ? 600 : 500,
+                            cursor: "pointer",
+                            borderLeft: isActive ? "3px solid #FF9933" : "3px solid transparent",
+                            background: isActive ? "rgba(255,255,255,0.1)" : "transparent",
+                            transition: "0.2s",
+                            userSelect: "none"
+                          }}
+                          onMouseEnter={e => {
+                            if (!isActive) {
+                              (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.05)";
+                              (e.currentTarget as HTMLElement).style.color = "white";
+                            }
+                          }}
+                          onMouseLeave={e => {
+                            if (!isActive) {
+                              (e.currentTarget as HTMLElement).style.background = "transparent";
+                              (e.currentTarget as HTMLElement).style.color = "rgba(255,255,255,0.7)";
+                            }
+                          }}
+                        >
+                          <Icon style={{ width: 15, height: 15, opacity: isActive ? 1 : 0.7, color: isActive ? "#FF9933" : "currentColor", flexShrink: 0 }} />
+                          <span>{item.label}</span>
+                        </a>
+                      );
+                    })}
+                  </nav>
+                </div>
+              );
+            })}
 
             {/* VERIFICATION SERVICES section */}
             <div style={{ marginTop: 16 }}>

@@ -106,6 +106,12 @@ export type PlatformModule =
  * Governs which UI modules/tabs render for the logged-in officer.
  */
 export type DashboardRole =
+  // ORCA internal accounts
+  | "orca_owner"
+  | "orca_engineer"
+  | "orca_support"
+  | "orca_demo"
+  // ISD / command accounts
   | "admin_full"
   | "scrb_officer"
   /** @deprecated superseded by `scrb_officer`; kept so the one live account resolves. */
@@ -127,7 +133,37 @@ export interface DashboardRoleConfig {
   modules: PlatformModule[];
 }
 
+const ALL_MODULES: PlatformModule[] = [
+  "command_overview", "ingestion_copilot", "criminal_networks", "heatmaps", "ai_chatbot",
+  "case_registration", "basic_settings", "application_reviews", "directory_logs",
+  "verification_overrides", "ai_monitoring", "audit_trails", "security_controls",
+  "role_assignment", "system_telemetry",
+];
+
 export const DASHBOARD_ROLES: Record<DashboardRole, DashboardRoleConfig> = {
+  orca_owner: {
+    label: "ORCA Platform Owner",
+    description: "Full platform access including role assignment and system configuration.",
+    modules: ALL_MODULES,
+  },
+  orca_engineer: {
+    label: "ORCA Engineer",
+    description: "Full platform access including infrastructure and telemetry.",
+    modules: ALL_MODULES,
+  },
+  orca_support: {
+    label: "ORCA Support",
+    description: "Operational write access across all modules; no role assignment.",
+    modules: ALL_MODULES.filter((m) => m !== "role_assignment"),
+  },
+  orca_demo: {
+    label: "ORCA Demo Account",
+    description: "Read-only guest access; all write operations blocked at the API layer.",
+    modules: [
+      "command_overview", "ingestion_copilot", "criminal_networks", "heatmaps",
+      "ai_chatbot", "case_registration", "basic_settings",
+    ],
+  },
   admin_full: {
     label: "Full Command Administrator",
     description: "Full access to all operational and administration modules.",

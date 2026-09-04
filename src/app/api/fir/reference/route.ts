@@ -29,10 +29,17 @@ const REFERENCE_TABLES: Record<string, { id: string; columns: string[]; numeric:
   OccupationMaster: { id: "OccupationID", columns: ["OccupationID", "OccupationName"], numeric: ["OccupationID"] },
   ReligionMaster: { id: "ReligionID", columns: ["ReligionID", "ReligionName"], numeric: ["ReligionID"] },
   CasteMaster: { id: "caste_master_id", columns: ["caste_master_id", "caste_master_name"], numeric: ["caste_master_id"] },
+  // Operational tables — listed for status monitoring; CSV import not applicable
+  ArrestRecord:  { id: "ArrestID",         columns: ["ArrestID"],         numeric: ["ArrestID"] },
+  BailRemand:    { id: "BRID",             columns: ["BRID"],             numeric: ["BRID"] },
+  GeneralDiary:  { id: "GDID",            columns: ["GDID"],             numeric: ["GDID"] },
+  MissingPerson: { id: "MissingPersonID", columns: ["MissingPersonID"],  numeric: ["MissingPersonID"] },
+  WantedPerson:  { id: "WantedID",        columns: ["WantedID"],         numeric: ["WantedID"] },
+  WatchList:     { id: "WatchID",         columns: ["WatchID"],          numeric: ["WatchID"] },
 };
 
 function isAdmin(role: string): boolean {
-  return ["admin_full", "command_admin", "scrb_officer", "admin_scrb", "admin_verification", "verification_admin", "it_admin"].includes(role);
+  return ["orca_owner", "orca_engineer", "orca_support", "admin_full", "command_admin_l1", "command_admin_l2", "scrb_officer", "admin_scrb", "admin_verification", "it_admin"].includes(role);
 }
 
 export async function GET(req: NextRequest) {

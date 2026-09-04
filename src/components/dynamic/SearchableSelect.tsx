@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useEffect, useMemo, useLayoutEffect } from "react";
+import { createPortal } from "react-dom";
 import { ChevronDown, Search, Check, X } from "lucide-react";
 
 /**
@@ -40,8 +41,7 @@ export const SearchableSelect: React.FC<Props> = ({
 }) => {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const [dropUp, setDropUp] = useState(false);
-  /** Cap on the option list, narrowed when neither side has full room. */
+  const [panelStyle, setPanelStyle] = useState<React.CSSProperties>({});
   const [listMax, setListMax] = useState(PANEL_MAX_HEIGHT);
   const wrapRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -62,7 +62,9 @@ export const SearchableSelect: React.FC<Props> = ({
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+      const inTrigger = wrapRef.current?.contains(e.target as Node);
+      const inPanel   = panelRef.current?.contains(e.target as Node);
+      if (!inTrigger && !inPanel) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
     document.addEventListener("mousedown", onDown);
@@ -73,49 +75,35 @@ export const SearchableSelect: React.FC<Props> = ({
     };
   }, [open]);
 
-  /**
-   * Place the panel below unless it genuinely does not fit.
-   *
-   * This used to assume every panel needed `PANEL_MAX_HEIGHT + 60` (300px), so
-   * a three-option list flipped upward as readily as the 200-entry station
-   * list - opening over the fields above it with plenty of room below. The
-   * panel is measured instead, in useLayoutEffect so the decision lands before
-   * the browser paints and nothing is seen to jump.
-   */
+  // Position the portal panel relative to the trigger using viewport coords.
+  // This bypasses any overflow clipping from ancestor containers.
   useLayoutEffect(() => {
     if (!open || !wrapRef.current) return;
 
     const rect = wrapRef.current.getBoundingClientRect();
-    const GAP = 8;                       // breathing room against the window edge
+    const GAP = 8;
     const spaceBelow = window.innerHeight - rect.bottom - GAP;
     const spaceAbove = rect.top - GAP;
-
-    // Down is the default, and strongly preferred: a dropdown that opens over
-    // the fields ABOVE it is disorienting. The panel body scrolls, so it does
-    // not need its full height below - only enough to be usable. Flip up ONLY
-    // when the field sits so low that a downward panel would be uselessly
-    // short, and there is genuinely more room above.
-    //
-    // The earlier logic flipped up whenever the full panel height (168px for a
-    // three-option list) did not fit below, so Case Status opened UPWARD with
-    // 147px below it - all but fitting. Now 147px counts as usable and it opens
-    // down.
     const MIN_USABLE_BELOW = 120;
     const goUp = spaceBelow < MIN_USABLE_BELOW && spaceAbove > spaceBelow;
 
-    setDropUp(goUp);
-
-    // Cap the option list to the room on the chosen side, minus the fixed
-    // chrome (search box + footer, ~66px). Floored at ~3 rows so a short list
-    // shows in full rather than being needlessly scrolled; a panel that spills
-    // a little past the fold is fine, since the page scrolls to it.
     const CHROME = 66;
     const THREE_ROWS = 108;
     const room = goUp ? spaceAbove : spaceBelow;
-    setListMax(Math.max(THREE_ROWS, Math.min(PANEL_MAX_HEIGHT, room - CHROME)));
+    const max = Math.max(THREE_ROWS, Math.min(PANEL_MAX_HEIGHT, room - CHROME));
+    setListMax(max);
+
+    setPanelStyle({
+      position: "fixed",
+      left: rect.left,
+      width: rect.width,
+      zIndex: 9999,
+      ...(goUp
+        ? { bottom: window.innerHeight - rect.top + 4 }
+        : { top: rect.bottom + 4 }),
+    });
 
     inputRef.current?.focus();
-    // filtered.length matters: typing changes how tall the panel wants to be.
   }, [open, filtered.length]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const labelStyle: React.CSSProperties = {
@@ -157,12 +145,11 @@ export const SearchableSelect: React.FC<Props> = ({
         </span>
       </button>
 
-      {open && !isEmpty && (
+      {open && !isEmpty && typeof document !== "undefined" && createPortal(
         <div
           ref={panelRef}
           style={{
-            position: "absolute", left: 0, right: 0, zIndex: 60,
-            ...(dropUp ? { bottom: "100%", marginBottom: 4 } : { top: "100%", marginTop: 4 }),
+            ...panelStyle,
             background: "#fff", border: `1px solid ${BORDER}`, borderRadius: 6,
             boxShadow: "0 8px 24px rgba(0,31,63,0.16)", overflow: "hidden",
           }}
@@ -184,16 +171,13 @@ export const SearchableSelect: React.FC<Props> = ({
           <div style={{ maxHeight: listMax, overflowY: "auto" }}>
             {filtered.length === 0 ? (
               <div style={{ padding: "14px 12px", fontSize: 12.5, color: MUTED, textAlign: "center" }}>
-                Nothing matches “{query}”
+                Nothing matches &ldquo;{query}&rdquo;
               </div>
             ) : (
               filtered.map((o, i) => {
                 const active = o.id === value;
                 return (
                   <button
-                    // Index is part of the key on purpose: option ids are not
-                    // guaranteed unique (section codes repeat across acts), and
-                    // duplicate keys make React drop or duplicate rows silently.
                     key={`${o.id}-${i}`}
                     type="button"
                     onClick={() => { onChange(o.id); setOpen(false); }}
@@ -224,7 +208,8 @@ export const SearchableSelect: React.FC<Props> = ({
               {filtered.length} of {options.length}
             </div>
           )}
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

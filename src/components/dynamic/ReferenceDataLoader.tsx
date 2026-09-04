@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
-import { Loader2, AlertTriangle, CheckCircle2, Upload, Database, RefreshCw, Table2 } from "lucide-react";
+import { Loader2, AlertTriangle, CheckCircle2, Upload, Database, RefreshCw, Table2, Zap } from "lucide-react";
+import { OrcaLoader } from "@/components/dynamic/OrcaLoader";
 
 const NAVY = "#001f3f";
 const SAFFRON = "#FF9933";
@@ -53,6 +54,12 @@ export const ReferenceDataLoader: React.FC<{ onLoaded?: () => void }> = ({ onLoa
   const [importing, setImporting] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState("");
+  const [seeding, setSeeding] = useState(false);
+  const [seedResult, setSeedResult] = useState<string | null>(null);
+  const [seedingPersons, setSeedingPersons] = useState(false);
+  const [seedPersonResult, setSeedPersonResult] = useState<string | null>(null);
+  const [initTables, setInitTables] = useState(false);
+  const [initResult, setInitResult] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -134,9 +141,7 @@ export const ReferenceDataLoader: React.FC<{ onLoaded?: () => void }> = ({ onLoa
           </button>
         </div>
         {loading ? (
-          <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12.5, color: MUTED }}>
-            <Loader2 style={{ width: 15, height: 15, animation: "spin 1s linear infinite" }} /> Reading table counts…
-          </div>
+          <OrcaLoader padding="8px 0" />
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(168px, 1fr))", gap: 9 }}>
             {tables.map((t) => (
@@ -155,6 +160,176 @@ export const ReferenceDataLoader: React.FC<{ onLoaded?: () => void }> = ({ onLoa
           </div>
         )}
       </div>
+
+      {canEdit && (() => {
+        const headEmpty = tables.find((t) => t.name === "CrimeHead")?.count === 0;
+        const subEmpty  = tables.find((t) => t.name === "CrimeSubHead")?.count === 0;
+        if (!headEmpty && !subEmpty) return null;
+        return (
+          <div style={{ background: "rgba(99,102,241,0.05)", border: "1px solid #c7d2fe", borderRadius: 8, padding: "14px 16px", display: "flex", gap: 14, alignItems: "flex-start" }}>
+            <Zap style={{ width: 18, height: 18, color: "#4f46e5", flexShrink: 0, marginTop: 1 }} />
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: NAVY, marginBottom: 4 }}>
+                Crime Head / Sub-Head tables are empty
+              </div>
+              <div style={{ fontSize: 12, color: MUTED, lineHeight: 1.55, marginBottom: 10 }}>
+                The Major Crime Head and Minor Crime Sub-Head dropdowns in Case Registration need these
+                tables seeded. Click below to load the standard Karnataka IPC crime classification groups
+                (15 heads, 60 sub-heads). Safe to re-run — existing rows are skipped.
+              </div>
+              {seedResult && (
+                <div style={{ fontSize: 12, color: "#065f46", marginBottom: 8 }}>{seedResult}</div>
+              )}
+              <button
+                disabled={seeding}
+                onClick={async () => {
+                  setSeeding(true);
+                  setSeedResult(null);
+                  try {
+                    const res = await fetch("/api/admin/seed/crime-heads", { method: "POST", credentials: "include" });
+                    const d = await res.json();
+                    if (d.success) {
+                      setSeedResult(`Seeded ${d.headsInserted} crime heads and ${d.subHeadsInserted} sub-heads (${d.headsSkipped + d.subHeadsSkipped} already existed).`);
+                      await load();
+                      onLoaded?.();
+                    } else {
+                      setSeedResult(`Error: ${d.error}`);
+                    }
+                  } catch (e: any) {
+                    setSeedResult(`Error: ${e.message}`);
+                  } finally {
+                    setSeeding(false);
+                  }
+                }}
+                style={{
+                  display: "flex", alignItems: "center", gap: 7, background: seeding ? "#94a3b8" : "#4f46e5",
+                  color: "#fff", border: "none", borderRadius: 5, padding: "8px 18px",
+                  fontSize: 12.5, fontWeight: 700, cursor: seeding ? "not-allowed" : "pointer",
+                }}
+              >
+                {seeding
+                  ? <Loader2 style={{ width: 14, height: 14, animation: "spin 1s linear infinite" }} />
+                  : <Zap style={{ width: 14, height: 14 }} />}
+                {seeding ? "Seeding…" : "Seed Karnataka Crime Classifications"}
+              </button>
+            </div>
+          </div>
+        );
+      })()}
+
+      {canEdit && (() => {
+        const religionEmpty = tables.find((t) => t.name === "ReligionMaster")?.count === 0;
+        const casteEmpty    = tables.find((t) => t.name === "CasteMaster")?.count === 0;
+        if (!religionEmpty && !casteEmpty) return null;
+        return (
+          <div style={{ background: "rgba(20,184,166,0.05)", border: "1px solid #99f6e4", borderRadius: 8, padding: "14px 16px", display: "flex", gap: 14, alignItems: "flex-start" }}>
+            <Zap style={{ width: 18, height: 18, color: "#0d9488", flexShrink: 0, marginTop: 1 }} />
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: NAVY, marginBottom: 4 }}>
+                Religion / Caste tables are empty
+              </div>
+              <div style={{ fontSize: 12, color: MUTED, lineHeight: 1.55, marginBottom: 10 }}>
+                The Religion and Caste dropdowns in Case Registration and person forms need these tables seeded.
+                Loads {religionEmpty ? "10 religions" : ""}{religionEmpty && casteEmpty ? " and " : ""}{casteEmpty ? "15 caste categories" : ""}. Safe to re-run — existing rows are skipped.
+              </div>
+              {seedPersonResult && (
+                <div style={{ fontSize: 12, color: "#065f46", marginBottom: 8 }}>{seedPersonResult}</div>
+              )}
+              <button
+                disabled={seedingPersons}
+                onClick={async () => {
+                  setSeedingPersons(true);
+                  setSeedPersonResult(null);
+                  try {
+                    const res = await fetch("/api/admin/seed/person-masters", { method: "POST", credentials: "include" });
+                    const d = await res.json();
+                    if (d.success) {
+                      setSeedPersonResult(`Seeded ${d.religionsInserted} religions and ${d.castesInserted} castes (${d.religionsSkipped + d.castesSkipped} already existed).`);
+                      await load();
+                      onLoaded?.();
+                    } else {
+                      setSeedPersonResult(`Error: ${d.error}`);
+                    }
+                  } catch (e: any) {
+                    setSeedPersonResult(`Error: ${e.message}`);
+                  } finally {
+                    setSeedingPersons(false);
+                  }
+                }}
+                style={{
+                  display: "flex", alignItems: "center", gap: 7, background: seedingPersons ? "#94a3b8" : "#0d9488",
+                  color: "#fff", border: "none", borderRadius: 5, padding: "8px 18px",
+                  fontSize: 12.5, fontWeight: 700, cursor: seedingPersons ? "not-allowed" : "pointer",
+                }}
+              >
+                {seedingPersons
+                  ? <Loader2 style={{ width: 14, height: 14, animation: "spin 1s linear infinite" }} />
+                  : <Zap style={{ width: 14, height: 14 }} />}
+                {seedingPersons ? "Seeding…" : "Seed Religion & Caste Data"}
+              </button>
+            </div>
+          </div>
+        );
+      })()}
+
+      {canEdit && (() => {
+        const OPERATIONAL_TABLES = ["ArrestRecord", "BailRemand", "GeneralDiary", "MissingPerson", "WantedPerson", "WatchList"];
+        const missing = OPERATIONAL_TABLES.filter((t) => {
+          const entry = tables.find((x) => x.name === t);
+          return !entry || entry.count < 0;
+        });
+        if (missing.length === 0) return null;
+        return (
+          <div style={{ background: "rgba(220,38,38,0.04)", border: "1px solid #fca5a5", borderRadius: 8, padding: "14px 16px", display: "flex", gap: 14, alignItems: "flex-start" }}>
+            <AlertTriangle style={{ width: 18, height: 18, color: "#dc2626", flexShrink: 0, marginTop: 1 }} />
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: NAVY, marginBottom: 4 }}>
+                {missing.length} operational table{missing.length !== 1 ? "s" : ""} not yet created
+              </div>
+              <div style={{ fontSize: 12, color: MUTED, lineHeight: 1.55, marginBottom: 8 }}>
+                <strong style={{ color: "#991b1b" }}>{missing.join(", ")}</strong>
+                {" "}— these tables do not exist in Catalyst yet. Click below to initialise them (inserts then immediately deletes a sentinel row so Catalyst creates the schema).
+              </div>
+              {initResult && (
+                <div style={{ fontSize: 12, color: initResult.startsWith("Error") ? "#991b1b" : "#065f46", marginBottom: 8 }}>{initResult}</div>
+              )}
+              <button
+                disabled={initTables}
+                onClick={async () => {
+                  setInitTables(true);
+                  setInitResult(null);
+                  try {
+                    const res = await fetch("/api/admin/seed/missing-tables", { method: "POST", credentials: "include" });
+                    const d = await res.json();
+                    if (d.success) {
+                      setInitResult(`Created ${d.created} table${d.created !== 1 ? "s" : ""} (${d.existed} already existed).`);
+                      await load();
+                    } else {
+                      setInitResult(`Partial: ${d.created} created. Errors: ${d.errors.join("; ")}`);
+                      await load();
+                    }
+                  } catch (e: any) {
+                    setInitResult(`Error: ${e.message}`);
+                  } finally {
+                    setInitTables(false);
+                  }
+                }}
+                style={{
+                  display: "flex", alignItems: "center", gap: 7,
+                  background: initTables ? "#94a3b8" : "#dc2626",
+                  color: "#fff", border: "none", borderRadius: 5, padding: "8px 18px",
+                  fontSize: 12.5, fontWeight: 700, cursor: initTables ? "not-allowed" : "pointer",
+                }}
+              >
+                {initTables
+                  ? <Loader2 style={{ width: 14, height: 14, animation: "spin 1s linear infinite" }} />
+                  : <Database style={{ width: 14, height: 14 }} />}
+                {initTables ? "Initialising…" : "Initialise Missing Tables"}
+              </button>
+            </div>
+          </div>
+        );
+      })()}
 
       {canEdit && (
         <>

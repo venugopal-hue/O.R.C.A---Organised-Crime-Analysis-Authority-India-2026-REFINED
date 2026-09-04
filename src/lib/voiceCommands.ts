@@ -15,18 +15,25 @@ export interface VoiceCommand {
 }
 
 export const VOICE_COMMANDS: VoiceCommand[] = [
-  { id: "dashboard", label: "Command Overview", route: "/dashboard", aliases: ["command overview", "dashboard", "overview", "home"] },
-  { id: "chatbot", label: "AI Chatbot", route: "/dashboard", aliases: ["ai chatbot", "chatbot", "assistant", "chat"] },
-  { id: "analytics", label: "Crime Analytics", route: "/dashboard", aliases: ["crime analytics", "analytics", "statistics", "stats"] },
-  { id: "case-registration", label: "Case Registration", route: "/dashboard", aliases: ["case registration", "register a case", "register case", "new case", "register fir", "file an fir", "file fir"] },
-  { id: "evidence", label: "Evidence Management", route: "/dashboard", aliases: ["evidence management", "evidence locker", "evidence"] },
-  { id: "property-register", label: "Lost & Stolen Property", route: "/dashboard", aliases: ["lost and stolen", "lost property", "stolen property", "property register", "property"] },
-  { id: "tasks", label: "Task & Assignment", route: "/dashboard", aliases: ["task and assignment", "assignments", "my tasks", "tasks"] },
-  { id: "networks", label: "Threat Mapping", route: "/dashboard", aliases: ["threat mapping", "threat map", "heatmap", "relation graph", "link analysis", "threat"] },
-  { id: "news", label: "State Live News", route: "/dashboard", aliases: ["state live news", "live news", "news"] },
-  { id: "verification-document", label: "Document Verification", route: "/verification/document", aliases: ["document verification", "verify document", "verify a document"] },
-  { id: "admin-dashboard", label: "Admin Controls", route: "/dashboard", aliases: ["admin controls", "administration", "admin"] },
-  { id: "settings", label: "Profile Settings", route: "/dashboard", aliases: ["profile settings", "settings", "my profile"] },
+  { id: "dashboard",             label: "Command Overview",        route: "/dashboard", aliases: ["command overview", "dashboard", "overview", "home"] },
+  { id: "chatbot",               label: "AI Chatbot",              route: "/dashboard", aliases: ["ai chatbot", "chatbot", "assistant", "chat"] },
+  { id: "analytics",             label: "Crime Analytics",         route: "/dashboard", aliases: ["crime analytics", "analytics", "statistics", "stats"] },
+  { id: "case-registration",     label: "Case Registration",       route: "/dashboard", aliases: ["case registration", "register a case", "register case", "new case", "register fir", "file an fir", "file fir"] },
+  { id: "general-diary",         label: "General Diary",           route: "/dashboard", aliases: ["general diary", "station diary", "daily diary", "diary entry", "diary"] },
+  { id: "arrest-register",       label: "Arrest Register",         route: "/dashboard", aliases: ["arrest register", "arrest record", "arrests", "arrested persons", "arrest"] },
+  { id: "bail-remand",           label: "Bail & Remand Tracker",   route: "/dashboard", aliases: ["bail and remand", "bail remand", "bail tracker", "remand tracker", "bail", "remand"] },
+  { id: "watch-list",            label: "Watch List",              route: "/dashboard", aliases: ["watch list", "watchlist", "persons of interest", "surveillance list", "watch"] },
+  { id: "wanted-persons",        label: "Wanted Persons",          route: "/dashboard", aliases: ["wanted persons", "wanted list", "wanted criminals", "wanted"] },
+  { id: "predictive-analytics",  label: "Predictive Analytics",    route: "/dashboard", aliases: ["predictive analytics", "crime prediction", "forecast", "predictive", "hotspot prediction"] },
+  { id: "evidence",              label: "Evidence Management",     route: "/dashboard", aliases: ["evidence management", "evidence locker", "evidence"] },
+  { id: "property-register",     label: "Lost & Stolen Property",  route: "/dashboard", aliases: ["lost and stolen", "lost property", "stolen property", "property register", "property"] },
+  { id: "tasks",                 label: "Task & Assignment",       route: "/dashboard", aliases: ["task and assignment", "assignments", "my tasks", "tasks"] },
+  { id: "networks",              label: "Threat Mapping",          route: "/dashboard", aliases: ["threat mapping", "threat map", "relation graph", "link analysis", "threat"] },
+  { id: "heatmap",               label: "District Heatmap",        route: "/dashboard", aliases: ["district heatmap", "heatmap", "heat map", "crime map"] },
+  { id: "news",                  label: "State Live News",         route: "/dashboard", aliases: ["state live news", "live news", "news"] },
+  { id: "verification-document", label: "Document Verification",   route: "/verification/document", aliases: ["document verification", "verify document", "verify a document"] },
+  { id: "admin-dashboard",       label: "Admin Controls",          route: "/dashboard", aliases: ["admin controls", "administration", "admin"] },
+  { id: "settings",              label: "Profile Settings",        route: "/dashboard", aliases: ["profile settings", "settings", "my profile"] },
 ];
 
 export const normaliseCommand = (s: string) =>

@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Loader2, AlertTriangle, RefreshCw, Info, Inbox } from "lucide-react";
+import { OrcaLoader } from "@/components/dynamic/OrcaLoader";
 import { explainThreat, MIN_CASES_FOR_CONFIDENCE, type ThreatScore } from "@/lib/threatIndex";
 import { SearchableSelect, type SelectOption } from "@/components/dynamic/SearchableSelect";
 import { FirLiveAnalytics } from "@/components/dynamic/FirLiveAnalytics";
@@ -308,10 +309,7 @@ export const CrimeAnalytics: React.FC = () => {
       )}
 
       {loading && !data && (
-        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "40px 16px", color: GRAY, fontSize: 13 }}>
-          <Loader2 style={{ width: 16, height: 16, animation: "spin 1s linear infinite" }} />
-          Reading case records…
-        </div>
+        <OrcaLoader padding="40px 16px" />
       )}
 
       {error && (

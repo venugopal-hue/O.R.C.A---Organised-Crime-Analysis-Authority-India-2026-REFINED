@@ -16,6 +16,7 @@ import {
   Search,
 } from "lucide-react";
 import { SearchableSelect, type SelectOption } from "@/components/dynamic/SearchableSelect";
+import { OrcaLoader } from "@/components/dynamic/OrcaLoader";
 import { BarChart, ColumnChart, DonutChart, WaveformChart } from "@/components/dynamic/AnalyticsCharts";
 import { RANGE_OPTIONS } from "@/lib/firAnalytics";
 import { buildOrcaPrintDocument } from "@/lib/printDocument";
@@ -331,11 +332,8 @@ export const FirLiveAnalytics: React.FC = () => {
 
   if (loading && !data) {
     return (
-      <div style={{ padding: 60, textAlign: "center", color: GRAY }}>
-        <Loader2 size={26} style={{ animation: "spin 1s linear infinite", color: SAFFRON }} />
-        <div style={{ marginTop: 12, fontFamily: MONO, fontSize: 11, letterSpacing: 0.6 }}>
-          LOADING FIR TELEMETRY…
-        </div>
+      <div style={{ padding: 60, textAlign: "center" }}>
+        <OrcaLoader />
       </div>
     );
   }
@@ -878,9 +876,7 @@ const DrillDown: React.FC<{
 
         <div style={{ flex: 1, overflow: "auto", padding: "0 20px" }}>
           {busy ? (
-            <div style={{ padding: 40, textAlign: "center", color: GRAY }}>
-              <Loader2 size={20} style={{ animation: "spin 1s linear infinite", color: SAFFRON }} />
-            </div>
+            <OrcaLoader padding="40px 16px" />
           ) : err ? (
             <div style={{ padding: 30, color: RED, fontSize: 13 }}>{err}</div>
           ) : rows.length === 0 ? (

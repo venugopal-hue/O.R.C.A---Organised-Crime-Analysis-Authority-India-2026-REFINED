@@ -41,7 +41,7 @@ Password  : orca_@demo9854
 Role      : orca_demo  (ORCA-LEVEL-IV — READ ONLY)
 ```
 
-> 🟢 **What you can do:** Browse all dashboard modules, view cases, evidence, tasks, analytics, maps, and reports.
+> 🟢 **What you can do:** Browse all dashboard modules, view cases, evidence, tasks, analytics, maps, accused profiles, arrest records, bail/remand orders, missing persons, wanted persons, watch list, general diary, court deadlines, and reports.
 
 > 🔴 **What you cannot do:** Create, edit, or delete any record. All write operations (POST / PATCH / DELETE) are blocked at the API layer — not just hidden in the UI.
 
@@ -57,7 +57,7 @@ Role      : orca_demo  (ORCA-LEVEL-IV — READ ONLY)
 
 ## 🧭 Overview
 
-**O.R.C.A** is a full-stack, classified law enforcement intelligence and administration platform built for the Karnataka State Police. It provides a unified command workspace for criminal investigation management, evidence custody tracking, field task coordination, document verification, and AI-powered criminal network analysis — all backed by a multi-layer role-based access control system.
+**O.R.C.A** is a full-stack, classified law enforcement intelligence and administration platform built for the Karnataka State Police. It provides a unified command workspace for criminal investigation management, accused profiling, arrest and custody tracking, bail/remand monitoring, missing persons and wanted persons registers, watch list management, general diary, court deadline tracking, evidence custody, field task coordination, document verification, predictive analytics, and AI-powered criminal network analysis — all backed by a multi-layer role-based access control system.
 
 ```
 Platform  : O.R.C.A India 2026
@@ -80,7 +80,7 @@ Status    : RESTRICTED — Internal Use Only
 | 🗄️ **Data Store** | Zoho Catalyst Data Store (single source of truth) |
 | 🛡️ **Admin SDK** | Firebase Admin SDK (server-side API routes) |
 | 🤖 **AI Engine** | NVIDIA NIM API (primary) · GROQ API (fallback) |
-| 🗣️ **Voice AI** | Sarvam AI — Indian-hosted TTS/STT for Kannada & Hindi |
+| 🗣️ **Voice AI** | Zoho Zia (primary TTS/STT) · Sarvam AI (fallback) — Indian-hosted, Kannada & Hindi |
 | 🗺️ **Maps** | OpenStreetMap tiles — no Leaflet, no CDN dependency |
 | 🕸️ **Graphs** | D3-force v3 (criminal network relation graph) |
 | 📦 **Barcodes** | JsBarcode · @zxing/library (Code 128 generation & scan) · **Zoho Zia** (2nd-layer decode) |
@@ -95,8 +95,16 @@ Status    : RESTRICTED — Internal Use Only
 ### 🗂️ Case Management
 - **📁 Case Registration** — File FIR, UDR, PAR, and Zero FIR with full multi-step form; IPC/BNS section lookup, GPS location picker, complainant/victim/accused capture
 - **📋 Case Ledger** — Searchable, filterable list of all registered cases with expand, print, and barcode letterhead export
+- **⏱️ Case Timeline Reconstructor** — Enter any Crime Number or Case ID to reconstruct the complete event history: registration, offence window, IPC sections, task activity, and document verification — displayed as a colour-coded, gradient-railed timeline
 - **📊 FIR Live Analytics** — Hand-rolled SVG charts: case velocity, crime-type distribution, station breakdown, status pipeline — no third-party chart library
 - **📈 Crime Analytics** — Aggregated statistics across all cases: trend lines, gravity breakdown, district comparison
+- **⚖️ Court Deadlines** — Tracks the 60-day (heinous) and 90-day (non-heinous) charge-sheet filing deadlines per case; surfaces OVERDUE and CRITICAL cases with days-remaining count
+
+### 👤 Accused & Custody
+- **🧑‍💼 Accused Profile** — Browse all accused persons as clickable cards (with case count badge and REPEAT pill for multi-case offenders); open any profile for a full identity header, tabbed detail view (Cases / Arrests / Bail / Associates), and a one-hop associate graph
+- **🚔 Arrest Register** — Log arrests with ArrestNo auto-number, linked FIR, sections invoked, grounds of arrest, medical examination, and court hearing date; status lifecycle: `IN_CUSTODY → BAILED → REMANDED → RELEASED`
+- **⚖️ Bail / Remand Tracker** — Log bail and remand orders linked to ArrestNo; auto-derives the real Crime Number from the arrest record; expiry countdown with 3-day warning banner; status updates: `ACTIVE → EXPIRED / REVOKED`
+- **🔁 Repeat Offenders** — Analytics view surfacing accused persons appearing across multiple cases; sorted by case count with gravity indicators
 
 ### 🔍 Intelligence & Investigation
 - **🗺️ District Heatmap** — Inline SVG map of all 31 Karnataka districts coloured by real Threat Index from Catalyst. Empty means empty — no fabricated data
@@ -104,6 +112,12 @@ Status    : RESTRICTED — Internal Use Only
 - **📂 District Dossier** — Per-district intelligence summary: threat index, open cases, officer roster
 - **📰 Live News Feeds** — Curated intelligence briefings from authorised sources
 - **📡 Intercepts** — Intercept records module with classification markings
+
+### 📒 Registers & Records
+- **📓 General Diary** — Station-level daily log of all events, complaints, and movements not amounting to an FIR; auto-numbered `GD/YYYY/NNNNN`
+- **🔎 Missing Persons** — Register missing persons with description, last-seen location, and linked FIR; status lifecycle: `MISSING → FOUND → CLOSED`
+- **🎯 Wanted Persons / Absconders** — Maintain a wanted persons register with threat level, reward amount, and issuing station; status lifecycle: `WANTED → APPREHENDED → CANCELLED`
+- **👁️ Watch List** — Flag persons of interest for active monitoring; threat-level classification (HIGH / MEDIUM / LOW); status lifecycle: `ACTIVE → ESCALATED → CLOSED`
 
 ### 🧾 Evidence & Property
 - **🔬 Evidence Registration** — Log collected evidence with type, description, GPS coordinates, seal number, and quantity; auto-numbered `EVD/YYYY/000001`
@@ -115,6 +129,11 @@ Status    : RESTRICTED — Internal Use Only
 - **🔄 Task Lifecycle** — Full audit-logged lifecycle: `ASSIGNED → ACKNOWLEDGED → IN_PROGRESS → COMPLETED / CANCELLED / ON_HOLD`
 - **🔗 Linked Tasks** — View all tasks associated with any case from the case detail panel
 
+### 📊 Analytics & Intelligence
+- **🔮 Predictive Analytics** — AI-powered forecast of case volume, crime hotspots, and district risk trends using historical Catalyst data
+- **🏆 Station Performance** — Comparative performance metrics across police stations: case resolution rate, task completion, and pending workload
+- **📡 Notifications** — Unified real-time alert panel: overdue tasks, bail orders expiring within 3 days, and case charge-sheet deadlines — all urgency-sorted, sourced live from Catalyst
+
 ### 🔐 Verification & Admin
 - **📄 Document Verification** — Scan barcode/QR against the VerificationLedger in Catalyst; shows linked case record panel if matched
 - **🏛️ Command Admin Centre** — Role assignment, account management, RBAC audit logs; ORCA-owner and ISD-Level-I only
@@ -123,10 +142,16 @@ Status    : RESTRICTED — Internal Use Only
 - **📡 Telemetry** — System health, session counts, API latency monitoring
 
 ### 🤖 AI & Intelligence
-- **💬 AI Intelligence Chatbot** — Retrieval-augmented assistant querying live Catalyst records; citations come from retrieval — invented case numbers are flagged, not passed through
-- **🧠 Mini AI Assistant** — Compact embedded widget using the same retrieval backend
-- **🎙️ Voice Command Palette** — Speech-to-text dictation via **Sarvam AI** (Indian-hosted STT/TTS); supports Kannada and Hindi natively. Gated behind explicit user consent — audio leaves the device only after approval. Sarvam is used instead of Chrome's SpeechRecognition because Chrome streams audio to Google's servers, which is unacceptable for a restricted law enforcement deployment
-- **🔊 Multilingual Narration** — Sarvam AI TTS narrates AI responses in Kannada and Hindi. TTS audio is cached server-side by content hash so repeated demo runs bill once. Key rotation across up to 8 `SARVAM_API_KEY_1..8` slots handles per-account credit limits gracefully
+- **💬 AI Intelligence Chatbot** — Retrieval-augmented assistant querying live Catalyst records; citations come from retrieval — invented case numbers are flagged, not passed through. Supports image attachment: scanned FIRs, notices, and evidence photos are transcribed by a vision model before the question is answered
+- **🔍 Live OSINT Engine** — The chatbot performs real-time open-source intelligence lookups when an officer mentions an IP, domain, email, or phone number with investigative intent. All lookups run in parallel server-side; no OSINT data is stored:
+  - **IP addresses (IPv4 + IPv6)** — geolocation (ip-api.com), RDAP ownership & IP range, Tor exit node check (Tor Project bulk list, cached 6 h), URLhaus malware listing, VirusTotal (90+ AV engines), Shodan (open ports, banners, known CVEs), AbuseIPDB confidence score
+  - **Domains** — DNS A records, RDAP registrar/nameservers/expiry, crt.sh certificate transparency (all certs ever issued, useful for hidden subdomain discovery), URLhaus, VirusTotal category & reputation
+  - **Email addresses** — disposable-domain check, LeakCheck breach lookup (breach source names, data fields exposed)
+  - **Phone numbers** — numverify carrier, country, line type (mobile / landline / VOIP), location
+  - Sources are named explicitly in every OSINT reply; the chatbot is instructed never to claim a source was checked unless it appears in the retrieved block
+- **🧠 Mini AI Assistant** — Compact embedded widget using the same retrieval and OSINT backend
+- **🎙️ Voice Command Palette** — Speech-to-text dictation via **Zoho Zia** (primary) with **Sarvam AI** as fallback; supports Kannada and Hindi natively. Gated behind explicit user consent — audio leaves the device only after approval. Indian-hosted providers are used instead of Chrome's SpeechRecognition because Chrome streams audio to Google's servers, which is unacceptable for a restricted law enforcement deployment
+- **🔊 Multilingual Narration** — Zoho Zia TTS (primary) / Sarvam AI (fallback) narrates AI responses in Kannada and Hindi. TTS audio is cached server-side by content hash so repeated demo runs bill once. Key rotation across up to 8 `SARVAM_API_KEY_1..8` slots handles per-account credit limits gracefully
 
 ### 🛡️ Security
 - **🔐 Three-Layer RBAC** — Clearance namespace × ISD Level × Dashboard Role; tab-level enforcement at both UI and API route layer
@@ -157,6 +182,19 @@ Status    : RESTRICTED — Internal Use Only
 │  │  /api/fir/     │  │  /api/tasks/   │  │  /api/evidence/      │  │
 │  │  register      │  │  status/       │  │  custody/            │  │
 │  └────────────────┘  └────────────────┘  └──────────────────────┘  │
+│  ┌────────────────┐  ┌────────────────┐  ┌──────────────────────┐  │
+│  │  /api/accused/ │  │  /api/arrest   │  │  /api/bail-remand    │  │
+│  │  profile/browse│  │  PATCH status  │  │  PATCH status        │  │
+│  └────────────────┘  └────────────────┘  └──────────────────────┘  │
+│  ┌────────────────┐  ┌────────────────┐  ┌──────────────────────┐  │
+│  │ /api/missing-  │  │ /api/wanted-   │  │  /api/watch-list     │  │
+│  │  persons PATCH │  │  persons PATCH │  │  PATCH status        │  │
+│  └────────────────┘  └────────────────┘  └──────────────────────┘  │
+│  ┌────────────────┐  ┌────────────────┐  ┌──────────────────────┐  │
+│  │ /api/case/     │  │ /api/analytics/│  │  /api/notifications  │  │
+│  │ timeline/      │  │ predictive/    │  │  unified alerts      │  │
+│  │ deadlines/     │  │ stations/      │  │                      │  │
+│  └────────────────┘  └────────────────┘  └──────────────────────┘  │
 │  ┌────────────────┐  ┌────────────────┐                             │
 │  │  /api/chat/    │  │  /api/         │                             │
 │  │  NVIDIA/GROQ   │  │  verification/ │                             │
@@ -169,11 +207,19 @@ Status    : RESTRICTED — Internal Use Only
 │  ┌─────────────────┐  │  │  ┌─────────────┐  ┌────────────────────┐ │
 │  │ Authentication  │  │  │  │ Officer     │  │ Case Records       │ │
 │  │ Custom Claims   │  │  │  │ Employee    │  │ CaseMaster         │ │
-│  │ (fallback only) │  │  │  │ OfficerAcc  │  │ Complainant/Victim │ │
+│  │ (fallback only) │  │  │  │ OfficerAcc  │  │ Accused / Arrest   │ │
 │  └─────────────────┘  │  │  └─────────────┘  └────────────────────┘ │
 └───────────────────────┘  │  ┌─────────────┐  ┌────────────────────┐ │
   Authentication only —     │  │ Evidence    │  │ Tasks              │ │
   no Firestore in use.      │  │ EvidCustody │  │ TaskAuditLog       │ │
+                            │  └─────────────┘  └────────────────────┘ │
+                            │  ┌─────────────┐  ┌────────────────────┐ │
+                            │  │ BailRemand  │  │ MissingPerson      │ │
+                            │  │ ArrestRecord│  │ WantedPerson       │ │
+                            │  └─────────────┘  └────────────────────┘ │
+                            │  ┌─────────────┐  ┌────────────────────┐ │
+                            │  │ WatchList   │  │ GeneralDiary       │ │
+                            │  │ Notifications│  │ VerifiedDocument   │ │
                             │  └─────────────┘  └────────────────────┘ │
                             │  ┌─────────────┐  ┌────────────────────┐ │
                             │  │Verification │  │ Reference Tables   │ │
@@ -367,6 +413,8 @@ GET /api/security/vpn-check?simulateVpn=true
 |---|---|---|
 | `/api/auth/session-log` | `POST` | Log session START / RESUME / END to Catalyst |
 | `/api/officer/profile` | `GET` | Fetch officer profile + role from Catalyst |
+| `/api/officer/telemetry` | `GET` | Officer session and system health metrics |
+| `/api/officer/photo` | `GET` | Officer photo from Catalyst file store |
 
 ### 🏛️ Administration (Admin auth required)
 | Endpoint | Method | Description |
@@ -377,15 +425,36 @@ GET /api/security/vpn-check?simulateVpn=true
 | `/api/admin/rbac/create-profile` | `POST` | Provision new officer account in Catalyst + Firebase |
 | `/api/admin/rbac/logs` | `GET` | Fetch RBAC audit log entries from Catalyst |
 | `/api/admin/overview` | `GET` | Platform summary statistics |
-| `/api/admin/officer` | `GET/POST/PATCH` | Officer directory management |
-| `/api/admin/application` | `GET/POST` | Pending registration review |
+| `/api/admin/officer` | `GET / POST / PATCH` | Officer directory management |
+| `/api/admin/application` | `GET / POST` | Pending registration review |
 
 ### 📁 Cases & FIR
 | Endpoint | Method | Description |
 |---|---|---|
 | `/api/fir/register` | `POST` | Register new FIR / UDR / PAR |
 | `/api/fir/cases` | `GET` | List cases; `?view=console` returns mapped shape |
-| `/api/fir/analytics` | `GET` | Aggregated crime statistics |
+| `/api/fir/masters` | `GET` | Reference master data for FIR form |
+| `/api/fir/reference` | `GET` | IPC / BNS section and act lookup |
+| `/api/case/timeline` | `GET` | Full event timeline for one case — registration, tasks, sections, documents |
+| `/api/case/deadlines` | `GET` | Charge-sheet deadline status per open case (60d heinous / 90d others) |
+
+### 👤 Accused & Custody
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/accused/browse` | `GET` | Distinct accused person list with case counts (browse grid) |
+| `/api/accused/profile` | `GET` | Full accused profile: cases, arrests, bail/remand, associates |
+| `/api/accused/repeat` | `GET` | Repeat offenders — accused appearing in 2+ cases |
+| `/api/arrest` | `GET / POST / PATCH` | Arrest records list / create / update status |
+| `/api/bail-remand` | `GET / POST / PATCH` | Bail & remand orders / create / update status |
+
+### 📒 Registers
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/general-diary` | `GET / POST` | General diary entries / create |
+| `/api/missing-persons` | `GET / POST / PATCH` | Missing persons list / register / update status |
+| `/api/wanted-persons` | `GET / POST / PATCH` | Wanted persons list / register / update status |
+| `/api/watch-list` | `GET / POST / PATCH` | Watch list entries / add / update status |
+| `/api/property` | `GET / POST` | Property register (Lost & Stolen / Seized) |
 
 ### ✅ Tasks
 | Endpoint | Method | Description |
@@ -402,10 +471,24 @@ GET /api/security/vpn-check?simulateVpn=true
 | `/api/evidence/custody` | `GET / POST` | Custody chain read / new custody event |
 | `/api/evidence/file` | `GET / POST` | Attach / download evidence file |
 
+### 📊 Analytics
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/analytics/fir` | `GET` | FIR live analytics aggregation |
+| `/api/analytics/crime` | `GET` | District-level crime and threat index |
+| `/api/analytics/stations` | `GET` | Station performance metrics |
+| `/api/analytics/predictive` | `GET` | AI-powered predictive crime analytics |
+
+### 🔔 Notifications
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/notifications` | `GET` | Unified urgent alerts: overdue tasks, bail expiry, case deadlines |
+
 ### 🤖 AI
 | Endpoint | Method | Description |
 |---|---|---|
 | `/api/chat` | `POST` | NVIDIA NIM / GROQ AI chatbot with Catalyst retrieval |
+| `/api/network/case` | `GET` | One-hop relation graph data for a case |
 
 ### 🛡️ Security
 | Endpoint | Method | Description |
@@ -413,14 +496,20 @@ GET /api/security/vpn-check?simulateVpn=true
 | `/api/security/vpn-check` | `GET` | Detect VPN/proxy on requesting IP |
 | `/api/security/vpn-check` | `POST` | Write VPN detection alert to Catalyst audit |
 
-### ✅ Verification
+### ✅ Verification & Voice
 | Endpoint | Method | Description |
 |---|---|---|
 | `/api/verification/document` | `GET / POST` | Two-stage barcode decode: ZXing (Stage 1) → **Zoho Zia** (Stage 2) → verify hash against VerificationLedger |
 | `/api/verification/register` | `POST` | Register new verification record |
-| `/api/voice/tts` | `POST` | Text-to-speech via **Sarvam AI** (Kannada / Hindi / English) |
-| `/api/voice/stt` | `POST` | Speech-to-text transcription via **Sarvam AI** |
+| `/api/voice/tts` | `POST` | Text-to-speech via **Zoho Zia** (primary) / **Sarvam AI** fallback (Kannada / Hindi / English) |
+| `/api/voice/stt` | `POST` | Speech-to-text transcription via **Zoho Zia** (primary) / **Sarvam AI** fallback |
 | `/api/settings/voice` | `GET / POST` | Voice feature toggle and language settings |
+
+### 🌐 Public
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/support` | `POST` | Submit a support ticket (public — no auth) |
+| `/api/bulletins` | `GET` | Security bulletins feed |
 
 ---
 
@@ -455,9 +544,18 @@ GROQ_API_KEY=gsk_your_groq_key             # Fallback AI Engine
 # STT bills per hour. Audio responses are cached by content hash server-side.
 SARVAM_API_KEY_1=your_sarvam_key_1
 SARVAM_API_KEY_2=your_sarvam_key_2         # optional fallback slots 2-8
+
+# ── OSINT API Keys (SERVER-ONLY, all optional) ───────────────────────
+# Each key activates a live source inside the AI chatbot's OSINT engine.
+# Missing keys are skipped gracefully — the chatbot states which sources
+# were not checked rather than silently omitting them.
+VIRUSTOTAL_API_KEY=your_vt_key             # virustotal.com — free, 4 req/min
+SHODAN_API_KEY=your_shodan_key             # shodan.io — free basic; $49 one-time for full scan history
+LEAKCHECK_API_KEY=your_leakcheck_key       # leakcheck.io — free, 50 lookups/day
+NUMVERIFY_API_KEY=your_numverify_key       # numverify.com — free, 100 lookups/month
 ```
 
-> ⚠️ **Never** prefix `ORCA_DS_*`, `FIREBASE_SERVICE_ACCOUNT_KEY`, `NVIDIA_API_KEY`, or `GROQ_API_KEY` with `NEXT_PUBLIC_`. They are server-only secrets.
+> ⚠️ **Never** prefix `ORCA_DS_*`, `FIREBASE_SERVICE_ACCOUNT_KEY`, `NVIDIA_API_KEY`, `GROQ_API_KEY`, or any OSINT key with `NEXT_PUBLIC_`. They are server-only secrets.
 
 > ℹ️ AppSail console rejects env var names containing the reserved keyword `CATALYST`. Use `ORCA_DS_*` names in the AppSail environment config — the code accepts both.
 
@@ -516,6 +614,7 @@ Upload the zip through the AppSail section of the Zoho Catalyst Console. AppSail
 - [ ] All `ORCA_DS_*` environment variables set in AppSail console
 - [ ] `FIREBASE_SERVICE_ACCOUNT_KEY` set as a single-line JSON string
 - [ ] `NVIDIA_API_KEY` and `GROQ_API_KEY` set server-side
+- [ ] OSINT keys set server-side (`VIRUSTOTAL_API_KEY`, `SHODAN_API_KEY`, `LEAKCHECK_API_KEY`, `NUMVERIFY_API_KEY`) — optional but recommended; missing keys are skipped gracefully
 - [ ] Firebase Auth email/password enabled in Firebase Console
 - [ ] `npm run build` completes with 0 TypeScript errors
 - [ ] Reference tables confirmed intact (should total ~1,278 rows)
@@ -558,7 +657,23 @@ Upload the zip through the AppSail section of the Zoho Catalyst Console. AppSail
 │   │   │   ├── fir/
 │   │   │   │   ├── register/                 📁  FIR / UDR / PAR registration
 │   │   │   │   ├── cases/                    📋  Case list + console view
-│   │   │   │   └── analytics/                📊  Crime analytics aggregation
+│   │   │   │   ├── masters/                  📦  Reference master data
+│   │   │   │   └── reference/                📖  IPC / BNS section lookup
+│   │   │   ├── case/
+│   │   │   │   ├── timeline/                 ⏱️  Full event timeline per case
+│   │   │   │   └── deadlines/                ⚖️  Charge-sheet deadline tracker
+│   │   │   ├── accused/
+│   │   │   │   ├── browse/                   🧑‍💼  Distinct accused browse grid
+│   │   │   │   ├── profile/                  👤  Full accused profile + associates
+│   │   │   │   └── repeat/                   🔁  Repeat offender analytics
+│   │   │   ├── arrest/                       🚔  Arrest records (GET/POST/PATCH)
+│   │   │   ├── bail-remand/                  ⚖️  Bail & remand orders (GET/POST/PATCH)
+│   │   │   ├── general-diary/                📓  General diary entries (GET/POST)
+│   │   │   ├── missing-persons/              🔎  Missing persons (GET/POST/PATCH)
+│   │   │   ├── wanted-persons/               🎯  Wanted persons (GET/POST/PATCH)
+│   │   │   ├── watch-list/                   👁️  Watch list (GET/POST/PATCH)
+│   │   │   ├── property/                     🏠  Property register (GET/POST)
+│   │   │   ├── notifications/                🔔  Unified urgent alerts
 │   │   │   ├── tasks/
 │   │   │   │   ├── route.ts                  ✅  Task list + create
 │   │   │   │   ├── status/                   🔄  Lifecycle transitions
@@ -568,11 +683,20 @@ Upload the zip through the AppSail section of the Zoho Catalyst Console. AppSail
 │   │   │   │   ├── route.ts                  🔬  Evidence list + register
 │   │   │   │   ├── custody/                  🔗  Custody chain events
 │   │   │   │   └── file/                     📎  File attachment / download
+│   │   │   ├── analytics/
+│   │   │   │   ├── fir/                      📊  FIR live analytics
+│   │   │   │   ├── crime/                    📈  District crime + threat index
+│   │   │   │   ├── stations/                 🏆  Station performance metrics
+│   │   │   │   └── predictive/               🔮  AI-powered predictive analytics
+│   │   │   ├── network/
+│   │   │   │   └── case/                     🕸️  One-hop relation graph data
 │   │   │   ├── chat/                         🤖  NVIDIA / GROQ AI chatbot
 │   │   │   ├── voice/
-│   │   │   │   ├── tts/                      🗣️  Sarvam AI text-to-speech (Kannada / Hindi)
-│   │   │   │   └── stt/                      🎙️  Sarvam AI speech-to-text transcription
-│   │   │   ├── settings/voice/               ⚙️  Voice feature toggle + language preferences
+│   │   │   │   ├── tts/                      🗣️  Sarvam AI text-to-speech
+│   │   │   │   └── stt/                      🎙️  Sarvam AI speech-to-text
+│   │   │   ├── settings/voice/               ⚙️  Voice feature toggle + language
+│   │   │   ├── bulletins/                    📡  Security bulletins feed
+│   │   │   ├── support/                      🛠️  Public support ticket submission
 │   │   │   ├── security/
 │   │   │   │   └── vpn-check/                🌐  VPN / proxy detection
 │   │   │   └── verification/
@@ -595,14 +719,26 @@ Upload the zip through the AppSail section of the Zoho Catalyst Console. AppSail
 │   │   ├── dynamic/
 │   │   │   ├── CaseRegistration.tsx          📁  FIR / UDR / PAR registration form
 │   │   │   ├── CaseLedger.tsx                📋  Registered cases list + print
+│   │   │   ├── CaseTimeline.tsx              ⏱️  Case event timeline reconstructor
+│   │   │   ├── CourtDeadlines.tsx            ⚖️  Charge-sheet deadline tracker
 │   │   │   ├── FirLiveAnalytics.tsx          📊  Live FIR SVG analytics charts
 │   │   │   ├── CrimeAnalytics.tsx            📈  Aggregated crime statistics
+│   │   │   ├── AccusedProfile.tsx            🧑‍💼  Accused browse grid + profile tabs
+│   │   │   ├── ArrestRegister.tsx            🚔  Arrest record form + status controls
+│   │   │   ├── BailRemandTracker.tsx         ⚖️  Bail/remand orders + expiry alerts
+│   │   │   ├── RepeatOffenders.tsx           🔁  Repeat offender analytics view
+│   │   │   ├── GeneralDiary.tsx              📓  General diary entries
+│   │   │   ├── MissingPersons.tsx            🔎  Missing persons register
+│   │   │   ├── WantedPersons.tsx             🎯  Wanted persons / absconders
+│   │   │   ├── WatchList.tsx                 👁️  Watch list management
 │   │   │   ├── EvidenceRegistration.tsx      🔬  Evidence intake form
 │   │   │   ├── EvidenceTrail.tsx             🔗  SHA-256 custody audit trail
 │   │   │   ├── PropertyRegister.tsx          🏠  Lost / Stolen / Seized property
 │   │   │   ├── TaskAssignment.tsx            ✅  Task creation + assignment
 │   │   │   ├── TaskSummaryCard.tsx           📋  Per-task status card
 │   │   │   ├── LinkedTasks.tsx               🔗  Case-linked task viewer
+│   │   │   ├── PredictiveAnalytics.tsx       🔮  AI predictive crime analytics
+│   │   │   ├── StationPerformance.tsx        🏆  Station performance dashboard
 │   │   │   ├── Network.tsx                   🕸️  D3-force criminal network graph
 │   │   │   ├── MapGrid.tsx                   🗺️  Karnataka district SVG heatmap
 │   │   │   ├── MapPicker.tsx                 📍  OpenStreetMap location picker
@@ -618,6 +754,7 @@ Upload the zip through the AppSail section of the Zoho Catalyst Console. AppSail
 │   │   │   ├── Letterhead.tsx                📜  Report letterhead + barcode
 │   │   │   ├── FIRLetterhead.tsx             📜  FIR-specific letterhead
 │   │   │   ├── Barcode128.tsx                🏷️  Code 128 barcode renderer
+│   │   │   ├── OrcaLoader.tsx                ⏳  Full-page branded loading spinner
 │   │   │   ├── ReferenceDataLoader.tsx       📥  CSV reference data importer
 │   │   │   └── SearchableSelect.tsx          🔍  Type-to-filter dropdown primitive
 │   │   └── layout/
@@ -626,21 +763,32 @@ Upload the zip through the AppSail section of the Zoho Catalyst Console. AppSail
 │   ├── context/
 │   │   ├── AuthContext.tsx                   🔐  Auth state + Catalyst profile resolution
 │   │   └── IntelligenceContext.tsx           🧠  Intelligence data context
+│   ├── hooks/
+│   │   └── useFIROptions.ts                  🔗  FIR crime-number options for form dropdowns
 │   └── lib/
-│       ├── catalyst.ts                       🗄️  Zoho Catalyst HTTP client (OAuth2)
+│       ├── catalyst.ts                       🗄️  Zoho Catalyst HTTP client (OAuth2 + nextId + cache)
 │       ├── firebase.ts                       🔥  Firebase client init
 │       ├── firebaseAdmin.ts                  🛡️  Firebase Admin SDK + auth helpers
-│       ├── permissions.ts                    📋  Role definitions and clearance map
+│       ├── writeGuard.ts                     🔒  Write-operation guard — blocks read-only roles at API layer
 │       ├── rbac.ts                           🗂️  Tab/menu access config per role
+│       ├── permissions.ts                    📋  Role definitions and clearance map
+│       ├── jurisdiction.ts                   🗺️  Officer jurisdiction scope (unit tree)
+│       ├── threatIndex.ts                    📊  District Threat Index formula + GRAVITY_HEINOUS set
+│       ├── networkGraph.ts                   🕸️  Criminal network graph data layer
+│       ├── firCases.ts                       📁  FIR case data layer (analytics aggregation)
+│       ├── firAnalytics.ts                   📈  FIR analytics helpers (date bucketing, age ranges)
+│       ├── systemSettings.ts                 ⚙️  AI model runtime settings
 │       ├── tasks.ts                          ✅  Task types, priorities, lifecycle enums
 │       ├── evidence.ts                       🔬  Evidence data layer
 │       ├── evidenceCustody.ts                🔗  SHA-256 custody chain logic
 │       ├── evidenceValidation.ts             ✅  Evidence form validation
+│       ├── verificationLedger.ts             📄  Verification ledger helpers (hash, register)
 │       ├── sarvam.ts                         🗣️  Sarvam AI TTS/STT client (key rotation + cache)
 │       ├── useVoice.ts                       🎙️  Voice hook (browser dictation gating)
+│       ├── voiceCommands.ts                  🎙️  Voice command dispatch map
 │       ├── adminService.ts                   🛠️  Admin data helpers
 │       ├── chatService.ts                    💬  AI chat service
-│       ├── documentService.ts                📄  Document verification service (ZXing Stage 1 → Zia Stage 2)
+│       ├── documentService.ts                📄  Document verification (ZXing Stage 1 → Zia Stage 2)
 │       ├── officerAccount.ts                 👤  OfficerAccount upsert helpers
 │       └── adminData.ts                      🗄️  Employee creation helpers
 ├── .env.example                              🗝️  Environment variable template
@@ -672,6 +820,10 @@ Upload the zip through the AppSail section of the Zoho Catalyst Console. AppSail
 > ⚙️ **Never edit `app-config.json` or `catalyst.json`**: These are the AppSail deployment manifests. Any edit triggers a redeployment of the live production service.
 
 > 🔑 **Key Rotation**: Regenerate your Firebase service account key and Zoho Catalyst Self-Client refresh token periodically. Update the corresponding environment variables in the AppSail console after each rotation.
+
+> 🔒 **Write Guard**: Every mutating API route (`POST / PATCH / DELETE`) passes through `writeGuard.ts` before touching Catalyst. Read-only roles (`orca_demo`, `field_officer_l4`) are blocked at the route layer regardless of UI state.
+
+> ⏱️ **nextId Race Mitigation**: The `nextId()` allocator serialises within a single server process via a per-table lock queue and adds randomised jitter (0–80 ms) before reading to reduce cross-instance collisions on AppSail multi-instance deployments.
 
 ---
 

@@ -272,13 +272,14 @@ export const MiniAIAssistant: React.FC = () => {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-          prompt: promptForModel,   // attachment text appended, so the model receives it 
-          auditPrompt: userPrompt,   // never promptForModel: it carries attachment text
+        body: JSON.stringify({
+          prompt: promptForModel,
+          auditPrompt: userPrompt,
           images: imageParts,
           history: messages,
           moduleContext: getHumanReadableTab(activeTab),
-          activeCaseId: activeFirId
+          activeCaseId: activeFirId,
+          speechLanguage,
         })
       });
       const data = await res.json();

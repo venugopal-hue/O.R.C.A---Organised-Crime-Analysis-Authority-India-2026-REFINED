@@ -174,7 +174,7 @@ export async function GET(req: NextRequest) {
 
       const bucket = counts.get(districtId)!;
       bucket.total++;
-      if (num(c.GravityOffenceID) === GRAVITY_HEINOUS) bucket.heinous++;
+      if (GRAVITY_HEINOUS.has(num(c.GravityOffenceID) ?? 0)) bucket.heinous++;
       const status = num(c.CaseStatusID);
       if (status === STATUS_UNDER_INVESTIGATION) bucket.underInvestigation++;
       else if (status === STATUS_CHARGE_SHEETED) bucket.chargeSheeted++;

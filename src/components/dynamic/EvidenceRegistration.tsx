@@ -8,6 +8,7 @@ import {
   Search as SearchIcon, ArrowLeft,
 } from "lucide-react";
 import { SearchableSelect, type SelectOption } from "@/components/dynamic/SearchableSelect";
+import { OrcaLoader } from "@/components/dynamic/OrcaLoader";
 import { MapPicker } from "@/components/dynamic/MapPicker";
 import { LinkedTasks } from "@/components/dynamic/LinkedTasks";
 import {
@@ -754,9 +755,7 @@ export const EvidenceRegistration: React.FC = () => {
       {tab === "register-list" && (
         <div style={{ ...cardStyle, padding: 0 }}>
           {loading ? (
-            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "36px 18px", color: GRAY, fontSize: 13 }}>
-              <Loader2 style={{ width: 16, height: 16, animation: "spin 1s linear infinite" }} /> Reading the register…
-            </div>
+            <OrcaLoader padding="36px 18px" />
           ) : visible.length === 0 ? (
             <div style={{ display: "flex", gap: 12, padding: "36px 20px", color: GRAY, fontSize: 13, lineHeight: 1.6 }}>
               <Inbox style={{ width: 18, height: 18, color: MUTED, flexShrink: 0, marginTop: 1 }} />
@@ -886,9 +885,7 @@ export const EvidenceRegistration: React.FC = () => {
           )}
 
           {chainLoading ? (
-            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "28px 18px", color: GRAY, fontSize: 13 }}>
-              <Loader2 style={{ width: 16, height: 16, animation: "spin 1s linear infinite" }} /> Reading the chain…
-            </div>
+            <OrcaLoader padding="28px 18px" />
           ) : (
             <div style={{ padding: "14px 18px" }}>
               {chain.map((c) => (

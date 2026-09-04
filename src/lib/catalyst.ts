@@ -375,6 +375,9 @@ export async function nextId(tableName: string, idColumn: string): Promise<numbe
 }
 
 async function allocateId(tableName: string, idColumn: string): Promise<number> {
+  // Small random jitter (0–80 ms) before reading spreads concurrent AppSail
+  // instances so they are less likely to see the same max at the same instant.
+  await new Promise(r => setTimeout(r, Math.floor(Math.random() * 80)));
   try {
     // Deliberately NOT the cached read: allocating from rows that may be
     // seconds old is exactly how two callers pick the same number.

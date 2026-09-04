@@ -41,6 +41,12 @@ export interface GraphNode {
   detail: { label: string; value: string }[];
   crimeNo?: string;
   caseMasterId?: string;
+  /**
+   * How many hops from the root case this node sits.
+   * 0 = root case, 1 = direct people/cases, 2 = extended (two hops out).
+   * Undefined in notes-mode.
+   */
+  hop?: 0 | 1 | 2;
 }
 
 export interface GraphLink {
@@ -57,6 +63,9 @@ export interface Graph {
     rootCaseMasterId: string;
     counts: Record<string, number>;
     otherCaseCount: number;
+    /** Cases reachable at exactly 2 hops (accused on 1-hop case → their other cases). */
+    twoHopCaseCount: number;
+    hops: 1 | 2;
     identityBasis: string;
     note: string;
   };
@@ -88,7 +97,13 @@ function findCase(caseRows: any[], query: string): any | null {
  * Returns null when the identifier matches no registered case, so the caller
  * can say "not found" rather than draw an empty canvas.
  */
-export async function buildCaseGraph(query: string): Promise<Graph | null> {
+/**
+ * Maximum 2-hop cases added to avoid exploding the graph.
+ * Prioritises cases that share more accused with the network.
+ */
+const MAX_TWO_HOP_CASES = 15;
+
+export async function buildCaseGraph(query: string, hops: 1 | 2 = 1): Promise<Graph | null> {
   const [caseRows, accusedRows, victimRows, complainantRows, units, employees, statuses, gravities] =
     await Promise.all([
       getAllRows("CaseMaster"),
@@ -149,6 +164,7 @@ export async function buildCaseGraph(query: string): Promise<Graph | null> {
     verified: true,
     crimeNo: crimeNoOf.get(rootId),
     caseMasterId: rootId,
+    hop: 0,
     detail: [
       { label: "Crime No.", value: s(root.CrimeNo) || "—" },
       { label: "Registered", value: s(root.CrimeRegisteredDate) || "—" },
@@ -161,12 +177,12 @@ export async function buildCaseGraph(query: string): Promise<Graph | null> {
   // ── Station and investigating officer of the root case ────────────────────
   if (s(root.PoliceStationID) && rootStation) {
     const stId = `station:${s(root.PoliceStationID)}`;
-    add({ id: stId, label: rootStation, kind: "station", verified: true, detail: [{ label: "Unit", value: rootStation }] });
+    add({ id: stId, label: rootStation, kind: "station", verified: true, hop: 1, detail: [{ label: "Unit", value: rootStation }] });
     link(caseNodeId(rootId), stId, "registered at");
   }
   if (s(root.PolicePersonID) && empName.get(s(root.PolicePersonID))) {
     const ioId = `officer:${s(root.PolicePersonID)}`;
-    add({ id: ioId, label: empName.get(s(root.PolicePersonID))!, kind: "officer", verified: true, detail: [{ label: "Investigating Officer", value: empName.get(s(root.PolicePersonID))! }] });
+    add({ id: ioId, label: empName.get(s(root.PolicePersonID))!, kind: "officer", verified: true, hop: 1, detail: [{ label: "Investigating Officer", value: empName.get(s(root.PolicePersonID))! }] });
     link(caseNodeId(rootId), ioId, "investigated by");
   }
 
@@ -186,6 +202,7 @@ export async function buildCaseGraph(query: string): Promise<Graph | null> {
       kind: "accused",
       verified: true,
       caseMasterId: rootId,
+      hop: 1,
       detail: [
         { label: "Role", value: "Accused" },
         { label: "Age", value: a.AgeYear ? s(a.AgeYear) : "Not recorded" },
@@ -205,6 +222,7 @@ export async function buildCaseGraph(query: string): Promise<Graph | null> {
       kind: "victim",
       verified: true,
       caseMasterId: rootId,
+      hop: 1,
       detail: [
         { label: "Role", value: "Victim" },
         { label: "Age", value: v.AgeYear ? s(v.AgeYear) : "Not recorded" },
@@ -224,6 +242,7 @@ export async function buildCaseGraph(query: string): Promise<Graph | null> {
       kind: "complainant",
       verified: true,
       caseMasterId: rootId,
+      hop: 1,
       detail: [{ label: "Role", value: "Complainant" }],
     });
     link(id, caseNodeId(rootId), "complainant in");
@@ -257,16 +276,116 @@ export async function buildCaseGraph(query: string): Promise<Graph | null> {
           verified: true,
           crimeNo: crimeNoOf.get(cid),
           caseMasterId: cid,
+          hop: 1,
           detail: [
             { label: "Crime No.", value: s(oc.CrimeNo) || crimeNoOf.get(cid) || "—" },
             { label: "Registered", value: s(oc.CrimeRegisteredDate) || "—" },
             { label: "Station", value: unitName.get(s(oc.PoliceStationID)) || "Not recorded" },
             { label: "Link", value: `Shares accused "${s(a.AccusedName)}" with ${crimeNoOf.get(rootId)}` },
+            { label: "Hop", value: "1 — direct accused overlap" },
           ],
         });
         counts.otherCase++;
       }
       link(accusedNodeId, otherNodeId, "also accused in");
+    }
+  }
+
+  // ── TWO-HOP EXTENSION ────────────────────────────────────────────────────
+  // For each 1-hop case, find its accused. For each of those accused, find
+  // the OTHER cases they appear on (that are not already in the graph).
+  // This reveals a second ring of connected cases for organised-crime analysis.
+  counts.twoHopCase = 0;
+
+  if (hops === 2) {
+    // Collect all case IDs already in the graph (root + 1-hop).
+    const graphCaseIds = new Set(
+      nodes.filter((n) => n.kind === "case").map((n) => n.caseMasterId).filter(Boolean) as string[]
+    );
+
+    // Build a map of score: caseId → how many accused in THIS graph also appear on it.
+    // Higher score = more shared accused = stronger organised-crime signal.
+    const twoHopScores = new Map<string, { score: number; sharedWith: string[] }>();
+
+    const hopOneCaseIds = [...graphCaseIds].filter((cid) => cid !== rootId);
+
+    for (const hopOneCaseId of hopOneCaseIds) {
+      // Find accused on this 1-hop case.
+      const hopOneAccused = accusedRows
+        .map((r) => unwrap(r, "Accused"))
+        .filter((a) => s(a.CaseMasterID) === hopOneCaseId);
+
+      for (const a of hopOneAccused) {
+        const key = normName(a.AccusedName);
+        const others = [...(casesByName.get(key) || [])].filter(
+          (cid) => cid && !graphCaseIds.has(cid)
+        );
+        for (const cid of others) {
+          if (!twoHopScores.has(cid)) twoHopScores.set(cid, { score: 0, sharedWith: [] });
+          const entry = twoHopScores.get(cid)!;
+          entry.score++;
+          entry.sharedWith.push(s(a.AccusedName));
+        }
+      }
+    }
+
+    // Sort by score descending and cap.
+    const ranked = [...twoHopScores.entries()]
+      .sort((a, b) => b[1].score - a[1].score)
+      .slice(0, MAX_TWO_HOP_CASES);
+
+    for (const [cid, { sharedWith }] of ranked) {
+      const twoHopNodeId = caseNodeId(cid);
+      if (seen.has(twoHopNodeId)) continue;
+
+      const oc = unwrap(
+        caseRows.find((x) => s(unwrap(x, "CaseMaster").CaseMasterID) === cid),
+        "CaseMaster"
+      );
+      add({
+        id: twoHopNodeId,
+        label: crimeNoOf.get(cid) || cid,
+        kind: "case",
+        verified: true,
+        crimeNo: crimeNoOf.get(cid),
+        caseMasterId: cid,
+        hop: 2,
+        detail: [
+          { label: "Crime No.", value: s(oc.CrimeNo) || crimeNoOf.get(cid) || "—" },
+          { label: "Registered", value: s(oc.CrimeRegisteredDate) || "—" },
+          { label: "Station", value: unitName.get(s(oc.PoliceStationID)) || "Not recorded" },
+          { label: "Shared accused", value: [...new Set(sharedWith)].slice(0, 3).join(", ") },
+          { label: "Hop", value: "2 — extended network" },
+        ],
+      });
+      counts.twoHopCase++;
+
+      // Find the accused node(s) that bridge to this 2-hop case and add edges.
+      // We only draw edges from accused that ARE already in the graph to avoid
+      // adding unrooted nodes.
+      const bridgeAccused = accusedRows
+        .map((r) => unwrap(r, "Accused"))
+        .filter((a) => s(a.CaseMasterID) === cid && seen.has(`accused:${s(a.ROWID)}`));
+      if (bridgeAccused.length) {
+        for (const ba of bridgeAccused) {
+          link(`accused:${s(ba.ROWID)}`, twoHopNodeId, "2nd-degree link");
+        }
+      } else {
+        // No direct accused bridge visible — link from any 1-hop case that
+        // shares an accused with this 2-hop case.
+        for (const hopOneCaseId of hopOneCaseIds) {
+          const shared = accusedRows
+            .map((r) => unwrap(r, "Accused"))
+            .filter((a) => {
+              const k = normName(a.AccusedName);
+              return s(a.CaseMasterID) === hopOneCaseId && (casesByName.get(k) || new Set()).has(cid);
+            });
+          if (shared.length) {
+            link(caseNodeId(hopOneCaseId), twoHopNodeId, "2nd-degree link");
+            break;
+          }
+        }
+      }
     }
   }
 
@@ -278,9 +397,14 @@ export async function buildCaseGraph(query: string): Promise<Graph | null> {
       rootCaseMasterId: rootId,
       counts,
       otherCaseCount: counts.otherCase,
+      twoHopCaseCount: counts.twoHopCase ?? 0,
+      hops,
       identityBasis:
         "Cross-case links are matched by accused name. The Accused table has no person-level identifier, so common names may over-link and spelling variants may be missed.",
-      note: "Every node is a registered record. Edges are co-occurrences the schema records, not investigative findings.",
+      note:
+        hops === 2
+          ? "Two-hop view: the root case, its direct network (hop 1), and cases reachable through accused on hop-1 cases (hop 2). Faded nodes are at the outer ring."
+          : "Every node is a registered record. Edges are co-occurrences the schema records, not investigative findings.",
     },
   };
 }
@@ -357,7 +481,7 @@ export async function buildNotesGraph(text: string): Promise<Graph> {
   if (!notes) {
     return {
       nodes: [], links: [],
-      meta: { rootCrimeNo: "", rootCaseMasterId: "", counts: {}, otherCaseCount: 0, identityBasis: "", note: "No notes provided." },
+      meta: { rootCrimeNo: "", rootCaseMasterId: "", counts: {}, otherCaseCount: 0, twoHopCaseCount: 0, hops: 1 as const, identityBasis: "", note: "No notes provided." },
     };
   }
 
@@ -449,6 +573,8 @@ export async function buildNotesGraph(text: string): Promise<Graph> {
       rootCrimeNo: "", rootCaseMasterId: "",
       counts: { entities: nodes.length, confirmed, unverified: nodes.length - confirmed },
       otherCaseCount: 0,
+      twoHopCaseCount: 0,
+      hops: 1 as const,
       identityBasis: "People are matched to the Accused table by name; matching is approximate and record-free entities cannot be verified.",
       note: "Entities and links are extracted from the notes as written. Solid nodes matched a real record; hollow nodes are from the notes only and are not verified.",
     },

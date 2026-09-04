@@ -60,6 +60,7 @@ import {
   BarChart3,
   Cpu
 } from "lucide-react";
+import { OrcaLoader } from "@/components/dynamic/OrcaLoader";
 // No Firestore import. Every read and write in this console now goes through
 // /api/admin/* to Catalyst; the nine collections this file used to touch are
 // no longer the source of truth for anything it displays.
@@ -1325,9 +1326,8 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
   // was keyed on the active tab.
   if (loading && !admin.officers.length && !admin.applications.length) {
     return (
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "400px", color: ADMIN_THEME.textSecondary }}>
-        <Loader2 style={{ width: 40, height: 40, animation: "spin 1s linear infinite", color: ADMIN_THEME.accentGold, marginBottom: 12 }} />
-        <span style={{ fontSize: 13, fontFamily: "JetBrains Mono, monospace" }}>READING THE CATALYST LEDGER...</span>
+      <div style={{ height: "400px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <OrcaLoader />
       </div>
     );
   }
@@ -3563,7 +3563,7 @@ export const CommandAdminCenter: React.FC<CommandAdminCenterProps> = ({ adminTab
                           min={spec.min}
                           max={spec.max}
                           step={spec.step ?? 1}
-                          value={Number(value ?? spec.fallback)}
+                          value={Number(value ?? spec.fallback) || 0}
                           onChange={e => setSettingsDraft(d => ({ ...d, [spec.key]: Number(e.target.value) }))}
                           style={{ width: 170, accentColor: "#FF9933" }}
                         />

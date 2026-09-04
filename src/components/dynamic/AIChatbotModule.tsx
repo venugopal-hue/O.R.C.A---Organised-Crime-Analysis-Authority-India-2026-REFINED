@@ -56,14 +56,27 @@ const LANGUAGE_NAMES: Record<string, string> = {
 
 const getHumanReadableTab = (tab: string) => {
   switch (tab) {
-    case "dashboard": return "Dashboard";
-    case "analytics": return "Analytics";
-    case "heatmap": return "Heatmap";
-    case "networks": return "Threat Mapping";
-    case "copilot": return "Copilot";
-    case "reports": return "Reports";
-    case "verification-document": return "Verification";
-    case "settings": return "Settings";
+    case "dashboard":             return "Dashboard";
+    case "analytics":             return "Crime Analytics";
+    case "heatmap":               return "District Heatmap";
+    case "networks":              return "Threat Mapping / Criminal Networks";
+    case "copilot":               return "Copilot";
+    case "reports":               return "Reports";
+    case "verification-document": return "Document Verification";
+    case "settings":              return "Settings";
+    case "case-registration":     return "Case Registration (FIR Filing)";
+    case "missing-persons":       return "Missing Persons Register";
+    case "repeat-offenders":      return "Repeat Offenders";
+    case "accused-profile":       return "Accused Profile";
+    case "court-deadlines":       return "Court Deadlines";
+    case "evidence-locker":       return "Evidence Locker";
+    case "property-register":     return "Property Register";
+    case "general-diary":         return "General Diary";
+    case "arrest-register":       return "Arrest Register";
+    case "bail-remand":           return "Bail & Remand Tracker";
+    case "watch-list":            return "Watch List";
+    case "wanted-persons":        return "Wanted Persons";
+    case "predictive-analytics":  return "Predictive Analytics";
     default: return tab;
   }
 };
@@ -1271,7 +1284,7 @@ Matched **${displayName}**
               {groupedConvs.pinned.length > 0 && (
                 <div>
                   <div style={{ fontSize: "10.5px", fontWeight: 700, color: "#FF9933", letterSpacing: "0.08em", textTransform: "uppercase", paddingLeft: 6, marginBottom: 6 }}>📌 Pinned Cases</div>
-                  {groupedConvs.pinned.map(c => renderSidebarCard(c))}
+                  {groupedConvs.pinned.map(c => <React.Fragment key={`pinned-${c.id}`}>{renderSidebarCard(c)}</React.Fragment>)}
                 </div>
               )}
 
@@ -1279,7 +1292,7 @@ Matched **${displayName}**
               {groupedConvs.today.length > 0 && (
                 <div>
                   <div style={{ fontSize: "10.5px", fontWeight: 700, color: "rgba(255,255,255,0.4)", letterSpacing: "0.08em", textTransform: "uppercase", paddingLeft: 6, marginBottom: 6 }}>🕒 Today</div>
-                  {groupedConvs.today.map(c => renderSidebarCard(c))}
+                  {groupedConvs.today.map(c => <React.Fragment key={`today-${c.id}`}>{renderSidebarCard(c)}</React.Fragment>)}
                 </div>
               )}
 
@@ -1287,7 +1300,7 @@ Matched **${displayName}**
               {groupedConvs.yesterday.length > 0 && (
                 <div>
                   <div style={{ fontSize: "10.5px", fontWeight: 700, color: "rgba(255,255,255,0.4)", letterSpacing: "0.08em", textTransform: "uppercase", paddingLeft: 6, marginBottom: 6 }}>🕒 Yesterday</div>
-                  {groupedConvs.yesterday.map(c => renderSidebarCard(c))}
+                  {groupedConvs.yesterday.map(c => <React.Fragment key={`yesterday-${c.id}`}>{renderSidebarCard(c)}</React.Fragment>)}
                 </div>
               )}
 
@@ -1295,7 +1308,7 @@ Matched **${displayName}**
               {groupedConvs.prev7days.length > 0 && (
                 <div>
                   <div style={{ fontSize: "10.5px", fontWeight: 700, color: "rgba(255,255,255,0.4)", letterSpacing: "0.08em", textTransform: "uppercase", paddingLeft: 6, marginBottom: 6 }}>📅 Previous 7 Days</div>
-                  {groupedConvs.prev7days.map(c => renderSidebarCard(c))}
+                  {groupedConvs.prev7days.map(c => <React.Fragment key={`prev7-${c.id}`}>{renderSidebarCard(c)}</React.Fragment>)}
                 </div>
               )}
 
@@ -1303,7 +1316,7 @@ Matched **${displayName}**
               {groupedConvs.older.length > 0 && (
                 <div>
                   <div style={{ fontSize: "10.5px", fontWeight: 700, color: "rgba(255,255,255,0.4)", letterSpacing: "0.08em", textTransform: "uppercase", paddingLeft: 6, marginBottom: 6 }}>📁 Older Sessions</div>
-                  {groupedConvs.older.map(c => renderSidebarCard(c))}
+                  {groupedConvs.older.map(c => <React.Fragment key={`older-${c.id}`}>{renderSidebarCard(c)}</React.Fragment>)}
                 </div>
               )}
 

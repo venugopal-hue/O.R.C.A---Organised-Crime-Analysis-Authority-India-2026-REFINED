@@ -90,7 +90,7 @@ export const RBAC_CONFIG: Record<DashboardRoleType, RoleConfig> = {
       "audit_infrastructure",
     ],
     allowedTabs: [
-      "dashboard", "chatbot", "case-registration", "evidence", "property-register", "tasks", "analytics", "fir", "networks", "news", "reports",
+      "dashboard", "chatbot", "case-registration", "case-timeline", "court-deadlines", "general-diary", "arrest-register", "bail-remand", "watch-list", "wanted-persons", "missing-persons", "repeat-offenders", "accused-profile", "station-performance", "evidence", "property-register", "tasks", "analytics", "predictive-analytics", "networks", "news", "reports",
       "verification-document", "settings",
       "admin-dashboard", "admin-pending", "admin-applications", "admin-directory",
       "admin-roles", "admin-verification", "admin-analytics", "admin-ai",
@@ -117,7 +117,7 @@ export const RBAC_CONFIG: Record<DashboardRoleType, RoleConfig> = {
       "audit_infrastructure",
     ],
     allowedTabs: [
-      "dashboard", "chatbot", "case-registration", "evidence", "property-register", "tasks", "analytics", "fir", "networks", "news", "reports",
+      "dashboard", "chatbot", "case-registration", "case-timeline", "court-deadlines", "general-diary", "arrest-register", "bail-remand", "watch-list", "wanted-persons", "missing-persons", "repeat-offenders", "accused-profile", "station-performance", "evidence", "property-register", "tasks", "analytics", "predictive-analytics", "networks", "news", "reports",
       "verification-document", "settings",
       "admin-dashboard", "admin-pending", "admin-applications", "admin-directory",
       "admin-roles", "admin-verification", "admin-analytics", "admin-ai",
@@ -142,7 +142,7 @@ export const RBAC_CONFIG: Record<DashboardRoleType, RoleConfig> = {
       "audit_infrastructure",
     ],
     allowedTabs: [
-      "dashboard", "chatbot", "case-registration", "evidence", "property-register", "tasks", "analytics", "fir", "networks", "news", "reports",
+      "dashboard", "chatbot", "case-registration", "case-timeline", "court-deadlines", "general-diary", "arrest-register", "bail-remand", "watch-list", "wanted-persons", "missing-persons", "repeat-offenders", "accused-profile", "station-performance", "evidence", "property-register", "tasks", "analytics", "predictive-analytics", "networks", "news", "reports",
       "verification-document", "settings",
       "admin-dashboard", "admin-pending", "admin-applications", "admin-directory",
       "admin-roles", "admin-verification", "admin-analytics", "admin-ai",
@@ -170,7 +170,7 @@ export const RBAC_CONFIG: Record<DashboardRoleType, RoleConfig> = {
       "audit_infrastructure",
     ],
     allowedTabs: [
-      "dashboard", "chatbot", "case-registration", "evidence", "property-register", "tasks", "analytics", "fir", "networks", "news", "reports",
+      "dashboard", "chatbot", "case-registration", "case-timeline", "court-deadlines", "general-diary", "arrest-register", "bail-remand", "watch-list", "wanted-persons", "missing-persons", "repeat-offenders", "accused-profile", "station-performance", "evidence", "property-register", "tasks", "analytics", "predictive-analytics", "networks", "news", "reports",
       "verification-document", "settings",
       "admin-dashboard", "admin-pending", "admin-applications", "admin-directory",
       "admin-roles", "admin-verification", "admin-analytics", "admin-ai",
@@ -198,7 +198,7 @@ export const RBAC_CONFIG: Record<DashboardRoleType, RoleConfig> = {
       "audit_infrastructure",
     ],
     allowedTabs: [
-      "dashboard", "chatbot", "case-registration", "evidence", "property-register", "tasks", "analytics", "fir", "networks", "news", "reports",
+      "dashboard", "chatbot", "case-registration", "case-timeline", "court-deadlines", "general-diary", "arrest-register", "bail-remand", "watch-list", "wanted-persons", "missing-persons", "repeat-offenders", "accused-profile", "station-performance", "evidence", "property-register", "tasks", "analytics", "predictive-analytics", "networks", "news", "reports",
       "verification-document", "settings",
       "admin-dashboard", "admin-pending", "admin-applications", "admin-directory",
       "admin-roles", "admin-verification", "admin-analytics", "admin-ai",
@@ -213,7 +213,8 @@ export const RBAC_CONFIG: Record<DashboardRoleType, RoleConfig> = {
     label: "O.R.C.A Support",
     clearance: "ORCA-LEVEL-III",
     writeAccess: "operational",
-    // IT team. Sees everything; cannot change roles, settings or AI configuration.
+    // Operational write only — can manage cases, evidence, approvals, and applications.
+    // Cannot change roles, AI config, or platform settings (config writes blocked at route layer).
     allowedMenuSections: [
       "command_center",
       "verification_services",
@@ -222,15 +223,14 @@ export const RBAC_CONFIG: Record<DashboardRoleType, RoleConfig> = {
     ],
     allowedAdminSubSections: [
       "access_verification",
-      "ai_intelligence",
       "audit_infrastructure",
     ],
     allowedTabs: [
-      "dashboard", "chatbot", "case-registration", "evidence", "property-register", "tasks", "analytics", "fir", "networks", "news", "reports",
+      "dashboard", "chatbot", "case-registration", "case-timeline", "court-deadlines", "general-diary", "arrest-register", "bail-remand", "watch-list", "wanted-persons", "missing-persons", "repeat-offenders", "accused-profile", "station-performance", "evidence", "property-register", "tasks", "analytics", "predictive-analytics", "networks", "news", "reports",
       "verification-document", "settings",
       "admin-dashboard", "admin-pending", "admin-applications", "admin-directory",
-      "admin-roles", "admin-verification", "admin-analytics", "admin-ai",
-      "admin-model", "admin-audit", "admin-security", "admin-warnings", "admin-support", "admin-reports", "admin-settings",
+      "admin-verification", "admin-analytics", "admin-audit", "admin-security",
+      "admin-warnings", "admin-support", "admin-reports",
     ],
     defaultTab: "admin-dashboard",
     redirectPath: "/dashboard",
@@ -241,26 +241,19 @@ export const RBAC_CONFIG: Record<DashboardRoleType, RoleConfig> = {
     label: "O.R.C.A Demonstration (Read Only)",
     clearance: "ORCA-LEVEL-IV",
     writeAccess: "none",
-    // Demonstration. Every screen, no writes — enforced by the route guard, not just by hiding controls.
+    // Read-only guest. Sees all operational screens; no admin config, no role management.
+    // All mutating routes are blocked server-side — hiding tabs is a UX choice, not the guard.
     allowedMenuSections: [
       "command_center",
       "verification_services",
       "user_panel",
-      "admin_controls",
     ],
-    allowedAdminSubSections: [
-      "access_verification",
-      "ai_intelligence",
-      "audit_infrastructure",
-    ],
+    allowedAdminSubSections: [],
     allowedTabs: [
-      "dashboard", "chatbot", "case-registration", "evidence", "property-register", "tasks", "analytics", "fir", "networks", "news", "reports",
+      "dashboard", "chatbot", "case-registration", "case-timeline", "court-deadlines", "general-diary", "arrest-register", "bail-remand", "watch-list", "wanted-persons", "missing-persons", "repeat-offenders", "accused-profile", "station-performance", "evidence", "property-register", "tasks", "analytics", "predictive-analytics", "networks", "news", "reports",
       "verification-document", "settings",
-      "admin-dashboard", "admin-pending", "admin-applications", "admin-directory",
-      "admin-roles", "admin-verification", "admin-analytics", "admin-ai",
-      "admin-model", "admin-audit", "admin-security", "admin-warnings", "admin-support", "admin-reports", "admin-settings",
     ],
-    defaultTab: "admin-dashboard",
+    defaultTab: "dashboard",
     redirectPath: "/dashboard",
   },
 
@@ -294,7 +287,7 @@ export const RBAC_CONFIG: Record<DashboardRoleType, RoleConfig> = {
     allowedMenuSections: ["admin_controls", "user_panel"],
     allowedAdminSubSections: ["ai_intelligence", "audit_infrastructure"],
     allowedTabs: [
-      "admin-pending", "admin-analytics", "admin-ai", "admin-model",
+      "dashboard", "admin-pending", "admin-analytics", "admin-ai", "admin-model",
       "admin-audit", "admin-security", "admin-warnings", "admin-reports", "reports",
       "admin-settings", "settings",
     ],
@@ -324,7 +317,7 @@ export const RBAC_CONFIG: Record<DashboardRoleType, RoleConfig> = {
     allowedMenuSections: ["admin_controls", "user_panel"],
     allowedAdminSubSections: ["ai_intelligence", "audit_infrastructure"],
     allowedTabs: [
-      "admin-pending", "admin-analytics", "admin-ai", "admin-model",
+      "dashboard", "admin-pending", "admin-analytics", "admin-ai", "admin-model",
       "admin-audit", "admin-security", "admin-warnings", "admin-reports", "reports",
       "admin-settings", "settings",
     ],
@@ -340,7 +333,7 @@ export const RBAC_CONFIG: Record<DashboardRoleType, RoleConfig> = {
     allowedMenuSections: ["admin_controls", "user_panel"],
     allowedAdminSubSections: ["audit_infrastructure"],
     allowedTabs: [
-      "admin-audit", "admin-security", "admin-warnings", "admin-support", "admin-settings", "settings",
+      "dashboard", "admin-audit", "admin-security", "admin-warnings", "admin-support", "admin-settings", "settings",
     ],
     defaultTab: "admin-audit",
     redirectPath: "/dashboard",
@@ -351,11 +344,12 @@ export const RBAC_CONFIG: Record<DashboardRoleType, RoleConfig> = {
     label: "Verification Administration Officer",
     clearance: "ISD-LEVEL-III",
     writeAccess: "full",
-    allowedMenuSections: ["admin_controls", "user_panel"],
+    allowedMenuSections: ["admin_controls", "user_panel", "verification_services"],
     allowedAdminSubSections: ["access_verification"],
     allowedTabs: [
+      "dashboard", "verification-document", "settings",
       "admin-dashboard", "admin-pending", "admin-applications", "admin-directory",
-      "admin-roles", "admin-verification", "settings",
+      "admin-roles", "admin-verification",
     ],
     defaultTab: "admin-applications",
     redirectPath: "/dashboard",
@@ -366,10 +360,10 @@ export const RBAC_CONFIG: Record<DashboardRoleType, RoleConfig> = {
     label: "Verification Administrator (Level II)",
     clearance: "ISD-LEVEL-II",
     writeAccess: "full",
-    allowedMenuSections: ["admin_controls", "user_panel", "command_center"],
+    allowedMenuSections: ["admin_controls", "user_panel", "command_center", "verification_services"],
     allowedAdminSubSections: ["access_verification"],
     allowedTabs: [
-      "dashboard", "settings",
+      "dashboard", "verification-document", "settings",
       "admin-dashboard", "admin-pending", "admin-applications",
       "admin-directory", "admin-verification",
     ],
@@ -380,10 +374,10 @@ export const RBAC_CONFIG: Record<DashboardRoleType, RoleConfig> = {
     label: "Verification Administrator (Level III)",
     clearance: "ISD-LEVEL-III",
     writeAccess: "full",
-    allowedMenuSections: ["admin_controls", "user_panel", "command_center"],
+    allowedMenuSections: ["admin_controls", "user_panel", "command_center", "verification_services"],
     allowedAdminSubSections: ["access_verification"],
     allowedTabs: [
-      "dashboard", "settings",
+      "dashboard", "verification-document", "settings",
       "admin-dashboard", "admin-pending", "admin-applications",
       "admin-directory", "admin-verification",
     ],
@@ -402,9 +396,13 @@ export const RBAC_CONFIG: Record<DashboardRoleType, RoleConfig> = {
       "user_panel",
     ],
     allowedAdminSubSections: [],
+    // ISD-LEVEL-III: full investigation suite + intelligence tools + verification.
+    // predictive-analytics and station-performance are command-level (ISD-LEVEL-II+) only.
     allowedTabs: [
-      "dashboard", "chatbot", "case-registration", "evidence", "property-register", "tasks", "analytics", "fir", "networks",
-      "news", "reports", "verification-document", "settings",
+      "dashboard", "chatbot", "case-registration", "case-timeline", "court-deadlines",
+      "general-diary", "arrest-register", "bail-remand", "accused-profile", "watch-list",
+      "wanted-persons", "missing-persons", "repeat-offenders", "evidence", "property-register",
+      "tasks", "analytics", "networks", "news", "reports", "verification-document", "settings",
     ],
     defaultTab: "dashboard",
     redirectPath: "/dashboard",
@@ -417,9 +415,13 @@ export const RBAC_CONFIG: Record<DashboardRoleType, RoleConfig> = {
     writeAccess: "full",
     allowedMenuSections: ["command_center", "user_panel"],
     allowedAdminSubSections: [],
+    // ISD-LEVEL-IV (deprecated): core investigation only. No intelligence analytics,
+    // no network graph, no verification — those are L3+.
     allowedTabs: [
-      "dashboard", "chatbot", "case-registration", "evidence", "property-register", "tasks", "analytics", "fir", "networks",
-      "news", "reports", "settings",
+      "dashboard", "chatbot", "case-registration", "case-timeline", "court-deadlines",
+      "general-diary", "arrest-register", "bail-remand", "accused-profile", "watch-list",
+      "wanted-persons", "missing-persons", "evidence", "property-register",
+      "tasks", "analytics", "news", "reports", "settings",
     ],
     defaultTab: "dashboard",
     redirectPath: "/dashboard",
@@ -432,9 +434,14 @@ export const RBAC_CONFIG: Record<DashboardRoleType, RoleConfig> = {
     writeAccess: "full",
     allowedMenuSections: ["command_center", "user_panel"],
     allowedAdminSubSections: [],
+    // ISD-LEVEL-III: full investigation suite + intelligence tools (repeat offenders,
+    // network graph, verification). predictive-analytics and station-performance
+    // are command-level (ISD-LEVEL-II+) only.
     allowedTabs: [
-      "dashboard", "chatbot", "case-registration", "evidence", "property-register", "tasks", "analytics", "fir", "networks",
-      "news", "reports", "settings",
+      "dashboard", "chatbot", "case-registration", "case-timeline", "court-deadlines",
+      "general-diary", "arrest-register", "bail-remand", "accused-profile", "watch-list",
+      "wanted-persons", "missing-persons", "repeat-offenders", "evidence", "property-register",
+      "tasks", "analytics", "networks", "news", "reports", "verification-document", "settings",
     ],
     defaultTab: "dashboard",
     redirectPath: "/dashboard",
@@ -445,9 +452,13 @@ export const RBAC_CONFIG: Record<DashboardRoleType, RoleConfig> = {
     writeAccess: "full",
     allowedMenuSections: ["command_center", "user_panel"],
     allowedAdminSubSections: [],
+    // ISD-LEVEL-IV: core investigation only. No repeat-offenders analytics,
+    // no network graph, no verification-document, no predictive or station tools.
     allowedTabs: [
-      "dashboard", "chatbot", "case-registration", "evidence", "property-register", "tasks", "analytics", "fir", "networks",
-      "news", "reports", "settings",
+      "dashboard", "chatbot", "case-registration", "case-timeline", "court-deadlines",
+      "general-diary", "arrest-register", "bail-remand", "accused-profile", "watch-list",
+      "wanted-persons", "missing-persons", "evidence", "property-register",
+      "tasks", "analytics", "news", "reports", "settings",
     ],
     defaultTab: "dashboard",
     redirectPath: "/dashboard",

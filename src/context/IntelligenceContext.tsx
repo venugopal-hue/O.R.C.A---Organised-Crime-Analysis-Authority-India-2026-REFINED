@@ -212,14 +212,16 @@ export const IntelligenceProvider: React.FC<{ children: React.ReactNode }> = ({ 
     const loadChats = async () => {
       if (loading) return;
       if (user?.uid) {
-        const list = await dbLoadConversations(user.uid);
+        const raw = await dbLoadConversations(user.uid);
+        const seen = new Set<string>();
+        const list = raw.filter(c => { if (seen.has(c.id)) return false; seen.add(c.id); return true; });
         setConversations(list);
         if (list.length > 0) {
           const active = list.find(c => c.pinned) || list[0];
           setActiveConvId(active.id);
         } else {
           // Create an initial empty chat conversation
-          const newId = `conv-${Date.now()}`;
+          const newId = `conv-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
           const initialConv: ChatConversation = {
             id: newId,
             title: "New Conversation",
@@ -242,7 +244,7 @@ export const IntelligenceProvider: React.FC<{ children: React.ReactNode }> = ({ 
   }, [user, canPersistPersonalData]);
 
   const createConversation = (title?: string) => {
-    const newId = `conv-${Date.now()}`;
+    const newId = `conv-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const newConv: ChatConversation = {
       id: newId,
       title: title || "New Conversation",

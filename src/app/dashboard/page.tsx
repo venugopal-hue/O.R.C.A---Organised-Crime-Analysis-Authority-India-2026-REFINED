@@ -30,6 +30,18 @@ import { TaskAssignment } from "@/components/dynamic/TaskAssignment";
 import { TaskSummaryCard } from "@/components/dynamic/TaskSummaryCard";
 import { LiveNewsFeeds } from "@/components/dynamic/LiveNewsFeeds";
 import { CrimeAnalytics } from "@/components/dynamic/CrimeAnalytics";
+import { CaseTimeline } from "@/components/dynamic/CaseTimeline";
+import { CourtDeadlines } from "@/components/dynamic/CourtDeadlines";
+import { RepeatOffenders } from "@/components/dynamic/RepeatOffenders";
+import { AccusedProfile } from "@/components/dynamic/AccusedProfile";
+import { StationPerformance } from "@/components/dynamic/StationPerformance";
+import { MissingPersons } from "@/components/dynamic/MissingPersons";
+import { GeneralDiary } from "@/components/dynamic/GeneralDiary";
+import { ArrestRegister } from "@/components/dynamic/ArrestRegister";
+import { BailRemandTracker } from "@/components/dynamic/BailRemandTracker";
+import { WatchListModule } from "@/components/dynamic/WatchList";
+import { WantedPersons } from "@/components/dynamic/WantedPersons";
+import { PredictiveAnalytics } from "@/components/dynamic/PredictiveAnalytics";
 import { 
   Plus, 
   ChevronRight, 
@@ -212,6 +224,7 @@ const MainContent: React.FC = () => {
   const [networkSubTab, setNetworkSubTab] = useState<"heatmap" | "visualizer">("heatmap");
   // Relation graph — real-data, from src/lib/networkGraph.ts via /api/network/*.
   const [graphMode, setGraphMode] = useState<"case" | "notes">("case");
+  const [graphHops, setGraphHops] = useState<1 | 2>(1);
   const [caseQuery, setCaseQuery] = useState("");
   const [notesText, setNotesText] = useState("");
   const [graphData, setGraphData] = useState<{ nodes: any[]; links: any[] } | null>(null);
@@ -511,15 +524,13 @@ const MainContent: React.FC = () => {
    * below — so the fallback handed back a row whose `.district` was undefined
    * and the tab threw on `.toUpperCase()`. Empty tables were all that hid it.
    */
-  // The person selected on the relation graph. `selectedSuspectId` holds an
-  // Accused ROWID now, not a mock.ts "sus-01".
   const buildCaseGraph = async () => {
     const q = caseQuery.trim();
     if (!q) return;
     const seq = ++graphSeq.current;
     setGraphLoading(true); setGraphError(""); setGraphNode(null);
     try {
-      const res = await fetch(`/api/network/case?q=${encodeURIComponent(q)}`, { credentials: "include" });
+      const res = await fetch(`/api/network/case?q=${encodeURIComponent(q)}&hops=${graphHops}`, { credentials: "include" });
       const data = await res.json();
       if (seq !== graphSeq.current) return;
       if (!data?.success) { setGraphError(data?.error || "Could not build the graph."); setGraphData(null); setGraphMeta(null); }
@@ -876,7 +887,7 @@ const MainContent: React.FC = () => {
                   <div style={{ display: "flex", flexDirection: "column", gap: 16, flex: 1, minHeight: 480 }}>
                     {/* Input toolbar */}
                     <div style={{ background: ORCA.white, border: `1px solid ${ORCA.border}`, borderRadius: 8, boxShadow: ORCA.shadow, padding: 16 }}>
-                      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
                         {([["case", "By Case Number"], ["notes", "From Notes"]] as const).map(([m, label]) => (
                           <button key={m} onClick={() => setGraphMode(m)}
                             style={{ padding: "6px 14px", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer",
@@ -886,6 +897,25 @@ const MainContent: React.FC = () => {
                             {label}
                           </button>
                         ))}
+                        {/* Hop depth toggle — only meaningful in case mode */}
+                        {graphMode === "case" && (
+                          <div style={{ display: "flex", alignItems: "center", gap: 6, marginLeft: "auto" }}>
+                            <span style={{ fontSize: 11, color: ORCA.textGray, fontWeight: 600 }}>Depth:</span>
+                            {([1, 2] as const).map((h) => (
+                              <button key={h}
+                                onClick={() => setGraphHops(h)}
+                                title={h === 1 ? "Direct connections only" : "Extend to cases reachable through hop-1 accused (organised crime analysis)"}
+                                style={{
+                                  padding: "4px 12px", borderRadius: 6, fontSize: 12, fontWeight: 700, cursor: "pointer",
+                                  border: `1px solid ${graphHops === h ? ORCA.navy : ORCA.border}`,
+                                  background: graphHops === h ? ORCA.navy : "transparent",
+                                  color: graphHops === h ? "white" : ORCA.textGray,
+                                }}>
+                                {h}-hop
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </div>
 
                       {graphMode === "case" ? (
@@ -929,7 +959,10 @@ const MainContent: React.FC = () => {
                             <>
                               <span>ROOT: {graphMeta.rootCrimeNo}</span>
                               <span>ACCUSED: {graphMeta.counts?.accused ?? 0}</span>
-                              <span>OTHER CASES: {graphMeta.otherCaseCount ?? 0}</span>
+                              <span>HOP-1 CASES: {graphMeta.otherCaseCount ?? 0}</span>
+                              {(graphMeta.twoHopCaseCount ?? 0) > 0 && (
+                                <span style={{ color: "#94a3b8" }}>HOP-2 CASES: {graphMeta.twoHopCaseCount}</span>
+                              )}
                             </>
                           ) : (
                             <>
@@ -963,7 +996,9 @@ const MainContent: React.FC = () => {
                               </div>
                               <p style={{ fontSize: 12.5, lineHeight: 1.6, color: "#64748b", margin: 0 }}>
                                 {graphMode === "case"
-                                  ? "The graph shows the case, the people named on it, and any other case those accused also appear on — all from registered records."
+                                  ? graphHops === 2
+                                    ? "2-hop mode: the root case, its people and direct linked cases (hop 1), and then the cases those accused also appear on (hop 2 — faded nodes). Useful for organised-crime network analysis."
+                                    : "The graph shows the case, the people named on it, and any other case those accused also appear on — all from registered records. Switch to 2-hop to extend the network further."
                                   : "The AI reads only what you wrote; the records confirm which people are real."}
                               </p>
                             </div>
@@ -1068,6 +1103,159 @@ const MainContent: React.FC = () => {
             {/* ============================================================ */}
             {activeTab === "case-registration" && (
               <CaseRegistration />
+            )}
+
+            {/* ============================================================ */}
+            {/* 7B2. CASE TIMELINE RECONSTRUCTOR                              */}
+            {/* ============================================================ */}
+            {activeTab === "case-timeline" && (
+              <div style={{ animation: "fadeIn 0.3s ease" }}>
+                <PageHeader
+                  title="Case Timeline Reconstructor"
+                  subtitle="Chronological event history for a registered case — registration, offence period, IPC sections, tasks, and documents"
+                />
+                <CaseTimeline />
+              </div>
+            )}
+
+            {/* ============================================================ */}
+            {/* 7B3. COURT DEADLINE TRACKER                                   */}
+            {/* ============================================================ */}
+            {activeTab === "court-deadlines" && (
+              <div style={{ animation: "fadeIn 0.3s ease" }}>
+                <PageHeader
+                  title="Court Deadline Tracker"
+                  subtitle="Charge-sheet filing deadlines under CrPC §167(2) — 60 days for heinous offences, 90 days for others"
+                />
+                <CourtDeadlines />
+              </div>
+            )}
+
+            {/* ============================================================ */}
+            {/* 7B3b. GENERAL DIARY                                           */}
+            {/* ============================================================ */}
+            {activeTab === "general-diary" && (
+              <div style={{ animation: "fadeIn 0.3s ease" }}>
+                <PageHeader
+                  title="General Diary"
+                  subtitle="Station daily log — complaints, incidents, patrol notes, visitors, and information entries"
+                />
+                <GeneralDiary />
+              </div>
+            )}
+
+            {/* ============================================================ */}
+            {/* 7B4. ARREST REGISTER                                          */}
+            {/* ============================================================ */}
+            {activeTab === "arrest-register" && (
+              <div style={{ animation: "fadeIn 0.3s ease" }}>
+                <PageHeader
+                  title="Arrest Register"
+                  subtitle="Record arrests, custody status, and generate official arrest memoranda with signatures"
+                />
+                <ArrestRegister />
+              </div>
+            )}
+
+            {/* ============================================================ */}
+            {/* 7B5. BAIL & REMAND TRACKER                                    */}
+            {/* ============================================================ */}
+            {activeTab === "bail-remand" && (
+              <div style={{ animation: "fadeIn 0.3s ease" }}>
+                <PageHeader
+                  title="Bail & Remand Tracker"
+                  subtitle="Track court-ordered remands, judicial custody, bail conditions, and expiry alerts"
+                />
+                <BailRemandTracker />
+              </div>
+            )}
+
+            {/* ============================================================ */}
+            {/* 7B6. WATCH LIST                                               */}
+            {/* ============================================================ */}
+            {activeTab === "watch-list" && (
+              <div style={{ animation: "fadeIn 0.3s ease" }}>
+                <PageHeader
+                  title="Surveillance Watch List"
+                  subtitle="Persons under active surveillance — threat-level ranked, review-date tracked"
+                />
+                <WatchListModule />
+              </div>
+            )}
+
+            {/* ============================================================ */}
+            {/* 7B7. WANTED PERSONS                                           */}
+            {/* ============================================================ */}
+            {activeTab === "wanted-persons" && (
+              <div style={{ animation: "fadeIn 0.3s ease" }}>
+                <PageHeader
+                  title="Wanted Persons & Absconders"
+                  subtitle="Active warrants, absconders at large — threat level, reward, linked FIR"
+                />
+                <WantedPersons />
+              </div>
+            )}
+
+            {/* ============================================================ */}
+            {/* 7B8. PREDICTIVE ANALYTICS                                     */}
+            {/* ============================================================ */}
+            {activeTab === "predictive-analytics" && (
+              <div style={{ animation: "fadeIn 0.3s ease" }}>
+                <PageHeader
+                  title="Predictive Analytics"
+                  subtitle="AI-powered crime trend forecasting, risk indicators, and geographic hotspot analysis"
+                />
+                <PredictiveAnalytics />
+              </div>
+            )}
+
+            {/* ============================================================ */}
+            {/* 7B9. MISSING PERSONS REGISTER                                 */}
+            {/* ============================================================ */}
+            {activeTab === "missing-persons" && (
+              <div style={{ animation: "fadeIn 0.3s ease" }}>
+                <PageHeader
+                  title="Missing Persons Register"
+                  subtitle="Log and track missing person cases; link to an FIR where one has been registered"
+                />
+                <MissingPersons />
+              </div>
+            )}
+
+            {/* ============================================================ */}
+            {/* 7B5. REPEAT OFFENDERS FLAG                                    */}
+            {/* ============================================================ */}
+            {activeTab === "repeat-offenders" && (
+              <div style={{ animation: "fadeIn 0.3s ease" }}>
+                <PageHeader
+                  title="Repeat Offenders Flag"
+                  subtitle="Accused persons appearing on multiple registered cases, ranked by case count and gravity"
+                />
+                <RepeatOffenders />
+              </div>
+            )}
+
+            {activeTab === "accused-profile" && (
+              <div style={{ animation: "fadeIn 0.3s ease" }}>
+                <PageHeader
+                  title="Accused Profile"
+                  subtitle="Unified profile: cases, arrests, bail orders and known associates"
+                />
+                <AccusedProfile />
+              </div>
+            )}
+
+            {/* ============================================================ */}
+            {/* 7B6. STATION PERFORMANCE DASHBOARD                            */}
+            {/* ============================================================ */}
+            {activeTab === "station-performance" && (
+              <div style={{ animation: "fadeIn 0.3s ease" }}>
+                <PageHeader
+                  title="Station Performance Dashboard"
+                  subtitle="Closure rates, charge-sheet rates, and case aging per police station"
+                />
+                <StationPerformance />
+              </div>
             )}
 
             {/* ============================================================ */}
@@ -1450,7 +1638,7 @@ const MainContent: React.FC = () => {
                           Authorized department circulars, operational reports, and case studies published by State Police Headquarters.
                         </p>
 
-                        <div style={{ display: "flex", flexDirection: "column", gap: 10, flex: 1 }}>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 10, maxHeight: 480, overflowY: "auto", paddingRight: 4 }}>
                           {filteredReports.map((report: any) => {
                             const isSecret = report.classification === "SECRET";
                             const isConfidential = report.classification === "CONFIDENTIAL";
@@ -1539,7 +1727,7 @@ const MainContent: React.FC = () => {
                           Live operational alerts and advisory directives published under credential authority. Click items to inspect guidelines.
                         </p>
 
-                        <div style={{ display: "flex", flexDirection: "column", gap: 12, flex: 1 }}>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 12, maxHeight: 480, overflowY: "auto", paddingRight: 4 }}>
                           {filteredBulletins.map((bulletin: any) => {
                             const isExpanded = expandedBulletinId === bulletin.id;
                             const catColors = bulletin.category === "HIGH URGENCY" 

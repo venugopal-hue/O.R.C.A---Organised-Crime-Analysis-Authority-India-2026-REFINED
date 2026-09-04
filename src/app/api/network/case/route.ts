@@ -27,8 +27,11 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ success: false, error: "Enter a case number." }, { status: 400 });
   }
 
+  const hopsParam = req.nextUrl.searchParams.get("hops");
+  const hops: 1 | 2 = hopsParam === "2" ? 2 : 1;
+
   try {
-    const graph = await buildCaseGraph(q);
+    const graph = await buildCaseGraph(q, hops);
     if (!graph) {
       return NextResponse.json(
         { success: false, error: `No registered case matches "${q}".`, notFound: true },

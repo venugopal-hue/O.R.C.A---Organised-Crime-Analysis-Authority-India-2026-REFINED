@@ -68,9 +68,9 @@ export interface UseVoiceOptions {
   submitOnEnd?: boolean;
 }
 
-/** Languages narrated through Sarvam because the browser has no voice for them.
+/** Languages narrated through Zia (proper Indian voices).
  *  Mirrors the server's allow-list in /api/voice/tts. */
-const SARVAM_TTS_LANGS = new Set(["kn-IN"]);
+const SARVAM_TTS_LANGS = new Set(["kn-IN", "hi-IN"]);
 
 const getRecognitionCtor = (): any =>
   typeof window === "undefined"
@@ -234,6 +234,21 @@ export function useVoice(opts: UseVoiceOptions) {
   const speakViaCloud = useCallback(async (clean: string, lang: string) => {
     try {
       setSpeaking(true);
+
+      // Pre-activate an <audio> element NOW while the user gesture is still
+      // live. Chrome's autoplay policy expires the gesture token after the
+      // first await boundary — play() after fetch() is always blocked.
+      // Playing a silent clip on the element activates it; Chrome keeps the
+      // "active media session" flag on that element for the page lifetime, so
+      // the real play() call that follows the fetch is permitted.
+      const SILENT_WAV =
+        "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
+      const audio = document.createElement("audio");
+      audio.style.display = "none";
+      document.body.appendChild(audio);
+      audio.src = SILENT_WAV;
+      await audio.play().catch(() => {});   // activates within the gesture
+
       const res = await fetch("/api/voice/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -241,14 +256,56 @@ export function useVoice(opts: UseVoiceOptions) {
         body: JSON.stringify({ text: clean, language_code: lang }),
       });
       const data = await res.json();
-      if (!data?.success || !data.audio) { setSpeaking(false); return; }
+      if (!data?.success || !data.audio) {
+        setSpeaking(false);
+        audio.remove();
+        return;
+      }
 
       stopCloudAudio();
-      const audio = new Audio(`data:audio/${data.codec || "mp3"};base64,${data.audio}`);
+
+      const bytes = Uint8Array.from(atob(data.audio), c => c.charCodeAt(0));
+      const blob = new Blob([bytes], { type: "audio/wav" });
+      const url = URL.createObjectURL(blob);
+
+      // Swap in the real audio on the already-activated element.
+      audio.src = url;
+      if (typeof (audio as any).setSinkId === "function") {
+        await (audio as any).setSinkId("").catch(() => {});
+      }
       cloudAudioRef.current = audio;
-      audio.onended = () => { setSpeaking(false); cloudAudioRef.current = null; };
-      audio.onerror = () => { setSpeaking(false); cloudAudioRef.current = null; };
+      audio.onended = () => {
+        setSpeaking(false);
+        cloudAudioRef.current = null;
+        URL.revokeObjectURL(url);
+        audio.remove();
+      };
+      audio.onerror = () => {
+        setSpeaking(false);
+        cloudAudioRef.current = null;
+        URL.revokeObjectURL(url);
+        audio.remove();
+      };
       await audio.play().catch(() => setSpeaking(false));
+
+      // Detect silent block: Chrome resolves play() even when the site's Sound
+      // permission is set to Block — but currentTime stays at 0.
+      // Give it 300 ms then warn the officer so they know to enable sound.
+      setTimeout(() => {
+        if (audio.currentTime === 0 && !audio.ended && !audio.paused) {
+          setSpeaking(false);
+          // eslint-disable-next-line no-console
+          console.warn(
+            "[ORCA TTS] Audio play() resolved but currentTime is 0 — " +
+            "Chrome is blocking sound for this site. " +
+            "Fix: click the lock icon in the address bar → Site settings → Sound → Allow."
+          );
+          // Surface a visible banner if the page supports it.
+          if (typeof (window as any).__orcaTtsBlocked === "function") {
+            (window as any).__orcaTtsBlocked();
+          }
+        }
+      }, 300);
     } catch {
       setSpeaking(false);
     }
@@ -260,9 +317,12 @@ export function useVoice(opts: UseVoiceOptions) {
     if (!clean) return;
     const lang = langRef.current;
 
-    // One language setting drives dictation and narration. Asking in Kannada
-    // and being answered in a US English voice was the old behaviour, because
-    // the two halves picked their language independently.
+    // Zia (cloud) takes priority for Indian languages — the browser's Google
+    // online voices for hi-IN and kn-IN are non-local (audio leaves the device
+    // to Google's servers) and are less reliable than Zia on this network.
+    if (cloudTts && SARVAM_TTS_LANGS.has(lang)) { void speakViaCloud(clean, lang); return; }
+
+    // For all other languages use the best installed local voice.
     const voice = voiceFor(lang);
     if (voice) {
       window.speechSynthesis.cancel();
@@ -276,10 +336,6 @@ export function useVoice(opts: UseVoiceOptions) {
       window.speechSynthesis.speak(utterance);
       return;
     }
-
-    // No local voice. Sarvam can speak Kannada if it is switched on; otherwise
-    // there is nothing that can pronounce this and the UI already says so.
-    if (cloudTts && SARVAM_TTS_LANGS.has(lang)) { void speakViaCloud(clean, lang); return; }
     setSpeaking(false);
   }, [voiceFor, cloudTts, speakViaCloud, stopCloudAudio]);
 

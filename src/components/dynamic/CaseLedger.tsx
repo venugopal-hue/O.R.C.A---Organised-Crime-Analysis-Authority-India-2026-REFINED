@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { LinkedTasks } from "@/components/dynamic/LinkedTasks";
 import { Loader2, AlertTriangle, Printer, RefreshCw, Search, FolderOpen, Inbox } from "lucide-react";
+import { OrcaLoader } from "@/components/dynamic/OrcaLoader";
 import { FIRLetterhead, FIRDocumentData } from "@/components/dynamic/FIRLetterhead";
 
 const NAVY = "#001f3f";
@@ -176,9 +177,7 @@ export const CaseLedger: React.FC<Props> = ({ labelFor, opts }) => {
       )}
 
       {loading ? (
-        <div style={{ display: "flex", alignItems: "center", gap: 9, fontSize: 12.5, color: MUTED, padding: 20 }}>
-          <Loader2 style={{ width: 16, height: 16, animation: "spin 1s linear infinite" }} /> Loading registered cases…
-        </div>
+        <OrcaLoader />
       ) : shown.length === 0 ? (
         <div style={{
           border: `1px dashed ${BORDER}`, borderRadius: 8, padding: "44px 20px",
@@ -227,9 +226,7 @@ export const CaseLedger: React.FC<Props> = ({ labelFor, opts }) => {
                         <td colSpan={6} style={{ padding: 0, background: OFFWHITE, borderBottom: `1px solid ${BORDER}` }}>
                           <div style={{ padding: 16 }}>
                             {detailLoading ? (
-                              <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12.5, color: MUTED }}>
-                                <Loader2 style={{ width: 15, height: 15, animation: "spin 1s linear infinite" }} /> Loading case file…
-                              </div>
+                              <OrcaLoader padding="20px 0" />
                             ) : detail ? (
                               <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
                                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 12 }}>

@@ -45,8 +45,12 @@
  * meaningless.
  */
 
-/** GravityOffence.GravityOffenceID for "Heinous". */
-export const GRAVITY_HEINOUS = 1;
+/**
+ * GravityOffence.GravityOffenceID values that are treated as "Heinous" for
+ * deadline (60-day limit) and notification urgency purposes.
+ * Matches the Set used in /api/notifications so both routes agree.
+ */
+export const GRAVITY_HEINOUS = new Set([1, 2, 3, 4]);
 
 /** CaseStatusMaster.CaseStatusID values. */
 export const STATUS_UNDER_INVESTIGATION = 1;
@@ -99,7 +103,7 @@ export function threatIndex(
   }
 
   const components: ThreatComponents = {
-    heinousShare: counts.heinous / counts.total,
+    heinousShare: counts.heinous / counts.total, // caller passes heinous count using GRAVITY_HEINOUS.has()
     unresolvedShare: (counts.total - counts.closed) / counts.total,
     volumeRatio: maxDistrictTotal > 0 ? counts.total / maxDistrictTotal : 0,
   };

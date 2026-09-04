@@ -125,7 +125,7 @@ export async function loadFirCases(): Promise<{ cases: FirCase[]; filters: any }
       headName: headName.get(num(c.CrimeMajorHeadID) ?? -1) || "",
       officerId,
       officerName: officerId !== null ? employeeName.get(officerId) || "" : "",
-      heinous: gravityId === GRAVITY_HEINOUS,
+      heinous: GRAVITY_HEINOUS.has(gravityId ?? 0),
     };
   });
 

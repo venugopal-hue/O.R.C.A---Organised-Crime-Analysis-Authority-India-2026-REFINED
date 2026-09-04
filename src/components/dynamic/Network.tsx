@@ -305,36 +305,56 @@ export const Network: React.FC<NetworkProps> = ({ data, selectedId, onSelect }) 
             const selected = n.id === selectedId;
             const r = n.kind === "case" ? 30 : 26;
             const labelW = Math.max(90, n.label.length * 7 + 20);
+            // Hop-2 nodes are visually receded: lower opacity, grey ring on selection.
+            const isTwoHop = (n as any).hop === 2;
+            const nodeOpacity = isTwoHop ? 0.55 : 1;
+            const selectionStroke = selected ? (isTwoHop ? "#94a3b8" : "#FF9933") : null;
             return (
-              <g key={n.id} transform={`translate(${n.x},${n.y})`} style={{ cursor: "pointer" }}
+              <g key={n.id} transform={`translate(${n.x},${n.y})`} style={{ cursor: "pointer" }} opacity={nodeOpacity}
                  onPointerDown={(e) => onNodePointerDown(e, n.id)}>
-                {selected && (
+                {selected && selectionStroke && (
                   st.shape === "rect"
-                    ? <rect x={-r - 6} y={-r - 6} width={(r + 6) * 2} height={(r + 6) * 2} rx={12} fill="none" stroke="#FF9933" strokeWidth={2.5} />
-                    : <circle r={r + 6} fill="none" stroke="#FF9933" strokeWidth={2.5} />
+                    ? <rect x={-r - 6} y={-r - 6} width={(r + 6) * 2} height={(r + 6) * 2} rx={12} fill="none" stroke={selectionStroke} strokeWidth={2.5} />
+                    : <circle r={r + 6} fill="none" stroke={selectionStroke} strokeWidth={2.5} />
+                )}
+                {/* Hop-2 ring: dashed outer border to signal "extended network" */}
+                {isTwoHop && !selected && (
+                  st.shape === "rect"
+                    ? <rect x={-r - 4} y={-r - 4} width={(r + 4) * 2} height={(r + 4) * 2} rx={11} fill="none" stroke="rgba(148,163,184,0.5)" strokeWidth={1.5} strokeDasharray="4 3" />
+                    : <circle r={r + 4} fill="none" stroke="rgba(148,163,184,0.5)" strokeWidth={1.5} strokeDasharray="4 3" />
                 )}
                 {st.shape === "rect" ? (
                   <rect x={-r} y={-r} width={r * 2} height={r * 2} rx={10}
                         fill={n.verified ? st.fill : "transparent"}
-                        stroke={st.fill} strokeWidth={n.verified ? 0 : 2}
-                        strokeDasharray={n.verified ? undefined : "5 4"} opacity={n.verified ? 1 : 0.9} />
+                        stroke={isTwoHop ? "rgba(148,163,184,0.6)" : st.fill}
+                        strokeWidth={n.verified ? 0 : 2}
+                        strokeDasharray={n.verified ? undefined : "5 4"} />
                 ) : (
                   <circle r={r}
                           fill={n.verified ? st.fill : "transparent"}
-                          stroke={st.fill} strokeWidth={n.verified ? 0 : 2}
-                          strokeDasharray={n.verified ? undefined : "5 4"} opacity={n.verified ? 1 : 0.9} />
+                          stroke={isTwoHop ? "rgba(148,163,184,0.6)" : st.fill}
+                          strokeWidth={n.verified ? 0 : 2}
+                          strokeDasharray={n.verified ? undefined : "5 4"} />
                 )}
                 <text textAnchor="middle" dy={6} fontSize={20}>{st.icon}</text>
 
                 {/* Name pill under the node */}
                 <g transform={`translate(0,${r + 16})`}>
                   <rect x={-labelW / 2} y={-11} width={labelW} height={22} rx={11}
-                        fill="rgba(8,15,30,0.9)" stroke={selected ? "#FF9933" : "rgba(148,163,184,0.3)"} />
+                        fill="rgba(8,15,30,0.9)" stroke={selected ? (selectionStroke ?? "rgba(148,163,184,0.3)") : "rgba(148,163,184,0.3)"} />
                   <text textAnchor="middle" dy={4} fontSize={11} fontWeight={600}
-                        fill={n.verified ? "#f1f5f9" : "#94a3b8"} fontFamily="Inter, sans-serif">
+                        fill={isTwoHop ? "#64748b" : (n.verified ? "#f1f5f9" : "#94a3b8")} fontFamily="Inter, sans-serif">
                     {n.label.length > 22 ? n.label.slice(0, 21) + "…" : n.label}
                   </text>
                 </g>
+
+                {/* Hop-2 badge */}
+                {isTwoHop && (
+                  <g transform={`translate(${r - 6},${-r + 6})`}>
+                    <circle r={8} fill="#334155" stroke="rgba(148,163,184,0.4)" strokeWidth={1} />
+                    <text textAnchor="middle" dy={4} fontSize={9} fontWeight={700} fill="#94a3b8">2</text>
+                  </g>
+                )}
               </g>
             );
           })}
@@ -350,6 +370,9 @@ export const Network: React.FC<NetworkProps> = ({ data, selectedId, onSelect }) 
         ))}
         <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
           <span style={{ width: 9, height: 9, borderRadius: "50%", border: "1.5px dashed #94a3b8", display: "inline-block" }} /> unverified
+        </span>
+        <span style={{ display: "flex", alignItems: "center", gap: 4, opacity: 0.7 }}>
+          <span style={{ width: 9, height: 9, borderRadius: 2, background: "#334155", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 7, color: "#94a3b8", fontWeight: 700 }}>2</span> 2nd-hop (extended)
         </span>
       </div>
     </div>

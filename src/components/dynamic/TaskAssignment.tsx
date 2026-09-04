@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ClipboardList, Plus, RefreshCw, Search, AlertTriangle, CheckCircle2,
-  ChevronDown, ChevronUp, Inbox, UserCog, Trash2,
+  ChevronDown, ChevronUp, Inbox, UserCog, Trash2, X,
 } from "lucide-react";
 import { ORCA_TOKENS, ORCA_MONO } from "@/lib/theme";
 import { SearchableSelect } from "@/components/dynamic/SearchableSelect";
@@ -174,6 +174,7 @@ export const TaskAssignment: React.FC = () => {
   const [query, setQuery] = useState("");
 
   const [openTask, setOpenTask] = useState<string>("");
+  const [modalOpen, setModalOpen] = useState(false);
   const [detail, setDetail] = useState<{ task: Task; audit: any[] } | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
@@ -276,8 +277,9 @@ export const TaskAssignment: React.FC = () => {
   }, [tasks, tab, myEmployeeId, statusFilter, priorityFilter, typeFilter, officerFilter, dueFilter, query]);
 
   const expand = useCallback(async (taskNumber: string) => {
-    if (openTask === taskNumber) { setOpenTask(""); setDetail(null); return; }
+    if (openTask === taskNumber && modalOpen) { setModalOpen(false); setOpenTask(""); setDetail(null); return; }
     setOpenTask(taskNumber);
+    setModalOpen(true);
     setDetail(null);
     setActionError("");
     setCompletionNotes("");
@@ -617,31 +619,8 @@ export const TaskAssignment: React.FC = () => {
                           border: `1px solid ${STATUS_COLOR[st] || T.border}`,
                           borderRadius: 10, padding: "2px 8px", flexShrink: 0,
                         }}>{STATUS_LABELS[st] || st}</span>
-                        {isOpen ? <ChevronUp style={{ width: 15, height: 15, color: T.textMuted }} /> : <ChevronDown style={{ width: 15, height: 15, color: T.textMuted }} />}
+                        <ChevronDown style={{ width: 15, height: 15, color: T.textMuted }} />
                       </button>
-
-                      {isOpen && (
-                        <TaskProfile
-                          detail={detail}
-                          loading={detailLoading}
-                          myEmployeeId={myEmployeeId}
-                          officers={reference?.officers || []}
-                          busy={actionBusy}
-                          error={actionError}
-                          completionNotes={completionNotes}
-                          setCompletionNotes={setCompletionNotes}
-                          remarks={actionRemarks}
-                          setRemarks={setActionRemarks}
-                          reassignTo={reassignTo}
-                          setReassignTo={setReassignTo}
-                          checklist={workChecklist}
-                          setChecklist={setWorkChecklist}
-                          deliverables={workDeliverables}
-                          setDeliverables={setWorkDeliverables}
-                          onAct={act}
-                          onReassign={doReassign}
-                        />
-                      )}
                     </div>
                   );
                 })
@@ -649,6 +628,71 @@ export const TaskAssignment: React.FC = () => {
             </div>
           )}
         </>
+      )}
+
+      {/* ══ TASK DETAIL MODAL ══════════════════════════════════════════════ */}
+      {modalOpen && (
+        <div
+          onClick={() => { setModalOpen(false); setOpenTask(""); setDetail(null); }}
+          style={{
+            position: "fixed", inset: 0, zIndex: 1000,
+            background: "rgba(0,15,31,0.55)", display: "flex",
+            alignItems: "center", justifyContent: "center", padding: 20,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: "#fff", borderRadius: 14, width: "100%", maxWidth: 680,
+              maxHeight: "88vh", overflowY: "auto",
+              boxShadow: "0 24px 80px rgba(0,0,0,0.32)",
+              display: "flex", flexDirection: "column",
+            }}
+          >
+            {/* Modal header */}
+            <div style={{
+              display: "flex", alignItems: "center", justifyContent: "space-between",
+              padding: "18px 22px 14px", borderBottom: `1px solid ${T.border}`, flexShrink: 0,
+            }}>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, fontFamily: ORCA_MONO, color: T.textMuted, letterSpacing: "0.06em", marginBottom: 2 }}>TASK DETAILS</div>
+                <div style={{ fontSize: 15, fontWeight: 800, color: T.navy }}>
+                  {detail?.task.title ?? openTask}
+                </div>
+              </div>
+              <button
+                onClick={() => { setModalOpen(false); setOpenTask(""); setDetail(null); }}
+                style={{ background: "none", border: "none", cursor: "pointer", color: T.textMuted, padding: 4 }}
+              >
+                <X style={{ width: 18, height: 18 }} />
+              </button>
+            </div>
+
+            {/* Modal body — reuse TaskProfile */}
+            <div style={{ flex: 1 }}>
+              <TaskProfile
+                detail={detail}
+                loading={detailLoading}
+                myEmployeeId={myEmployeeId}
+                officers={reference?.officers || []}
+                busy={actionBusy}
+                error={actionError}
+                completionNotes={completionNotes}
+                setCompletionNotes={setCompletionNotes}
+                remarks={actionRemarks}
+                setRemarks={setActionRemarks}
+                reassignTo={reassignTo}
+                setReassignTo={setReassignTo}
+                checklist={workChecklist}
+                setChecklist={setWorkChecklist}
+                deliverables={workDeliverables}
+                setDeliverables={setWorkDeliverables}
+                onAct={act}
+                onReassign={doReassign}
+              />
+            </div>
+          </div>
+        </div>
       )}
 
       {/* ══ ASSIGN ══════════════════════════════════════════════════════════ */}
@@ -984,7 +1028,24 @@ function TaskProfile(props: {
   const [showReassign, setShowReassign] = useState(false);
 
   if (loading || !detail) {
-    return <div style={{ padding: "0 16px 18px", fontSize: 12.5, color: T.textMuted }}>Reading task…</div>;
+    return (
+      <div style={{ padding: "32px 22px 36px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <style>{`
+          @keyframes __ta_l4 { to { clip-path: inset(0 -1ch 0 0); } }
+          .__ta_loader {
+            width: fit-content;
+            font-weight: bold;
+            font-family: monospace;
+            font-size: 22px;
+            color: #001f3f;
+            clip-path: inset(0 3ch 0 0);
+            animation: __ta_l4 1s steps(4) infinite;
+          }
+          .__ta_loader::before { content: "Loading..."; }
+        `}</style>
+        <div className="__ta_loader" />
+      </div>
+    );
   }
   const t = detail.task;
   const isAssignee = myEmployeeId !== null && t.assignedToEmployeeId === myEmployeeId;
