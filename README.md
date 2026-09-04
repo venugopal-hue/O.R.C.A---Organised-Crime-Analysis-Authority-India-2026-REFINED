@@ -148,6 +148,7 @@ Status    : RESTRICTED — Internal Use Only
   - **Domains** — DNS A records, RDAP registrar/nameservers/expiry, crt.sh certificate transparency (all certs ever issued, useful for hidden subdomain discovery), URLhaus, VirusTotal category & reputation
   - **Email addresses** — disposable-domain check, LeakCheck breach lookup (breach source names, data fields exposed)
   - **Phone numbers** — numverify carrier, country, line type (mobile / landline / VOIP), location
+  - **Catalyst internal cross-link** — every OSINT lookup also searches the live crime register within the officer's jurisdiction: phone numbers are matched against Accused, Victim and Complainant phone columns; IPs, domains and emails are searched as substrings in case brief facts. Results appear in the same OSINT block so the officer sees in one reply whether the target already appears in a registered case
   - Sources are named explicitly in every OSINT reply; the chatbot is instructed never to claim a source was checked unless it appears in the retrieved block
 - **🧠 Mini AI Assistant** — Compact embedded widget using the same retrieval and OSINT backend
 - **🎙️ Voice Command Palette** — Speech-to-text dictation via **Zoho Zia** (primary) with **Sarvam AI** as fallback; supports Kannada and Hindi natively. Gated behind explicit user consent — audio leaves the device only after approval. Indian-hosted providers are used instead of Chrome's SpeechRecognition because Chrome streams audio to Google's servers, which is unacceptable for a restricted law enforcement deployment
@@ -551,6 +552,7 @@ SARVAM_API_KEY_2=your_sarvam_key_2         # optional fallback slots 2-8
 # were not checked rather than silently omitting them.
 VIRUSTOTAL_API_KEY=your_vt_key             # virustotal.com — free, 4 req/min
 SHODAN_API_KEY=your_shodan_key             # shodan.io — free basic; $49 one-time for full scan history
+ABUSEIPDB_API_KEY=your_abuseipdb_key       # abuseipdb.com — free, 1,000 checks/day
 LEAKCHECK_API_KEY=your_leakcheck_key       # leakcheck.io — free, 50 lookups/day
 NUMVERIFY_API_KEY=your_numverify_key       # numverify.com — free, 100 lookups/month
 ```
@@ -614,7 +616,7 @@ Upload the zip through the AppSail section of the Zoho Catalyst Console. AppSail
 - [ ] All `ORCA_DS_*` environment variables set in AppSail console
 - [ ] `FIREBASE_SERVICE_ACCOUNT_KEY` set as a single-line JSON string
 - [ ] `NVIDIA_API_KEY` and `GROQ_API_KEY` set server-side
-- [ ] OSINT keys set server-side (`VIRUSTOTAL_API_KEY`, `SHODAN_API_KEY`, `LEAKCHECK_API_KEY`, `NUMVERIFY_API_KEY`) — optional but recommended; missing keys are skipped gracefully
+- [ ] OSINT keys set server-side (`VIRUSTOTAL_API_KEY`, `SHODAN_API_KEY`, `ABUSEIPDB_API_KEY`, `LEAKCHECK_API_KEY`, `NUMVERIFY_API_KEY`) — optional but recommended; missing keys are skipped gracefully
 - [ ] Firebase Auth email/password enabled in Firebase Console
 - [ ] `npm run build` completes with 0 TypeScript errors
 - [ ] Reference tables confirmed intact (should total ~1,278 rows)
